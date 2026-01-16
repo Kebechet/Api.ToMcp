@@ -1,3 +1,5 @@
 <Solution>
-  <Project Path="Api.ToMcp/Api.ToMcp.csproj" />
+  <Project Path="Api.ToMcp.Abstractions/Api.ToMcp.Abstractions.csproj" />
+  <Project Path="Api.ToMcp.Generator/Api.ToMcp.Generator.csproj" />
+  <Project Path="Api.ToMcp.Runtime/Api.ToMcp.Runtime.csproj" />
 </Solution>

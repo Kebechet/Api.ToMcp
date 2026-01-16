@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "mode": "SelectedOnly",
+  "include": [
+    "WeatherController",
+    "ProductsController.GetAll",
+    "ProductsController.GetById"
+  ],
+  "exclude": [],
+  "naming": {
+    "toolNameFormat": "{Controller}_{Action}",
+    "removeControllerSuffix": true
+  }
+}
