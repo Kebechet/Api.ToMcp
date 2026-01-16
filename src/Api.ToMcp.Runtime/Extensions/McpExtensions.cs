@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,7 +12,9 @@ public static class McpExtensions
     /// <summary>
     /// Registers MCP tool services including HTTP invoker and base URL provider.
     /// </summary>
-    public static IServiceCollection AddMcpTools(this IServiceCollection services)
+    /// <param name="services">The service collection.</param>
+    /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
+    public static IServiceCollection AddMcpTools(this IServiceCollection services, Assembly toolAssembly)
     {
         services.AddHttpContextAccessor();
         services.AddSingleton<ISelfBaseUrlProvider, DefaultBaseUrlProvider>();
@@ -20,7 +23,7 @@ public static class McpExtensions
         // Register the official MCP server with HTTP transport
         services.AddMcpServer()
             .WithHttpTransport()
-            .WithToolsFromAssembly();
+            .WithToolsFromAssembly(toolAssembly);
 
         return services;
     }

@@ -1,9 +1,10 @@
+using System.Reflection;
 using Api.ToMcp.Runtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
-builder.Services.AddMcpTools();
+builder.Services.AddMcpTools(Assembly.GetExecutingAssembly());
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
