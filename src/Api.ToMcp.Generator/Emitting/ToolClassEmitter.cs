@@ -80,13 +80,18 @@ namespace Api.ToMcp.Generator.Emitting
             var route = action.RouteTemplate;
 
             // Find route parameters (parameters that appear in the route template)
+            // Need to check for both {name} and {name:constraint} patterns
             var routeParams = parameters.Where(p =>
                 p.Source == ParameterSourceModel.Route ||
-                (p.Source == ParameterSourceModel.Auto && route.Contains("{" + p.Name + "}"))).ToList();
+                (p.Source == ParameterSourceModel.Auto && RouteContainsParameter(route, p.Name))).ToList();
 
             foreach (var param in routeParams)
             {
-                sb.AppendLine($"            var route{param.Name} = System.Uri.EscapeDataString({param.Name}?.ToString() ?? string.Empty);");
+                // Value types can't be null, so don't use null-conditional operator
+                var toStringExpr = IsValueType(param.Type) && !param.IsNullable
+                    ? $"{param.Name}.ToString()"
+                    : $"{param.Name}?.ToString() ?? string.Empty";
+                sb.AppendLine($"            var route{param.Name} = System.Uri.EscapeDataString({toStringExpr});");
             }
 
             sb.AppendLine($"            var route = $\"{ConvertRouteTemplate(route, routeParams)}\";");
@@ -95,7 +100,7 @@ namespace Api.ToMcp.Generator.Emitting
             var queryParams = parameters.Where(p =>
                 p.Source == ParameterSourceModel.Query ||
                 (p.Source == ParameterSourceModel.Auto &&
-                 !route.Contains("{" + p.Name + "}") &&
+                 !RouteContainsParameter(route, p.Name) &&
                  action.HttpMethod == "GET" &&
                  !IsComplexType(p.Type))).ToList();
 
@@ -236,17 +241,31 @@ namespace Api.ToMcp.Generator.Emitting
             return $"{descAttr}{type} {param.Name}{defaultPart}";
         }
 
+        private static bool RouteContainsParameter(string route, string paramName)
+        {
+            // Check for {name} or {name:constraint} or {name?} patterns
+            var simplePattern = "{" + paramName + "}";
+            var optionalPattern = "{" + paramName + "?}";
+            var constraintPattern = "{" + paramName + ":";
+
+            return route.Contains(simplePattern) ||
+                   route.Contains(optionalPattern) ||
+                   route.Contains(constraintPattern);
+        }
+
         private static string ConvertRouteTemplate(string route, List<ParameterInfoModel> routeParams)
         {
             var result = route;
             foreach (var param in routeParams)
             {
-                // Handle various route parameter formats
-                result = result.Replace("{" + param.Name + "}", "{route" + param.Name + "}");
-                result = result.Replace("{" + param.Name + ":int}", "{route" + param.Name + "}");
-                result = result.Replace("{" + param.Name + ":guid}", "{route" + param.Name + "}");
-                result = result.Replace("{" + param.Name + ":long}", "{route" + param.Name + "}");
-                result = result.Replace("{" + param.Name + "?}", "{route" + param.Name + "}");
+                // Handle various route parameter formats using regex to catch any constraint
+                // Pattern matches: {name}, {name?}, {name:constraint}, {name:constraint?}
+                var pattern = @"\{" + param.Name + @"(:[^}]+)?\??\}";
+                result = System.Text.RegularExpressions.Regex.Replace(
+                    result,
+                    pattern,
+                    "{route" + param.Name + "}",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             }
             return result;
         }
