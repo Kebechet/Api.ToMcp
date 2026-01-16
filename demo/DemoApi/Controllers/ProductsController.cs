@@ -10,9 +10,9 @@ public class ProductsController : ControllerBase
 {
     private static readonly List<Product> _products = new()
     {
-        new Product { Id = Guid.NewGuid(), Name = "Laptop", Price = 999.99m, Category = "Electronics", Description = "A powerful laptop" },
-        new Product { Id = Guid.NewGuid(), Name = "Headphones", Price = 149.99m, Category = "Electronics", Description = "Wireless headphones" },
-        new Product { Id = Guid.NewGuid(), Name = "Coffee Mug", Price = 12.99m, Category = "Kitchen", Description = "A nice coffee mug" }
+        new Product { Id = Guid.Parse("a1b2c3d4-e5f6-7890-abcd-ef1234567890"), Name = "Laptop", Price = 999.99m, Category = "Electronics", Description = "A powerful laptop" },
+        new Product { Id = Guid.Parse("b2c3d4e5-f6a7-8901-bcde-f12345678901"), Name = "Headphones", Price = 149.99m, Category = "Electronics", Description = "Wireless headphones" },
+        new Product { Id = Guid.Parse("c3d4e5f6-a7b8-9012-cdef-123456789012"), Name = "Coffee Mug", Price = 12.99m, Category = "Kitchen", Description = "A nice coffee mug" }
     };
 
     /// <summary>
