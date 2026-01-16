@@ -2,4 +2,7 @@
   <Project Path="Api.ToMcp.Abstractions/Api.ToMcp.Abstractions.csproj" />
   <Project Path="Api.ToMcp.Generator/Api.ToMcp.Generator.csproj" />
   <Project Path="Api.ToMcp.Runtime/Api.ToMcp.Runtime.csproj" />
+  <Folder Name="/Tests/">
+    <Project Path="../tests/Api.ToMcp.Generator.Tests/Api.ToMcp.Generator.Tests.csproj" />
+  </Folder>
 </Solution>
