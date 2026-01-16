@@ -21,7 +21,7 @@ namespace Api.ToMcp.Generator.Parsing
 
             try
             {
-                var dto = JsonSerializer.Deserialize<ConfigDto>(json, Options);
+                var dto = JsonSerializer.Deserialize<ConfigDto>(json!, Options);
                 if (dto == null)
                     return new GeneratorConfigModel();
 

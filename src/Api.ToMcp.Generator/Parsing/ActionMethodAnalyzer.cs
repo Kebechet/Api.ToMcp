@@ -241,7 +241,7 @@ namespace Api.ToMcp.Generator.Parsing
 
             if (!string.IsNullOrEmpty(prefix))
             {
-                var normalizedPrefix = prefix.TrimStart('/').TrimEnd('/');
+                var normalizedPrefix = prefix!.TrimStart('/').TrimEnd('/');
                 // Replace [controller] placeholder
                 var controllerBaseName = controllerName.EndsWith("Controller")
                     ? controllerName.Substring(0, controllerName.Length - "Controller".Length).ToLowerInvariant()
@@ -251,7 +251,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             if (!string.IsNullOrEmpty(template))
-                parts.Add(template.TrimStart('/').TrimEnd('/'));
+                parts.Add(template!.TrimStart('/').TrimEnd('/'));
 
             return "/" + string.Join("/", parts);
         }
@@ -262,7 +262,7 @@ namespace Api.ToMcp.Generator.Parsing
             if (string.IsNullOrEmpty(xml))
                 return null;
 
-            var start = xml.IndexOf("<summary>");
+            var start = xml!.IndexOf("<summary>");
             var end = xml.IndexOf("</summary>");
             if (start >= 0 && end > start)
             {

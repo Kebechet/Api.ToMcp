@@ -86,7 +86,7 @@ namespace Api.ToMcp.Generator.Emitting
 
             foreach (var param in routeParams)
             {
-                sb.AppendLine($"            var route{param.Name} = System.Uri.EscapeDataString({param.Name}?.ToString() ?? \"\");");
+                sb.AppendLine($"            var route{param.Name} = System.Uri.EscapeDataString({param.Name}?.ToString() ?? string.Empty);");
             }
 
             sb.AppendLine($"            var route = $\"{ConvertRouteTemplate(route, routeParams)}\";");
@@ -107,11 +107,11 @@ namespace Api.ToMcp.Generator.Emitting
                     if (param.IsNullable || param.HasDefaultValue)
                     {
                         sb.AppendLine($"            if ({param.Name} != null)");
-                        sb.AppendLine($"                queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString())}}\");");
+                        sb.AppendLine($"                queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString()!)}}\");");
                     }
                     else
                     {
-                        sb.AppendLine($"            queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString())}}\");");
+                        sb.AppendLine($"            queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString()!)}}\");");
                     }
                 }
                 sb.AppendLine("            if (queryParts.Count > 0)");
@@ -176,7 +176,7 @@ namespace Api.ToMcp.Generator.Emitting
         {
             var customName = action.CustomToolName;
             if (!string.IsNullOrEmpty(customName))
-                return customName;
+                return customName!;
 
             var controller = action.ControllerName;
             var actionName = action.Name;
