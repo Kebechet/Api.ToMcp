@@ -1,0 +1,20 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+      - run: dotnet build src/Api.ToMcp.slnx -c Release
+      - run: dotnet test src/Api.ToMcp.slnx -c Release --no-build
