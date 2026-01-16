@@ -6,6 +6,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -14,6 +17,20 @@ jobs:
             8.0.x
             9.0.x
             10.0.x
+      - name: Extract version from csproj
+        id: version
+        run: |
+          VERSION=$(grep -oP '<Version>\K[^<]+' src/Api.ToMcp/Api.ToMcp.csproj)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
       - run: dotnet build src/Api.ToMcp.slnx -c Release
       - run: dotnet test src/Api.ToMcp.slnx -c Release --no-build
       - run: dotnet nuget push src/Api.ToMcp/bin/Release/*.nupkg -k ${{ secrets.NUGET_API_KEY }} -s https://api.nuget.org/v3/index.json --skip-duplicate
+      - name: Push to GitHub Packages
+        run: dotnet nuget push src/Api.ToMcp/bin/Release/*.nupkg -k ${{ secrets.GITHUB_TOKEN }} -s https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: src/Api.ToMcp/bin/Release/*.nupkg
+          generate_release_notes: true
