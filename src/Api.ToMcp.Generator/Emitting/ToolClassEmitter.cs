@@ -241,7 +241,7 @@ namespace Api.ToMcp.Generator.Emitting
             return $"{descAttr}{type} {param.Name}{defaultPart}";
         }
 
-        private static bool RouteContainsParameter(string route, string paramName)
+        internal static bool RouteContainsParameter(string route, string paramName)
         {
             // Check for {name} or {name:constraint} or {name?} patterns
             var simplePattern = "{" + paramName + "}";
@@ -253,7 +253,7 @@ namespace Api.ToMcp.Generator.Emitting
                    route.Contains(constraintPattern);
         }
 
-        private static string ConvertRouteTemplate(string route, List<ParameterInfoModel> routeParams)
+        internal static string ConvertRouteTemplate(string route, List<ParameterInfoModel> routeParams)
         {
             var result = route;
             foreach (var param in routeParams)
@@ -275,7 +275,7 @@ namespace Api.ToMcp.Generator.Emitting
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "");
         }
 
-        private static bool IsValueType(string typeName)
+        internal static bool IsValueType(string typeName)
         {
             var valueTypes = new[]
             {
@@ -296,7 +296,7 @@ namespace Api.ToMcp.Generator.Emitting
             return valueTypes.Any(t => typeName == t || typeName.EndsWith("." + t));
         }
 
-        private static bool IsComplexType(string typeName)
+        internal static bool IsComplexType(string typeName)
         {
             var primitives = new[]
             {
