@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -39,9 +40,16 @@ public static class McpExtensions
     /// <summary>
     /// Maps the MCP endpoint at the specified path.
     /// </summary>
-    public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = "mcp")
+    /// <param name="endpoints">The endpoint route builder.</param>
+    /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
+    /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint.</param>
+    public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = "mcp", bool allowAnonymous = false)
     {
-        endpoints.MapMcp(pattern);
+        var endpoint = endpoints.MapMcp(pattern);
+        if (allowAnonymous)
+        {
+            endpoint.AllowAnonymous();
+        }
         return endpoints;
     }
 }
