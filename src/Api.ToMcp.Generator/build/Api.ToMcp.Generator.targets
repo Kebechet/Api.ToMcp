@@ -3,7 +3,7 @@
 
   <PropertyGroup>
     <ApiToMcpAutoCreateConfig Condition="'$(ApiToMcpAutoCreateConfig)' == ''">true</ApiToMcpAutoCreateConfig>
-    <ApiToMcpConfigPath Condition="'$(ApiToMcpConfigPath)' == ''">$(MSBuildProjectDirectory)\mcp\generator.json</ApiToMcpConfigPath>
+    <ApiToMcpConfigPath Condition="'$(ApiToMcpConfigPath)' == ''">$(MSBuildProjectDirectory)\Mcp\generator.json</ApiToMcpConfigPath>
     <ApiToMcpConfigDirectory>$([System.IO.Path]::GetDirectoryName('$(ApiToMcpConfigPath)'))</ApiToMcpConfigDirectory>
   </PropertyGroup>
 
@@ -31,7 +31,7 @@
                       Lines="$(_McpStarterConfig)"
                       Overwrite="true" />
 
-    <Message Text="Api.ToMcp: Created starter config at mcp/generator.json" Importance="high" />
+    <Message Text="Api.ToMcp: Created starter config at Mcp/generator.json" Importance="high" />
 
   </Target>
 
