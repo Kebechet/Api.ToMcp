@@ -18,11 +18,23 @@ public sealed class McpLoopPreventionMiddleware
         if (context.Request.Path.StartsWithSegments("/mcp") &&
             context.Request.Headers.ContainsKey(LoopPreventionHeader))
         {
+            if (context.RequestAborted.IsCancellationRequested)
+                return;
+
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await context.Response.WriteAsync("MCP endpoints cannot be called internally to prevent loops.");
+            await context.Response.WriteAsync(
+                "MCP endpoints cannot be called internally to prevent loops.",
+                context.RequestAborted);
             return;
         }
 
-        await _next(context);
+        try
+        {
+            await _next(context);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // Expected when client disconnects (normal for SSE/MCP connections)
+        }
     }
 }
