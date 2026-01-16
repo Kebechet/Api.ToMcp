@@ -2,8 +2,8 @@
 
 # Api.ToMcp
 
-[![NuGet Version](https://img.shields.io/nuget/v/Api.ToMcp)](https://www.nuget.org/packages/Api.ToMcp/)
-[![NuGet Downloads](https://img.shields.io/nuget/dt/Api.ToMcp)](https://www.nuget.org/packages/Api.ToMcp/)
+[![NuGet Version](https://img.shields.io/nuget/v/Kebechet.Api.ToMcp)](https://www.nuget.org/packages/Kebechet.Api.ToMcp/)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/Kebechet.Api.ToMcp)](https://www.nuget.org/packages/Kebechet.Api.ToMcp/)
 ![Last updated (main)](https://img.shields.io/github/last-commit/Kebechet/Api.ToMcp/main?label=last%20updated)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/samuel_sidor.svg?style=social&label=Follow%20samuel_sidor)](https://x.com/samuel_sidor)
 
@@ -27,7 +27,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 ### 1. Install package
 
 ```bash
-dotnet add package Api.ToMcp
+dotnet add package Kebechet.Api.ToMcp
 ```
 
 ### 2. Add generator configuration

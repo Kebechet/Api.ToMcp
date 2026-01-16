@@ -1,0 +1,93 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup Label="NugetProperties">
+    <Authors>Kebechet</Authors>
+    <IsPackable>true</IsPackable>
+    <PackageId>Kebechet.Api.ToMcp</PackageId>
+    <Description>A C# source generator that transforms ASP.NET Core API endpoints into MCP (Model Context Protocol) tools.</Description>
+    <RepositoryUrl>https://github.com/Kebechet/Api.ToMcp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Kebechet/Api.ToMcp</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <RepositoryType>git</RepositoryType>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>embedded</DebugType>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageTags>mcp;model-context-protocol;source-generator;aspnetcore;api;claude;ai</PackageTags>
+    <Version>1.0.0-preview1</Version>
+    <PackageReleaseNotes>Initial release</PackageReleaseNotes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!-- ModelContextProtocol.AspNetCore as direct dependency for consumers -->
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.1.0-preview.11" />
+  </ItemGroup>
+
+  <!-- Reference Runtime (which transitively references Abstractions) - bundled in package -->
+  <ItemGroup>
+    <ProjectReference Include="..\Api.ToMcp.Runtime\Api.ToMcp.Runtime.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Include Generator as analyzer for development -->
+  <ItemGroup>
+    <ProjectReference Include="..\Api.ToMcp.Generator\Api.ToMcp.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Include Generator DLL as analyzer in the NuGet package -->
+  <ItemGroup>
+    <None Include="..\Api.ToMcp.Generator\bin\$(Configuration)\netstandard2.0\Api.ToMcp.Generator.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+  </ItemGroup>
+
+  <!-- Package README, LICENSE, and icon -->
+  <ItemGroup>
+    <None Include="..\..\README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\..\LICENSE">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\..\icon.png" Condition="Exists('..\..\icon.png')">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <!-- Include build targets -->
+  <ItemGroup>
+    <None Include="build\**\*" Pack="true" PackagePath="build" />
+    <None Include="buildTransitive\**\*" Pack="true" PackagePath="buildTransitive" />
+  </ItemGroup>
+
+  <!-- Automatically include Runtime and Abstractions DLLs in the package -->
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeBundledAssemblies</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <Target Name="IncludeBundledAssemblies">
+    <ItemGroup>
+      <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Runtime.dll" />
+      <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Abstractions.dll" />
+    </ItemGroup>
+  </Target>
+
+</Project>
