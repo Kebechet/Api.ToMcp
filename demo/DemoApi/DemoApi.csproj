@@ -16,8 +16,4 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <ItemGroup>
-    <AdditionalFiles Include="mcp\generator.json" />
-  </ItemGroup>
-
 </Project>

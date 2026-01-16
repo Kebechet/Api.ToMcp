@@ -1,0 +1,5 @@
+<Project>
+  <!-- Import Generator targets for local project reference testing -->
+  <!-- When consumed as NuGet package, this import happens automatically via build/ folder -->
+  <Import Project="..\src\Api.ToMcp.Generator\build\Api.ToMcp.Generator.targets" />
+</Project>
