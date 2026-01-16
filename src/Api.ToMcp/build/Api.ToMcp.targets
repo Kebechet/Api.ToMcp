@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <ApiToMcpAutoCreateConfig Condition="'$(ApiToMcpAutoCreateConfig)' == ''">true</ApiToMcpAutoCreateConfig>
+    <ApiToMcpConfigPath Condition="'$(ApiToMcpConfigPath)' == ''">$(MSBuildProjectDirectory)\Mcp\generator.json</ApiToMcpConfigPath>
+    <ApiToMcpConfigDirectory>$([System.IO.Path]::GetDirectoryName('$(ApiToMcpConfigPath)'))</ApiToMcpConfigDirectory>
+  </PropertyGroup>
+
+  <Target Name="CreateMcpGeneratorConfig"
+          BeforeTargets="CoreCompile"
+          Condition="'$(ApiToMcpAutoCreateConfig)' == 'true' AND !Exists('$(ApiToMcpConfigPath)')">
+
+    <MakeDir Directories="$(ApiToMcpConfigDirectory)"
+             Condition="!Exists('$(ApiToMcpConfigDirectory)')" />
+
+    <PropertyGroup>
+      <_McpStarterConfig><![CDATA[{
+  "schemaVersion": 1,
+  "mode": "SelectedOnly",
+  "include": [],
+  "exclude": [],
+  "naming": {
+    "toolNameFormat": "{Controller}_{Action}",
+    "removeControllerSuffix": true
+  }
+}]]></_McpStarterConfig>
+    </PropertyGroup>
+
+    <WriteLinesToFile File="$(ApiToMcpConfigPath)"
+                      Lines="$(_McpStarterConfig)"
+                      Overwrite="true" />
+
+    <Message Text="Api.ToMcp: Created starter config at Mcp/generator.json" Importance="high" />
+
+  </Target>
+
+  <!-- Auto-add to AdditionalFiles if not already present -->
+  <Target Name="EnsureMcpConfigInAdditionalFiles"
+          BeforeTargets="CoreCompile"
+          AfterTargets="CreateMcpGeneratorConfig"
+          Condition="Exists('$(ApiToMcpConfigPath)')">
+
+    <ItemGroup>
+      <_ExistingMcpConfig Include="@(AdditionalFiles)"
+                          Condition="$([System.String]::new('%(Identity)').EndsWith('generator.json'))" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'@(_ExistingMcpConfig)' == ''">
+      <AdditionalFiles Include="$(ApiToMcpConfigPath)" />
+    </ItemGroup>
+
+  </Target>
+
+</Project>
