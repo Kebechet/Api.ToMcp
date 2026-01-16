@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="7.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Api.ToMcp.Abstractions\Api.ToMcp.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Api.ToMcp.Runtime\Api.ToMcp.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Api.ToMcp.Generator\Api.ToMcp.Generator.csproj"
