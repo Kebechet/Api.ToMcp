@@ -53,7 +53,9 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             sb.Append("        public static async Task<string> InvokeAsync(");
             sb.AppendLine();
-            sb.AppendLine("            IMcpHttpInvoker invoker,");
+
+            var invokerComma = parameters.Count > 0 ? "," : "";
+            sb.AppendLine($"            IMcpHttpInvoker invoker{invokerComma}");
 
             for (int i = 0; i < parameters.Count; i++)
             {

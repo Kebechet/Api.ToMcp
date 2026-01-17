@@ -371,6 +371,25 @@ public class ToolClassEmitterTests
     }
 
     [Fact]
+    public void Emit_GeneratesValidCodeForParameterlessMethod()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetSecret",
+            ControllerName = "ValuesController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/values/secret",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        // Should not have trailing comma after invoker parameter when there are no other params
+        Assert.DoesNotContain("invoker,", result);
+    }
+
+    [Fact]
     public void Emit_GeneratesCorrectCodeForPostWithBody()
     {
         var action = new ActionInfoModel
