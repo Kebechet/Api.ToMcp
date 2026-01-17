@@ -328,6 +328,31 @@ public class ToolClassEmitterTests
     }
 
     [Fact]
+    public void Emit_KeepsControllerSuffix_WhenRemoveControllerSuffixIsFalse()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetById",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty
+        };
+
+        var config = new GeneratorConfigModel
+        {
+            Naming = new NamingConfigModel
+            {
+                ToolNameFormat = "{Controller}_{Action}",
+                RemoveControllerSuffix = false
+            }
+        };
+
+        var result = ToolClassEmitter.Emit(action, config);
+        Assert.Contains("[McpServerTool(Name = \"ProductsController_GetById\")]", result);
+    }
+
+    [Fact]
     public void Emit_UsesCustomToolName()
     {
         var action = new ActionInfoModel
