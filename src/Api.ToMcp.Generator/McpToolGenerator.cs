@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -38,14 +39,32 @@ namespace Api.ToMcp.Generator
                 var (controllers, config) = source;
                 var selectedActions = SelectActions(controllers, config);
 
+                // Track seen tool class names to handle overloads
+                var seenToolClassNames = new Dictionary<string, int>(StringComparer.Ordinal);
+
                 foreach (var action in selectedActions)
                 {
-                    var generatedCode = ToolClassEmitter.Emit(action, config);
-                    ctx.AddSource($"{action.ToolClassName}.g.cs", generatedCode);
+                    var baseClassName = action.ToolClassName;
+                    string uniqueClassName;
+
+                    if (seenToolClassNames.TryGetValue(baseClassName, out var count))
+                    {
+                        // Overload detected, add suffix
+                        seenToolClassNames[baseClassName] = count + 1;
+                        uniqueClassName = $"{baseClassName}_{count + 1}";
+                    }
+                    else
+                    {
+                        seenToolClassNames[baseClassName] = 1;
+                        uniqueClassName = baseClassName;
+                    }
+
+                    var generatedCode = ToolClassEmitter.Emit(action, config, uniqueClassName);
+                    ctx.AddSource($"{uniqueClassName}.g.cs", generatedCode);
                 }
 
                 ctx.AddSource("McpToolsRegistration.g.cs",
-                    ToolClassEmitter.EmitRegistration(selectedActions));
+                    ToolClassEmitter.EmitRegistration(selectedActions, seenToolClassNames));
             });
         }
 

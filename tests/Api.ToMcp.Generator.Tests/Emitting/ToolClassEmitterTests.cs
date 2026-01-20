@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using Api.ToMcp.Generator.Emitting;
 using Api.ToMcp.Generator.Models;
@@ -742,6 +743,171 @@ public class ToolClassEmitterTests
         var getAsyncIndex = result.IndexOf("GetAsync");
 
         Assert.True(beforeInvokeIndex < getAsyncIndex, "BeforeInvokeAsync should come before GetAsync");
+    }
+
+    #endregion
+
+    #region Emit Override Class Name Tests
+
+    [Fact]
+    public void Emit_WithOverrideClassName_UsesOverriddenName()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetById",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config, "ProductsController_GetByIdTool_2");
+
+        Assert.Contains("public static class ProductsController_GetByIdTool_2", result);
+    }
+
+    [Fact]
+    public void Emit_WithoutOverrideClassName_UsesDefaultToolClassName()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetById",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("public static class ProductsController_GetByIdTool", result);
+    }
+
+    [Fact]
+    public void Emit_WithNullOverrideClassName_UsesDefaultToolClassName()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Delete",
+            ControllerName = "OrdersController",
+            HttpMethod = "DELETE",
+            RouteTemplate = "/api/orders/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Delete
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config, null);
+
+        Assert.Contains("public static class OrdersController_DeleteTool", result);
+    }
+
+    #endregion
+
+    #region EmitRegistration Duplicate Handling Tests
+
+    [Fact]
+    public void EmitRegistration_WithNoDuplicates_GeneratesOriginalNames()
+    {
+        var actions = ImmutableArray.Create(
+            CreateActionWithToolClassName("GetAll", "ProductsController"),
+            CreateActionWithToolClassName("GetById", "ProductsController"),
+            CreateActionWithToolClassName("Create", "OrdersController")
+        );
+
+        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            { "ProductsController_GetAllTool", 1 },
+            { "ProductsController_GetByIdTool", 1 },
+            { "OrdersController_CreateTool", 1 }
+        };
+
+        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+
+        Assert.Contains("typeof(ProductsController_GetAllTool),", result);
+        Assert.Contains("typeof(ProductsController_GetByIdTool),", result);
+        Assert.Contains("typeof(OrdersController_CreateTool),", result);
+        Assert.DoesNotContain("_2", result);
+        Assert.DoesNotContain("_3", result);
+    }
+
+    [Fact]
+    public void EmitRegistration_WithDuplicateBaseNames_GeneratesUniqueTypeReferences()
+    {
+        var actions = ImmutableArray.Create(
+            CreateActionWithToolClassName("GetById", "ProductsController"),
+            CreateActionWithToolClassName("GetById", "ProductsController"),
+            CreateActionWithToolClassName("GetById", "ProductsController")
+        );
+
+        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            { "ProductsController_GetByIdTool", 3 }
+        };
+
+        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+
+        Assert.Contains("typeof(ProductsController_GetByIdTool),", result);
+        Assert.Contains("typeof(ProductsController_GetByIdTool_2),", result);
+        Assert.Contains("typeof(ProductsController_GetByIdTool_3),", result);
+    }
+
+    [Fact]
+    public void EmitRegistration_WithMixedDuplicates_GeneratesCorrectNames()
+    {
+        var actions = ImmutableArray.Create(
+            CreateActionWithToolClassName("GetAll", "ProductsController"),
+            CreateActionWithToolClassName("GetById", "ProductsController"),
+            CreateActionWithToolClassName("GetById", "ProductsController")
+        );
+
+        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            { "ProductsController_GetAllTool", 1 },
+            { "ProductsController_GetByIdTool", 2 }
+        };
+
+        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+
+        Assert.Contains("typeof(ProductsController_GetAllTool),", result);
+        Assert.Contains("typeof(ProductsController_GetByIdTool),", result);
+        Assert.Contains("typeof(ProductsController_GetByIdTool_2),", result);
+        Assert.DoesNotContain("ProductsController_GetAllTool_2", result);
+    }
+
+    [Fact]
+    public void EmitRegistration_GeneratesMcpToolsInfoClass()
+    {
+        var actions = ImmutableArray.Create(
+            CreateActionWithToolClassName("GetAll", "ProductsController")
+        );
+
+        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            { "ProductsController_GetAllTool", 1 }
+        };
+
+        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+
+        Assert.Contains("public static class McpToolsInfo", result);
+        Assert.Contains("public static readonly System.Type[] ToolTypes", result);
+    }
+
+    private static ActionInfoModel CreateActionWithToolClassName(string actionName, string controllerName)
+    {
+        return new ActionInfoModel
+        {
+            Name = actionName,
+            ControllerName = controllerName,
+            HttpMethod = "GET",
+            RouteTemplate = $"/api/{controllerName.ToLower().Replace("controller", "")}/{actionName.ToLower()}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
     }
 
     #endregion

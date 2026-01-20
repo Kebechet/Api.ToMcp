@@ -9,9 +9,10 @@ namespace Api.ToMcp.Generator.Emitting
 {
     internal static class ToolClassEmitter
     {
-        public static string Emit(ActionInfoModel action, GeneratorConfigModel config)
+        public static string Emit(ActionInfoModel action, GeneratorConfigModel config, string? overrideClassName = null)
         {
             var toolName = FormatToolName(action, config.Naming);
+            var className = overrideClassName ?? action.ToolClassName;
             var description = action.CustomDescription ?? action.XmlDocSummary ?? $"Invokes {action.ControllerName}.{action.Name}";
 
             var sb = new StringBuilder();
@@ -29,7 +30,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("namespace Api.ToMcp.Generated");
             sb.AppendLine("{");
             sb.AppendLine("    [McpServerToolType]");
-            sb.AppendLine($"    public static class {action.ToolClassName}");
+            sb.AppendLine($"    public static class {className}");
             sb.AppendLine("    {");
 
             EmitToolMethod(sb, action, toolName, description);
@@ -185,7 +186,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("            return response;");
         }
 
-        public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions)
+        public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)
         {
             var sb = new StringBuilder();
 
@@ -199,9 +200,26 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        public static readonly System.Type[] ToolTypes = new System.Type[]");
             sb.AppendLine("        {");
 
+            // Track counts to generate matching unique names
+            var currentCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+
             foreach (var action in actions)
             {
-                sb.AppendLine($"            typeof({action.ToolClassName}),");
+                var baseClassName = action.ToolClassName;
+                string uniqueClassName;
+
+                if (currentCounts.TryGetValue(baseClassName, out var count))
+                {
+                    currentCounts[baseClassName] = count + 1;
+                    uniqueClassName = $"{baseClassName}_{count + 1}";
+                }
+                else
+                {
+                    currentCounts[baseClassName] = 1;
+                    uniqueClassName = baseClassName;
+                }
+
+                sb.AppendLine($"            typeof({uniqueClassName}),");
             }
 
             sb.AppendLine("        };");
