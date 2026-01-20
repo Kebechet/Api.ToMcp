@@ -70,13 +70,25 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 
         // Forward authentication if present
         var httpContext = _httpContextAccessor.HttpContext;
+        _logger.LogDebug("HttpContext available: {Available}", httpContext is not null);
+
         if (httpContext?.Request.Headers.Authorization.Count > 0)
         {
             var authHeader = httpContext.Request.Headers.Authorization.ToString();
+            _logger.LogDebug("Forwarding Authorization header: {Header}", authHeader?.Substring(0, Math.Min(20, authHeader?.Length ?? 0)) + "...");
+
             if (AuthenticationHeaderValue.TryParse(authHeader, out var parsed))
             {
                 request.Headers.Authorization = parsed;
             }
+            else
+            {
+                _logger.LogWarning("Failed to parse Authorization header: {Header}", authHeader);
+            }
+        }
+        else
+        {
+            _logger.LogDebug("No Authorization header to forward. Count: {Count}", httpContext?.Request.Headers.Authorization.Count ?? -1);
         }
     }
 
