@@ -5,5 +5,6 @@
   <Project Path="Api.ToMcp.Runtime/Api.ToMcp.Runtime.csproj" />
   <Folder Name="/Tests/">
     <Project Path="../tests/Api.ToMcp.Generator.Tests/Api.ToMcp.Generator.Tests.csproj" />
+    <Project Path="../tests/Api.ToMcp.Runtime.Tests/Api.ToMcp.Runtime.Tests.csproj" />
   </Folder>
 </Solution>
