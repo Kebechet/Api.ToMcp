@@ -22,8 +22,8 @@
     <DebugType>embedded</DebugType>
     <PackageIcon>icon.png</PackageIcon>
     <PackageTags>mcp;model-context-protocol;source-generator;aspnetcore;api;claude;ai</PackageTags>
-    <Version>1.0.0</Version>
-    <PackageReleaseNotes>Initial release</PackageReleaseNotes>
+    <Version>1.0.1</Version>
+    <PackageReleaseNotes>Add all missing .NET value types (unsigned integers, native integers, extended numeric types)</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

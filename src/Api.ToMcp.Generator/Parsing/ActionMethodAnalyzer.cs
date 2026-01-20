@@ -123,6 +123,14 @@ namespace Api.ToMcp.Generator.Parsing
                 if (param.Type.ToDisplayString() == "System.Threading.CancellationToken")
                     continue;
 
+                var properties = ImmutableArray<PropertyInfoModel>.Empty;
+
+                // Extract properties from complex types with [FromRoute] or [FromBody]
+                if ((source == ParameterSourceModel.Route || source == ParameterSourceModel.Body) && IsComplexType(param.Type))
+                {
+                    properties = ExtractProperties(param.Type);
+                }
+
                 builder.Add(new ParameterInfoModel
                 {
                     Name = param.Name,
@@ -131,7 +139,35 @@ namespace Api.ToMcp.Generator.Parsing
                                  param.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
-                    Source = source
+                    Source = source,
+                    Properties = properties
+                });
+            }
+
+            return builder.ToImmutable();
+        }
+
+        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type)
+        {
+            var builder = ImmutableArray.CreateBuilder<PropertyInfoModel>();
+
+            foreach (var member in type.GetMembers())
+            {
+                if (!(member is IPropertySymbol property))
+                    continue;
+
+                if (property.DeclaredAccessibility != Accessibility.Public)
+                    continue;
+
+                if (property.GetMethod == null)
+                    continue;
+
+                builder.Add(new PropertyInfoModel
+                {
+                    Name = property.Name,
+                    Type = property.Type.ToDisplayString(),
+                    IsNullable = property.Type.NullableAnnotation == NullableAnnotation.Annotated ||
+                                 property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T
                 });
             }
 

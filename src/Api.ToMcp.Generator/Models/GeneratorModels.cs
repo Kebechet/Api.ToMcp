@@ -62,6 +62,14 @@ namespace Api.ToMcp.Generator.Models
         public bool HasDefaultValue { get; set; }
         public object? DefaultValue { get; set; }
         public ParameterSourceModel Source { get; set; }
+        public ImmutableArray<PropertyInfoModel> Properties { get; set; } = ImmutableArray<PropertyInfoModel>.Empty;
+    }
+
+    internal sealed class PropertyInfoModel
+    {
+        public string Name { get; set; } = "";
+        public string Type { get; set; } = "";
+        public bool IsNullable { get; set; }
     }
 
     internal enum ParameterSourceModel

@@ -135,14 +135,55 @@ public class ToolClassEmitterTests
     [InlineData("System.Int32", true)]
     [InlineData("long", true)]
     [InlineData("System.Int64", true)]
+    [InlineData("short", true)]
+    [InlineData("System.Int16", true)]
+    [InlineData("byte", true)]
+    [InlineData("System.Byte", true)]
+    [InlineData("sbyte", true)]
+    [InlineData("SByte", true)]
+    [InlineData("System.SByte", true)]
+    [InlineData("ushort", true)]
+    [InlineData("UInt16", true)]
+    [InlineData("System.UInt16", true)]
+    [InlineData("uint", true)]
+    [InlineData("UInt32", true)]
+    [InlineData("System.UInt32", true)]
+    [InlineData("ulong", true)]
+    [InlineData("UInt64", true)]
+    [InlineData("System.UInt64", true)]
+    [InlineData("nint", true)]
+    [InlineData("IntPtr", true)]
+    [InlineData("System.IntPtr", true)]
+    [InlineData("nuint", true)]
+    [InlineData("UIntPtr", true)]
+    [InlineData("System.UIntPtr", true)]
     [InlineData("bool", true)]
     [InlineData("System.Boolean", true)]
     [InlineData("double", true)]
     [InlineData("decimal", true)]
+    [InlineData("float", true)]
+    [InlineData("Single", true)]
+    [InlineData("System.Single", true)]
+    [InlineData("Half", true)]
+    [InlineData("System.Half", true)]
+    [InlineData("Int128", true)]
+    [InlineData("System.Int128", true)]
+    [InlineData("UInt128", true)]
+    [InlineData("System.UInt128", true)]
+    [InlineData("char", true)]
+    [InlineData("System.Char", true)]
     [InlineData("Guid", true)]
     [InlineData("System.Guid", true)]
     [InlineData("DateTime", true)]
     [InlineData("System.DateTime", true)]
+    [InlineData("DateTimeOffset", true)]
+    [InlineData("System.DateTimeOffset", true)]
+    [InlineData("TimeSpan", true)]
+    [InlineData("System.TimeSpan", true)]
+    [InlineData("DateOnly", true)]
+    [InlineData("System.DateOnly", true)]
+    [InlineData("TimeOnly", true)]
+    [InlineData("System.TimeOnly", true)]
     [InlineData("string", false)]
     [InlineData("String", false)]
     [InlineData("System.String", false)]
@@ -163,6 +204,28 @@ public class ToolClassEmitterTests
     [InlineData("int", false)]
     [InlineData("System.Guid", false)]
     [InlineData("int?", false)]
+    [InlineData("DateOnly", false)]
+    [InlineData("System.DateOnly", false)]
+    [InlineData("TimeOnly", false)]
+    [InlineData("System.TimeOnly", false)]
+    [InlineData("sbyte", false)]
+    [InlineData("System.SByte", false)]
+    [InlineData("ushort", false)]
+    [InlineData("System.UInt16", false)]
+    [InlineData("uint", false)]
+    [InlineData("System.UInt32", false)]
+    [InlineData("ulong", false)]
+    [InlineData("System.UInt64", false)]
+    [InlineData("nint", false)]
+    [InlineData("System.IntPtr", false)]
+    [InlineData("nuint", false)]
+    [InlineData("System.UIntPtr", false)]
+    [InlineData("Half", false)]
+    [InlineData("System.Half", false)]
+    [InlineData("Int128", false)]
+    [InlineData("System.Int128", false)]
+    [InlineData("UInt128", false)]
+    [InlineData("System.UInt128", false)]
     [InlineData("CreateProductRequest", true)]
     [InlineData("List<string>", true)]
     [InlineData("MyNamespace.MyModel", true)]
@@ -908,6 +971,239 @@ public class ToolClassEmitterTests
             Parameters = ImmutableArray<ParameterInfoModel>.Empty,
             RequiredScope = McpScopeModel.Read
         };
+    }
+
+    #endregion
+
+    #region DateOnly/TimeOnly Value Type Tests
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForDateOnlyRouteParameter()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetByDate",
+            ControllerName = "ReportsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/reports/{date}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "date",
+                Type = "System.DateOnly",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var routedate = System.Uri.EscapeDataString(date.ToString());", result);
+        Assert.DoesNotContain("date?.ToString()", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForTimeOnlyRouteParameter()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetByTime",
+            ControllerName = "ScheduleController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/schedule/{time}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "time",
+                Type = "System.TimeOnly",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var routetime = System.Uri.EscapeDataString(time.ToString());", result);
+        Assert.DoesNotContain("time?.ToString()", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForNullableDateOnlyRouteParameter()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetByDate",
+            ControllerName = "ReportsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/reports/{date?}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "date",
+                Type = "System.DateOnly?",
+                Source = ParameterSourceModel.Route,
+                IsNullable = true
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("date?.ToString() ?? string.Empty", result);
+    }
+
+    #endregion
+
+    #region Complex Type Route Placeholder Tests
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForRouteFromComplexTypeProperty()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "SaveValues",
+            ControllerName = "MeasurementController",
+            HttpMethod = "POST",
+            RouteTemplate = "/api/measurement/{measurementTypeId}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "request",
+                Type = "MeasurementValuesRequest",
+                Source = ParameterSourceModel.Body,
+                IsNullable = false,
+                Properties = ImmutableArray.Create(
+                    new PropertyInfoModel { Name = "MeasurementTypeId", Type = "System.Guid", IsNullable = false },
+                    new PropertyInfoModel { Name = "Value", Type = "decimal", IsNullable = false }
+                )
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var routerequest_MeasurementTypeId = System.Uri.EscapeDataString(request.MeasurementTypeId.ToString());", result);
+        Assert.Contains("{routerequest_MeasurementTypeId}", result);
+        Assert.DoesNotContain("{measurementTypeId}", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForMultipleRouteParamsFromComplexType()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetExercise",
+            ControllerName = "ExerciseController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/exercises/{exerciseId}/sets/{setId}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "request",
+                Type = "ExerciseSetRequest",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false,
+                Properties = ImmutableArray.Create(
+                    new PropertyInfoModel { Name = "ExerciseId", Type = "int", IsNullable = false },
+                    new PropertyInfoModel { Name = "SetId", Type = "int", IsNullable = false }
+                )
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("request.ExerciseId.ToString()", result);
+        Assert.Contains("request.SetId.ToString()", result);
+    }
+
+    [Fact]
+    public void Emit_MixesDirectParamsAndComplexTypeProperties()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "UpdateItem",
+            ControllerName = "OrderController",
+            HttpMethod = "PUT",
+            RouteTemplate = "/api/orders/{orderId}/items/{itemId}",
+            Parameters = ImmutableArray.Create(
+                new ParameterInfoModel
+                {
+                    Name = "orderId",
+                    Type = "System.Guid",
+                    Source = ParameterSourceModel.Route,
+                    IsNullable = false
+                },
+                new ParameterInfoModel
+                {
+                    Name = "request",
+                    Type = "UpdateItemRequest",
+                    Source = ParameterSourceModel.Body,
+                    IsNullable = false,
+                    Properties = ImmutableArray.Create(
+                        new PropertyInfoModel { Name = "ItemId", Type = "int", IsNullable = false },
+                        new PropertyInfoModel { Name = "Quantity", Type = "int", IsNullable = false }
+                    )
+                })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var routeorderId = System.Uri.EscapeDataString(orderId.ToString());", result);
+        Assert.Contains("request.ItemId.ToString()", result);
+    }
+
+    [Fact]
+    public void Emit_HandlesNullablePropertyFromComplexType()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetData",
+            ControllerName = "DataController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/data/{categoryId}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "filter",
+                Type = "DataFilter",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false,
+                Properties = ImmutableArray.Create(
+                    new PropertyInfoModel { Name = "CategoryId", Type = "int?", IsNullable = true }
+                )
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("filter.CategoryId?.ToString() ?? string.Empty", result);
+    }
+
+    [Fact]
+    public void Emit_CaseInsensitiveMatchForRoutePlaceholder()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetById",
+            ControllerName = "ItemController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/items/{ItemId}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "request",
+                Type = "ItemRequest",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false,
+                Properties = ImmutableArray.Create(
+                    new PropertyInfoModel { Name = "itemId", Type = "int", IsNullable = false }
+                )
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("request.itemId.ToString()", result);
+        Assert.DoesNotContain("{ItemId}", result);
     }
 
     #endregion

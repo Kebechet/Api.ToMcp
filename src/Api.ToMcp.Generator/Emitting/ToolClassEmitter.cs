@@ -83,22 +83,74 @@ namespace Api.ToMcp.Generator.Emitting
         {
             var route = action.RouteTemplate;
 
-            // Find route parameters (parameters that appear in the route template)
-            // Need to check for both {name} and {name:constraint} patterns
-            var routeParams = parameters.Where(p =>
-                p.Source == ParameterSourceModel.Route ||
-                (p.Source == ParameterSourceModel.Auto && RouteContainsParameter(route, p.Name))).ToList();
+            // Extract all route placeholders from the template
+            var placeholderRegex = new System.Text.RegularExpressions.Regex(@"\{(\w+)(:[^}]+)?\??\}");
+            var matches = placeholderRegex.Matches(route);
+            var routePlaceholders = matches.Cast<System.Text.RegularExpressions.Match>()
+                .Select(m => m.Groups[1].Value)
+                .Distinct()
+                .ToList();
 
-            foreach (var param in routeParams)
+            // Build mapping from placeholder to source expression
+            var placeholderSources = new Dictionary<string, (string expression, string type, bool isNullable, string varName)>();
+
+            foreach (var placeholder in routePlaceholders)
             {
-                // Value types can't be null, so don't use null-conditional operator
-                var toStringExpr = IsValueType(param.Type) && !param.IsNullable
-                    ? $"{param.Name}.ToString()"
-                    : $"{param.Name}?.ToString() ?? string.Empty";
-                sb.AppendLine($"            var route{param.Name} = System.Uri.EscapeDataString({toStringExpr});");
+                // Check if direct parameter match (case-insensitive)
+                var directParam = parameters.FirstOrDefault(p =>
+                    string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase));
+
+                if (directParam != null)
+                {
+                    placeholderSources[placeholder] = (directParam.Name, directParam.Type, directParam.IsNullable, directParam.Name);
+                }
+                else
+                {
+                    // Check complex types (FromRoute or Body) for matching property
+                    var complexParam = parameters.FirstOrDefault(p =>
+                        (p.Source == ParameterSourceModel.Route || p.Source == ParameterSourceModel.Body) &&
+                        IsComplexType(p.Type) &&
+                        p.Properties.Any(prop => string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase)));
+
+                    if (complexParam != null)
+                    {
+                        var matchingProperty = complexParam.Properties.First(prop =>
+                            string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase));
+
+                        var varName = $"{complexParam.Name}_{matchingProperty.Name}";
+                        placeholderSources[placeholder] = (
+                            $"{complexParam.Name}.{matchingProperty.Name}",
+                            matchingProperty.Type,
+                            matchingProperty.IsNullable,
+                            varName);
+                    }
+                }
             }
 
-            sb.AppendLine($"            var route = $\"{ConvertRouteTemplate(route, routeParams)}\";");
+            // Generate route variables
+            foreach (var kvp in placeholderSources)
+            {
+                var placeholder = kvp.Key;
+                var (expression, type, isNullable, varName) = kvp.Value;
+
+                var toStringExpr = IsValueType(type) && !isNullable
+                    ? $"{expression}.ToString()"
+                    : $"{expression}?.ToString() ?? string.Empty";
+                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({toStringExpr});");
+            }
+
+            // Convert route template - replace placeholders with generated variable names
+            var convertedRoute = route;
+            foreach (var kvp in placeholderSources)
+            {
+                var placeholder = kvp.Key;
+                var varName = kvp.Value.varName;
+                var pattern = @"\{" + placeholder + @"(:[^}]+)?\??\}";
+                convertedRoute = System.Text.RegularExpressions.Regex.Replace(
+                    convertedRoute, pattern, "{route" + varName + "}",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            }
+            sb.AppendLine($"            var route = $\"{convertedRoute}\";");
 
             // Build query string
             var queryParams = parameters.Where(p =>
@@ -335,15 +387,26 @@ namespace Api.ToMcp.Generator.Emitting
                 "long", "Int64", "System.Int64",
                 "short", "Int16", "System.Int16",
                 "byte", "Byte", "System.Byte",
+                "sbyte", "SByte", "System.SByte",
+                "ushort", "UInt16", "System.UInt16",
+                "uint", "UInt32", "System.UInt32",
+                "ulong", "UInt64", "System.UInt64",
+                "nint", "IntPtr", "System.IntPtr",
+                "nuint", "UIntPtr", "System.UIntPtr",
                 "bool", "Boolean", "System.Boolean",
                 "double", "Double", "System.Double",
                 "float", "Single", "System.Single",
                 "decimal", "Decimal", "System.Decimal",
+                "Half", "System.Half",
+                "Int128", "System.Int128",
+                "UInt128", "System.UInt128",
                 "char", "Char", "System.Char",
                 "DateTime", "System.DateTime",
                 "DateTimeOffset", "System.DateTimeOffset",
                 "TimeSpan", "System.TimeSpan",
-                "Guid", "System.Guid"
+                "Guid", "System.Guid",
+                "DateOnly", "System.DateOnly",
+                "TimeOnly", "System.TimeOnly"
             };
             return valueTypes.Any(t => typeName == t || typeName.EndsWith("." + t));
         }
@@ -357,15 +420,26 @@ namespace Api.ToMcp.Generator.Emitting
                 "long", "Int64", "System.Int64",
                 "short", "Int16", "System.Int16",
                 "byte", "Byte", "System.Byte",
+                "sbyte", "SByte", "System.SByte",
+                "ushort", "UInt16", "System.UInt16",
+                "uint", "UInt32", "System.UInt32",
+                "ulong", "UInt64", "System.UInt64",
+                "nint", "IntPtr", "System.IntPtr",
+                "nuint", "UIntPtr", "System.UIntPtr",
                 "bool", "Boolean", "System.Boolean",
                 "double", "Double", "System.Double",
                 "float", "Single", "System.Single",
                 "decimal", "Decimal", "System.Decimal",
+                "Half", "System.Half",
+                "Int128", "System.Int128",
+                "UInt128", "System.UInt128",
                 "char", "Char", "System.Char",
                 "DateTime", "System.DateTime",
                 "DateTimeOffset", "System.DateTimeOffset",
                 "TimeSpan", "System.TimeSpan",
-                "Guid", "System.Guid"
+                "Guid", "System.Guid",
+                "DateOnly", "System.DateOnly",
+                "TimeOnly", "System.TimeOnly"
             };
             return !primitives.Any(t => typeName == t || typeName.EndsWith("." + t) || typeName.EndsWith("?"));
         }
