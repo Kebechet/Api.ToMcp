@@ -46,10 +46,6 @@ namespace Api.ToMcp.Generator.Parsing
                 if (httpInfo == null)
                     continue;
 
-                // v1: Only support GET and POST
-                if (httpInfo.Value.Method != "GET" && httpInfo.Value.Method != "POST")
-                    continue;
-
                 var parameters = AnalyzeParameters(method, httpInfo.Value.Method);
                 var returnType = AnalyzeReturnType(method);
 
@@ -82,7 +78,8 @@ namespace Api.ToMcp.Generator.Parsing
                     HasMcpIgnoreAttribute = ControllerScanner.HasAttribute(method, McpIgnoreAttributeFullName),
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
-                    CustomDescription = customDescription
+                    CustomDescription = customDescription,
+                    RequiredScope = GetRequiredScope(httpInfo.Value.Method)
                 });
             }
 
@@ -164,7 +161,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             // Auto-infer based on HTTP method and type
-            if (httpMethod == "POST" && IsComplexType(param.Type))
+            if ((httpMethod == "POST" || httpMethod == "PUT" || httpMethod == "PATCH") && IsComplexType(param.Type))
                 return ParameterSourceModel.Body;
 
             return ParameterSourceModel.Auto;
@@ -272,6 +269,36 @@ namespace Api.ToMcp.Generator.Parsing
                 return summary;
             }
             return null;
+        }
+
+        private static McpScopeModel GetRequiredScope(string httpMethod)
+        {
+            switch (httpMethod.ToUpperInvariant())
+            {
+                // Safe methods - read-only, no server state modification
+                case "GET":
+                    return McpScopeModel.Read;
+                case "HEAD":
+                    return McpScopeModel.Read;
+                case "OPTIONS":
+                    return McpScopeModel.Read;
+
+                // State-modifying methods - create or update resources
+                case "POST":
+                    return McpScopeModel.Write;
+                case "PUT":
+                    return McpScopeModel.Write;
+                case "PATCH":
+                    return McpScopeModel.Write;
+
+                // Destructive method - separate from Write for fine-grained permission control
+                case "DELETE":
+                    return McpScopeModel.Delete;
+
+                // Unknown methods default to Read (principle of least privilege)
+                default:
+                    return McpScopeModel.Read;
+            }
         }
     }
 }

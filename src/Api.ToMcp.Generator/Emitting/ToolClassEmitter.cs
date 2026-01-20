@@ -24,6 +24,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using ModelContextProtocol.Server;");
             sb.AppendLine("using Api.ToMcp.Runtime;");
+            sb.AppendLine("using Api.ToMcp.Abstractions.Scopes;");
             sb.AppendLine();
             sb.AppendLine("namespace Api.ToMcp.Generated");
             sb.AppendLine("{");
@@ -132,6 +133,9 @@ namespace Api.ToMcp.Generator.Emitting
             List<ParameterInfoModel> parameters)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
+            var scopeName = action.RequiredScope.ToString();
+
+            sb.AppendLine($"            await invoker.BeforeInvokeAsync(McpScope.{scopeName});");
 
             if (action.HttpMethod == "GET")
             {
@@ -148,6 +152,34 @@ namespace Api.ToMcp.Generator.Emitting
                 {
                     sb.AppendLine("            var response = await invoker.PostAsync(route, null);");
                 }
+            }
+            else if (action.HttpMethod == "PUT")
+            {
+                if (bodyParam != null)
+                {
+                    sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
+                    sb.AppendLine("            var response = await invoker.PutAsync(route, bodyJson);");
+                }
+                else
+                {
+                    sb.AppendLine("            var response = await invoker.PutAsync(route, null);");
+                }
+            }
+            else if (action.HttpMethod == "PATCH")
+            {
+                if (bodyParam != null)
+                {
+                    sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
+                    sb.AppendLine("            var response = await invoker.PatchAsync(route, bodyJson);");
+                }
+                else
+                {
+                    sb.AppendLine("            var response = await invoker.PatchAsync(route, null);");
+                }
+            }
+            else if (action.HttpMethod == "DELETE")
+            {
+                sb.AppendLine("            var response = await invoker.DeleteAsync(route);");
             }
 
             sb.AppendLine("            return response;");

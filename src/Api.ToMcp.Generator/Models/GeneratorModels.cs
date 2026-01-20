@@ -49,6 +49,7 @@ namespace Api.ToMcp.Generator.Models
         public string? XmlDocSummary { get; set; }
         public string? CustomToolName { get; set; }
         public string? CustomDescription { get; set; }
+        public McpScopeModel RequiredScope { get; set; } = McpScopeModel.Read;
 
         public string ToolClassName => $"{ControllerName}_{Name}Tool";
     }

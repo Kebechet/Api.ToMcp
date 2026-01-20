@@ -415,4 +415,334 @@ public class ToolClassEmitterTests
     }
 
     #endregion
+
+    #region PUT Method Tests
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForPutWithBody()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Update",
+            ControllerName = "ProductsController",
+            HttpMethod = "PUT",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray.Create(
+                new ParameterInfoModel
+                {
+                    Name = "id",
+                    Type = "System.Guid",
+                    Source = ParameterSourceModel.Route,
+                    IsNullable = false
+                },
+                new ParameterInfoModel
+                {
+                    Name = "request",
+                    Type = "UpdateProductRequest",
+                    Source = ParameterSourceModel.Body,
+                    IsNullable = false
+                }),
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(request);", result);
+        Assert.Contains("var response = await invoker.PutAsync(route, bodyJson);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForPutWithoutBody()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Activate",
+            ControllerName = "ProductsController",
+            HttpMethod = "PUT",
+            RouteTemplate = "/api/products/{id}/activate",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "id",
+                Type = "System.Guid",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false
+            }),
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var response = await invoker.PutAsync(route, null);", result);
+    }
+
+    #endregion
+
+    #region PATCH Method Tests
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForPatchWithBody()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "PartialUpdate",
+            ControllerName = "ProductsController",
+            HttpMethod = "PATCH",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray.Create(
+                new ParameterInfoModel
+                {
+                    Name = "id",
+                    Type = "System.Guid",
+                    Source = ParameterSourceModel.Route,
+                    IsNullable = false
+                },
+                new ParameterInfoModel
+                {
+                    Name = "patchDoc",
+                    Type = "JsonPatchDocument",
+                    Source = ParameterSourceModel.Body,
+                    IsNullable = false
+                }),
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(patchDoc);", result);
+        Assert.Contains("var response = await invoker.PatchAsync(route, bodyJson);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForPatchWithoutBody()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Touch",
+            ControllerName = "ProductsController",
+            HttpMethod = "PATCH",
+            RouteTemplate = "/api/products/{id}/touch",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "id",
+                Type = "int",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false
+            }),
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var response = await invoker.PatchAsync(route, null);", result);
+    }
+
+    #endregion
+
+    #region DELETE Method Tests
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForDelete()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Delete",
+            ControllerName = "ProductsController",
+            HttpMethod = "DELETE",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "id",
+                Type = "System.Guid",
+                Source = ParameterSourceModel.Route,
+                IsNullable = false
+            }),
+            RequiredScope = McpScopeModel.Delete
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var response = await invoker.DeleteAsync(route);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesCorrectCodeForDeleteWithMultipleRouteParams()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "DeleteItem",
+            ControllerName = "OrdersController",
+            HttpMethod = "DELETE",
+            RouteTemplate = "/api/orders/{orderId}/items/{itemId}",
+            Parameters = ImmutableArray.Create(
+                new ParameterInfoModel
+                {
+                    Name = "orderId",
+                    Type = "int",
+                    Source = ParameterSourceModel.Route,
+                    IsNullable = false
+                },
+                new ParameterInfoModel
+                {
+                    Name = "itemId",
+                    Type = "int",
+                    Source = ParameterSourceModel.Route,
+                    IsNullable = false
+                }),
+            RequiredScope = McpScopeModel.Delete
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("var routeorderId = System.Uri.EscapeDataString(orderId.ToString());", result);
+        Assert.Contains("var routeitemId = System.Uri.EscapeDataString(itemId.ToString());", result);
+        Assert.Contains("var response = await invoker.DeleteAsync(route);", result);
+    }
+
+    #endregion
+
+    #region Scope-Related Tests
+
+    [Fact]
+    public void Emit_GeneratesBeforeInvokeAsyncForGetMethod()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetAll",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Read);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesBeforeInvokeAsyncForPostMethod()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Create",
+            ControllerName = "ProductsController",
+            HttpMethod = "POST",
+            RouteTemplate = "/api/products",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesBeforeInvokeAsyncForPutMethod()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Update",
+            ControllerName = "ProductsController",
+            HttpMethod = "PUT",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesBeforeInvokeAsyncForPatchMethod()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "PartialUpdate",
+            ControllerName = "ProductsController",
+            HttpMethod = "PATCH",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Write
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write);", result);
+    }
+
+    [Fact]
+    public void Emit_GeneratesBeforeInvokeAsyncForDeleteMethod()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Delete",
+            ControllerName = "ProductsController",
+            HttpMethod = "DELETE",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Delete
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Delete);", result);
+    }
+
+    [Fact]
+    public void Emit_IncludesScopeNamespaceUsing()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetAll",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains("using Api.ToMcp.Abstractions.Scopes;", result);
+    }
+
+    [Fact]
+    public void Emit_BeforeInvokeAsyncComesBeforeHttpCall()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetAll",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        var beforeInvokeIndex = result.IndexOf("BeforeInvokeAsync");
+        var getAsyncIndex = result.IndexOf("GetAsync");
+
+        Assert.True(beforeInvokeIndex < getAsyncIndex, "BeforeInvokeAsync should come before GetAsync");
+    }
+
+    #endregion
 }

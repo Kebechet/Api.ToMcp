@@ -147,6 +147,56 @@ Forces an endpoint to be excluded from MCP exposure.
 public Task<ActionResult> Delete(Guid id) { ... }
 ```
 
+## Scope-Based Access Control
+
+Api.ToMcp supports optional scope-based access control for MCP tools. Scopes are mapped from HTTP methods:
+
+| Scope  | HTTP Methods       |
+|--------|-------------------|
+| Read   | GET, HEAD, OPTIONS |
+| Write  | POST, PUT, PATCH   |
+| Delete | DELETE             |
+
+### Default Behavior
+
+By default, **no scope checking is performed** - all generated tools are accessible.
+
+### Enabling Scope Validation
+
+To enable scope validation, configure a claim-to-scope mapper:
+
+```csharp
+using Api.ToMcp.Abstractions.Scopes;
+
+builder.Services.AddMcpTools(Assembly.GetExecutingAssembly(), options =>
+{
+    options.ClaimName = "permissions"; // JWT claim name
+    options.ClaimToScopeMapper = claimValue =>
+    {
+        var scope = McpScope.None;
+        if (claimValue.Contains("read")) scope |= McpScope.Read;
+        if (claimValue.Contains("write")) scope |= McpScope.Write;
+        if (claimValue.Contains("delete")) scope |= McpScope.Delete;
+        return scope;
+    };
+});
+```
+
+### How It Works
+
+1. MCP request arrives with JWT containing claims
+2. The configured `ClaimName` is read from the user's claims
+3. `ClaimToScopeMapper` converts the claim value to `McpScope`
+4. If the tool's required scope (based on HTTP method) isn't granted, an error is returned
+
+### Example JWT Claim
+
+```json
+{ "permissions": "mcp:read mcp:write" }
+```
+
+This grants `Read` and `Write` scopes but not `Delete`.
+
 ## How It Works
 
 1. **Compile Time**: The source generator scans your controllers for HTTP actions

@@ -1,9 +1,11 @@
 using System.Net;
 using System.Text.Json;
 using Api.ToMcp.Runtime;
+using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using Moq;
 using Moq.Protected;
@@ -20,6 +22,7 @@ public class McpHttpInvokerTests
     private readonly Mock<IHttpContextAccessor> _httpContextAccessorMock;
     private readonly Mock<ILogger<McpHttpInvoker>> _loggerMock;
     private readonly Mock<HttpMessageHandler> _httpMessageHandlerMock;
+    private readonly Mock<IOptions<McpScopeOptions>> _scopeOptionsMock;
 
     public McpHttpInvokerTests()
     {
@@ -29,6 +32,9 @@ public class McpHttpInvokerTests
         _httpContextAccessorMock = new Mock<IHttpContextAccessor>();
         _loggerMock = new Mock<ILogger<McpHttpInvoker>>();
         _httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        _scopeOptionsMock = new Mock<IOptions<McpScopeOptions>>();
+        _scopeOptionsMock.Setup(x => x.Value).Returns(new McpScopeOptions());
     }
 
     private McpHttpInvoker CreateInvoker()
@@ -38,7 +44,8 @@ public class McpHttpInvokerTests
             httpClient,
             _baseUrlProviderMock.Object,
             _httpContextAccessorMock.Object,
-            _loggerMock.Object);
+            _loggerMock.Object,
+            _scopeOptionsMock.Object);
     }
 
     private void SetupHttpResponse(HttpStatusCode statusCode, string content, Action<HttpRequestMessage>? requestCallback = null)
@@ -517,6 +524,320 @@ public class McpHttpInvokerTests
         var body = errorResponse.RootElement.GetProperty("body").GetString();
 
         Assert.Equal(shortContent, body);
+    }
+
+    #endregion
+
+    #region PutAsync Tests
+
+    [Fact]
+    public async Task PutAsync_UsesHttpPutMethod()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PutAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(HttpMethod.Put, capturedRequest.Method);
+    }
+
+    [Fact]
+    public async Task PutAsync_SendsJsonBody_WhenProvided()
+    {
+        string? capturedContent = null;
+        string? capturedMediaType = null;
+
+        _httpMessageHandlerMock
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((request, _) =>
+            {
+                if (request.Content is not null)
+                {
+                    capturedContent = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    capturedMediaType = request.Content.Headers.ContentType?.MediaType;
+                }
+            })
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = new StringContent("response")
+            });
+
+        var jsonBody = """{"name": "updated"}""";
+        var invoker = CreateInvoker();
+        await invoker.PutAsync("/api/test/1", jsonBody);
+
+        Assert.NotNull(capturedContent);
+        Assert.Equal(jsonBody, capturedContent);
+        Assert.Equal("application/json", capturedMediaType);
+    }
+
+    [Fact]
+    public async Task PutAsync_NoBody_WhenJsonBodyNull()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PutAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Null(capturedRequest.Content);
+    }
+
+    [Fact]
+    public async Task PutAsync_AddsLoopPreventionHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PutAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.True(capturedRequest.Headers.Contains(LoopPreventionHeader));
+        Assert.Equal("true", capturedRequest.Headers.GetValues(LoopPreventionHeader).First());
+    }
+
+    [Fact]
+    public async Task PutAsync_BuildsCorrectUrl()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PutAsync("api/items/123", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal($"{BaseUrl}/api/items/123", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task PutAsync_ForwardsAuthorizationHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+        SetupHttpContext("Bearer put-token-xyz");
+
+        var invoker = CreateInvoker();
+        await invoker.PutAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Headers.Authorization);
+        Assert.Equal("Bearer", capturedRequest.Headers.Authorization.Scheme);
+        Assert.Equal("put-token-xyz", capturedRequest.Headers.Authorization.Parameter);
+    }
+
+    #endregion
+
+    #region PatchAsync Tests
+
+    [Fact]
+    public async Task PatchAsync_UsesHttpPatchMethod()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PatchAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(HttpMethod.Patch, capturedRequest.Method);
+    }
+
+    [Fact]
+    public async Task PatchAsync_SendsJsonBody_WhenProvided()
+    {
+        string? capturedContent = null;
+        string? capturedMediaType = null;
+
+        _httpMessageHandlerMock
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((request, _) =>
+            {
+                if (request.Content is not null)
+                {
+                    capturedContent = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    capturedMediaType = request.Content.Headers.ContentType?.MediaType;
+                }
+            })
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = new StringContent("response")
+            });
+
+        var jsonBody = """{"name": "patched"}""";
+        var invoker = CreateInvoker();
+        await invoker.PatchAsync("/api/test/1", jsonBody);
+
+        Assert.NotNull(capturedContent);
+        Assert.Equal(jsonBody, capturedContent);
+        Assert.Equal("application/json", capturedMediaType);
+    }
+
+    [Fact]
+    public async Task PatchAsync_NoBody_WhenJsonBodyNull()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PatchAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Null(capturedRequest.Content);
+    }
+
+    [Fact]
+    public async Task PatchAsync_AddsLoopPreventionHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PatchAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.True(capturedRequest.Headers.Contains(LoopPreventionHeader));
+        Assert.Equal("true", capturedRequest.Headers.GetValues(LoopPreventionHeader).First());
+    }
+
+    [Fact]
+    public async Task PatchAsync_BuildsCorrectUrl()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.PatchAsync("api/items/456", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal($"{BaseUrl}/api/items/456", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task PatchAsync_ForwardsAuthorizationHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+        SetupHttpContext("Bearer patch-token-xyz");
+
+        var invoker = CreateInvoker();
+        await invoker.PatchAsync("/api/test/1", null);
+
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Headers.Authorization);
+        Assert.Equal("Bearer", capturedRequest.Headers.Authorization.Scheme);
+        Assert.Equal("patch-token-xyz", capturedRequest.Headers.Authorization.Parameter);
+    }
+
+    #endregion
+
+    #region DeleteAsync Tests
+
+    [Fact]
+    public async Task DeleteAsync_UsesHttpDeleteMethod()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.DeleteAsync("/api/test/1");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(HttpMethod.Delete, capturedRequest.Method);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_HasNoBody()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.DeleteAsync("/api/test/1");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Null(capturedRequest.Content);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_AddsLoopPreventionHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.DeleteAsync("/api/test/1");
+
+        Assert.NotNull(capturedRequest);
+        Assert.True(capturedRequest.Headers.Contains(LoopPreventionHeader));
+        Assert.Equal("true", capturedRequest.Headers.GetValues(LoopPreventionHeader).First());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_BuildsCorrectUrl()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.DeleteAsync("api/items/789");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal($"{BaseUrl}/api/items/789", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ForwardsAuthorizationHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+        SetupHttpContext("Bearer delete-token-xyz");
+
+        var invoker = CreateInvoker();
+        await invoker.DeleteAsync("/api/test/1");
+
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Headers.Authorization);
+        Assert.Equal("Bearer", capturedRequest.Headers.Authorization.Scheme);
+        Assert.Equal("delete-token-xyz", capturedRequest.Headers.Authorization.Parameter);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ReturnsContent_OnSuccess()
+    {
+        var expectedContent = """{"deleted": true}""";
+        SetupHttpResponse(HttpStatusCode.OK, expectedContent);
+
+        var invoker = CreateInvoker();
+        var result = await invoker.DeleteAsync("/api/test/1");
+
+        Assert.Equal(expectedContent, result);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ReturnsErrorJson_OnFailure()
+    {
+        SetupHttpResponse(HttpStatusCode.NotFound, "Resource not found");
+
+        var invoker = CreateInvoker();
+        var result = await invoker.DeleteAsync("/api/test/999");
+
+        var errorResponse = JsonDocument.Parse(result);
+        Assert.True(errorResponse.RootElement.GetProperty("error").GetBoolean());
+        Assert.Equal(404, errorResponse.RootElement.GetProperty("statusCode").GetInt32());
     }
 
     #endregion

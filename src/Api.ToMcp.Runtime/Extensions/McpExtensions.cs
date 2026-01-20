@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Api.ToMcp.Runtime.Middleware;
+using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 
 namespace Api.ToMcp.Runtime;
@@ -15,11 +16,25 @@ public static class McpExtensions
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
-    public static IServiceCollection AddMcpTools(this IServiceCollection services, Assembly toolAssembly)
+    /// <param name="configureScopeOptions">Optional configuration for scope-based access control. When null, all tools are accessible without scope validation.</param>
+    public static IServiceCollection AddMcpTools(
+        this IServiceCollection services,
+        Assembly toolAssembly,
+        Action<McpScopeOptions>? configureScopeOptions = null)
     {
         services.AddHttpContextAccessor();
         services.AddSingleton<ISelfBaseUrlProvider, DefaultBaseUrlProvider>();
         services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>();
+
+        // Configure scope options (default is no scope checking)
+        if (configureScopeOptions is not null)
+        {
+            services.Configure(configureScopeOptions);
+        }
+        else
+        {
+            services.Configure<McpScopeOptions>(_ => { });
+        }
 
         // Register the official MCP server with HTTP transport
         services.AddMcpServer()

@@ -1,7 +1,11 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
+using Api.ToMcp.Abstractions.Scopes;
+using Api.ToMcp.Runtime.Options;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Api.ToMcp.Runtime.Services;
 
@@ -14,17 +18,20 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private readonly ISelfBaseUrlProvider _baseUrlProvider;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<McpHttpInvoker> _logger;
+    private readonly McpScopeOptions _scopeOptions;
 
     public McpHttpInvoker(
         HttpClient httpClient,
         ISelfBaseUrlProvider baseUrlProvider,
         IHttpContextAccessor httpContextAccessor,
-        ILogger<McpHttpInvoker> logger)
+        ILogger<McpHttpInvoker> logger,
+        IOptions<McpScopeOptions> scopeOptions)
     {
         _httpClient = httpClient;
         _baseUrlProvider = baseUrlProvider;
         _httpContextAccessor = httpContextAccessor;
         _logger = logger;
+        _scopeOptions = scopeOptions.Value;
     }
 
     public async Task<string> GetAsync(string route, CancellationToken ct = default)
@@ -54,6 +61,83 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 
         var response = await _httpClient.SendAsync(request, ct);
         return await HandleResponse(response, ct);
+    }
+
+    public async Task<string> PutAsync(string route, string? jsonBody, CancellationToken ct = default)
+    {
+        var url = BuildUrl(route);
+        using var request = new HttpRequestMessage(HttpMethod.Put, url);
+        ConfigureRequest(request);
+
+        if (jsonBody is not null)
+        {
+            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+        }
+
+        _logger.LogDebug("MCP invoking PUT {Url}", url);
+
+        var response = await _httpClient.SendAsync(request, ct);
+        return await HandleResponse(response, ct);
+    }
+
+    public async Task<string> PatchAsync(string route, string? jsonBody, CancellationToken ct = default)
+    {
+        var url = BuildUrl(route);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url);
+        ConfigureRequest(request);
+
+        if (jsonBody is not null)
+        {
+            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+        }
+
+        _logger.LogDebug("MCP invoking PATCH {Url}", url);
+
+        var response = await _httpClient.SendAsync(request, ct);
+        return await HandleResponse(response, ct);
+    }
+
+    public async Task<string> DeleteAsync(string route, CancellationToken ct = default)
+    {
+        var url = BuildUrl(route);
+        using var request = new HttpRequestMessage(HttpMethod.Delete, url);
+        ConfigureRequest(request);
+
+        _logger.LogDebug("MCP invoking DELETE {Url}", url);
+
+        var response = await _httpClient.SendAsync(request, ct);
+        return await HandleResponse(response, ct);
+    }
+
+    public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default)
+    {
+        if (_scopeOptions.ClaimToScopeMapper is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var httpContext = _httpContextAccessor.HttpContext;
+        if (httpContext?.User?.Identity?.IsAuthenticated != true)
+        {
+            throw new UnauthorizedAccessException("User is not authenticated. Scope validation requires authentication.");
+        }
+
+        var claimValue = httpContext.User.FindFirst(_scopeOptions.ClaimName)?.Value;
+        if (string.IsNullOrEmpty(claimValue))
+        {
+            throw new UnauthorizedAccessException($"Claim '{_scopeOptions.ClaimName}' not found. Required scope: {requiredScope}");
+        }
+
+        var grantedScope = _scopeOptions.ClaimToScopeMapper(claimValue);
+
+        if ((grantedScope & requiredScope) != requiredScope)
+        {
+            throw new UnauthorizedAccessException($"Insufficient scope. Required: {requiredScope}, Granted: {grantedScope}");
+        }
+
+        _logger.LogDebug("Scope validation passed. Required: {Required}, Granted: {Granted}", requiredScope, grantedScope);
+
+        return Task.CompletedTask;
     }
 
     private string BuildUrl(string route)
