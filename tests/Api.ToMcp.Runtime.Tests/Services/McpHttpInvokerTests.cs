@@ -74,6 +74,18 @@ public class McpHttpInvokerTests
         _httpContextAccessorMock.Setup(x => x.HttpContext).Returns(httpContext);
     }
 
+    private void SetupHttpContextWithSchemeAndHost(string scheme, string host, string? authorizationHeader = null)
+    {
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Scheme = scheme;
+        httpContext.Request.Host = new HostString(host);
+        if (authorizationHeader is not null)
+        {
+            httpContext.Request.Headers.Authorization = authorizationHeader;
+        }
+        _httpContextAccessorMock.Setup(x => x.HttpContext).Returns(httpContext);
+    }
+
     #region GetAsync Tests
 
     [Fact]
@@ -838,6 +850,90 @@ public class McpHttpInvokerTests
         var errorResponse = JsonDocument.Parse(result);
         Assert.True(errorResponse.RootElement.GetProperty("error").GetBoolean());
         Assert.Equal(404, errorResponse.RootElement.GetProperty("statusCode").GetInt32());
+    }
+
+    #endregion
+
+    #region BuildUrl Reverse Proxy Override Tests
+
+    [Fact]
+    public async Task BuildUrl_OverridesHttpBaseUrl_WhenIncomingRequestIsHttps()
+    {
+        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
+        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
+
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.GetAsync("/api/changelog");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://api.satis.fit/api/changelog", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task BuildUrl_DoesNotOverride_WhenBaseUrlIsAlreadyHttps()
+    {
+        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("https://localhost:5100");
+        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
+
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.GetAsync("/api/changelog");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://localhost:5100/api/changelog", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task BuildUrl_DoesNotOverride_WhenIncomingRequestIsAlsoHttp()
+    {
+        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
+        SetupHttpContextWithSchemeAndHost("http", "localhost:8080");
+
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.GetAsync("/api/changelog");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task BuildUrl_DoesNotOverride_WhenHttpContextIsNull()
+    {
+        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
+        _httpContextAccessorMock.Setup(x => x.HttpContext).Returns((HttpContext?)null);
+
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.GetAsync("/api/changelog");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task BuildUrl_OverridesWithPortFromIncomingRequest()
+    {
+        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
+        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit:8443");
+
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = CreateInvoker();
+        await invoker.GetAsync("api/test");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://api.satis.fit:8443/api/test", capturedRequest.RequestUri?.ToString());
     }
 
     #endregion
