@@ -275,6 +275,9 @@ You rarely need to implement this yourself, but you can substitute it — for ex
 **Self-calls fail or redirect to HTTPS behind a reverse proxy.**
 - The invoker derives the correct `https://` base from the incoming request when the server only listens on HTTP, but the most reliable fix is to pin `McpTools:BaseUrl` explicitly.
 
+**`MissingMethodException` on `AddMcpTools` at startup** (e.g. `Method not found: '...McpServerServiceCollectionExtensions.AddMcpServer(...)'`).
+- Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.0.0-preview.1`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
+
 **Tool calls return `401`/`403`.**
 - Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim.
 - When scope validation is enabled, the request must be authenticated and the mapped scope must cover the tool's required scope (`Read`/`Write`/`Delete`).
@@ -310,6 +313,7 @@ public static class ProductsController_GetByIdTool
 
 - .NET 8.0 or later
 - ASP.NET Core with controller-based endpoints (see [Limitations](#limitations))
+- `ModelContextProtocol.AspNetCore` **`2.0.0-preview.1`** — this is a transitive dependency of the package. **Do not add a different version of any `ModelContextProtocol.*` package to your app.** The MCP SDK is in preview and makes breaking API changes between versions; a version mismatch causes a `MissingMethodException` at startup (see [Troubleshooting](#troubleshooting)). Either omit the reference entirely and let it flow transitively, or pin the exact same version.
 
 ## License
 
