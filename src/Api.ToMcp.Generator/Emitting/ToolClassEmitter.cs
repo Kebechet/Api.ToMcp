@@ -343,7 +343,10 @@ namespace Api.ToMcp.Generator.Emitting
                 defaultPart = " = null";
             }
 
-            var descAttr = $"[Description(\"Parameter: {param.Name}\")] ";
+            var description = string.IsNullOrEmpty(param.Description)
+                ? $"Parameter: {param.Name}"
+                : param.Description!;
+            var descAttr = $"[Description(\"{EscapeString(description)}\")] ";
             return $"{descAttr}{type} {param.Name}{defaultPart}";
         }
 

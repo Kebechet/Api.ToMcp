@@ -105,9 +105,53 @@ namespace TestApi
         Assert.DoesNotContain("ProductsController_GetAllTool", generated);
     }
 
+    [Fact]
+    public void Generator_UsesXmlDocSummaryForToolAndParamDescriptions()
+    {
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        /// <summary>Gets a product by id.</summary>
+        /// <param name=""id"">The product identifier.</param>
+        [HttpGet(""{id}"")]
+        public Task<string> GetById(Guid id) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("[Description(\"Gets a product by id.\")]", generated);
+        Assert.Contains("[Description(\"The product identifier.\")]", generated);
+    }
+
+    [Fact]
+    public void Generator_FallsBackToGenericParamDescription_WhenNoXmlDoc()
+    {
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public Task<string> GetById(Guid id) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("[Description(\"Parameter: id\")]", generated);
+    }
+
     private static string RunGenerator(string source, string generatorJson)
     {
-        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        // DocumentationMode.Parse makes XML doc comments available via GetDocumentationCommentXml,
+        // mirroring a consumer build with <GenerateDocumentationFile>true</GenerateDocumentationFile>.
+        var parseOptions = new CSharpParseOptions(documentationMode: DocumentationMode.Parse);
+        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
 
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)

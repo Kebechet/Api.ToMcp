@@ -120,6 +120,7 @@ namespace Api.ToMcp.Generator.Parsing
             string httpMethod)
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
+            var paramDocs = GetXmlDocParams(method);
 
             foreach (var param in method.Parameters)
             {
@@ -150,7 +151,8 @@ namespace Api.ToMcp.Generator.Parsing
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
                     Source = source,
-                    Properties = properties
+                    Properties = properties,
+                    Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null
                 });
             }
 
@@ -315,6 +317,30 @@ namespace Api.ToMcp.Generator.Parsing
                 return summary;
             }
             return null;
+        }
+
+        private static Dictionary<string, string> GetXmlDocParams(IMethodSymbol method)
+        {
+            var result = new Dictionary<string, string>();
+
+            var xml = method.GetDocumentationCommentXml();
+            if (string.IsNullOrEmpty(xml))
+                return result;
+
+            var matches = System.Text.RegularExpressions.Regex.Matches(
+                xml!, "<param name=\"([^\"]+)\">(.*?)</param>",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            foreach (System.Text.RegularExpressions.Match match in matches)
+            {
+                var name = match.Groups[1].Value;
+                var text = match.Groups[2].Value;
+                text = string.Join(" ", text.Split(new[] { '\r', '\n', ' ' }, StringSplitOptions.RemoveEmptyEntries));
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(text))
+                    result[name] = text;
+            }
+
+            return result;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)

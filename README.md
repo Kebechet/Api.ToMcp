@@ -133,10 +133,10 @@ public class ProductsController : ControllerBase
 
 ### `[McpExpose]`
 
-Forces an endpoint to be exposed as an MCP tool, regardless of configuration mode.
+Forces an endpoint to be exposed as an MCP tool, regardless of configuration mode. Use `ToolName` and `Description` to override the generated tool name and description.
 
 ```csharp
-[McpExpose(Name = "GetProduct", Description = "Retrieves a product by ID")]
+[McpExpose(ToolName = "GetProduct", Description = "Retrieves a product by ID")]
 public Task<Product> GetById(Guid id) { ... }
 ```
 
@@ -148,6 +148,31 @@ Forces an endpoint to be excluded from MCP exposure.
 [McpIgnore]
 public Task<ActionResult> Delete(Guid id) { ... }
 ```
+
+## Tool Descriptions
+
+Good descriptions matter for MCP — they're what the AI client reads to decide which tool to call and how to fill its arguments. Api.ToMcp pulls these from your existing XML doc comments automatically:
+
+- `<summary>` becomes the tool's description.
+- `<param name="...">` becomes that parameter's description.
+
+```csharp
+/// <summary>Gets a product by its unique identifier.</summary>
+/// <param name="id">The unique identifier of the product to retrieve.</param>
+[HttpGet("{id:guid}")]
+public Task<ActionResult<Product>> GetById(Guid id) { ... }
+```
+
+Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`).
+
+> **Requires XML documentation generation.** The source generator can only read doc comments when the compiler produces them. Enable it in the project that hosts your controllers, otherwise descriptions fall back to the generic values:
+>
+> ```xml
+> <PropertyGroup>
+>   <GenerateDocumentationFile>true</GenerateDocumentationFile>
+>   <NoWarn>$(NoWarn);CS1591</NoWarn> <!-- optional: silence "missing XML comment" warnings -->
+> </PropertyGroup>
+> ```
 
 ## Scope-Based Access Control
 

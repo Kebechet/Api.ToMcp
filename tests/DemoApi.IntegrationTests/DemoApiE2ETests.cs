@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Net;
 using System.Reflection;
 using Api.ToMcp.Runtime;
@@ -114,6 +115,23 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         var task = (Task<string>)invoke.Invoke(null, new object?[] { invoker, LaptopId, cts.Token })!;
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+    }
+
+    [Fact]
+    public void GeneratedTool_TakesDescriptions_FromXmlDocs_InRealBuild()
+    {
+        // Proves the real demo build (GenerateDocumentationFile=true) flows <summary>/<param>
+        // docs into the generated [Description] attributes, not the generic fallbacks.
+        var toolType = typeof(Program).Assembly
+            .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
+        var method = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
+
+        var toolDescription = method.GetCustomAttribute<DescriptionAttribute>()?.Description;
+        Assert.Equal("Gets a product by its unique identifier.", toolDescription);
+
+        var idParam = method.GetParameters().Single(p => p.Name == "id");
+        var paramDescription = idParam.GetCustomAttribute<DescriptionAttribute>()?.Description;
+        Assert.Equal("The unique identifier of the product to retrieve.", paramDescription);
     }
 
     private static string[] GetGeneratedToolTypeNames()

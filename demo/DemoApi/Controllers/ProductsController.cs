@@ -18,6 +18,7 @@ public class ProductsController : ControllerBase
     /// <summary>
     /// Gets all products with optional category filter.
     /// </summary>
+    /// <param name="category">Optional category name to filter products by.</param>
     [HttpGet]
     public Task<IEnumerable<Product>> GetAll([FromQuery] string? category = null)
     {
@@ -31,6 +32,7 @@ public class ProductsController : ControllerBase
     /// <summary>
     /// Gets a product by its unique identifier.
     /// </summary>
+    /// <param name="id">The unique identifier of the product to retrieve.</param>
     [HttpGet("{id:guid}")]
     public Task<ActionResult<Product>> GetById(Guid id)
     {
