@@ -84,11 +84,36 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
         var invoke = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
 
-        var task = (Task<string>)invoke.Invoke(null, new object?[] { invoker, LaptopId })!;
+        var task = (Task<string>)invoke.Invoke(null, new object?[] { invoker, LaptopId, CancellationToken.None })!;
         var json = await task;
 
         Assert.Contains("Laptop", json);
         Assert.Contains(LaptopId.ToString(), json);
+    }
+
+    [Fact]
+    public async Task GeneratedTool_PropagatesCancellation_ToTheHttpCall()
+    {
+        // A cancelled token must abort the call. If the generated tool dropped the token
+        // (passing default), this request would instead succeed and return data.
+        var client = _factory.CreateClient();
+        var invoker = new McpHttpInvoker(
+            client,
+            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
+            new HttpContextAccessor(),
+            NullLogger<McpHttpInvoker>.Instance,
+            Options.Create(new McpScopeOptions()));
+
+        var toolType = typeof(Program).Assembly
+            .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
+        var invoke = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var task = (Task<string>)invoke.Invoke(null, new object?[] { invoker, LaptopId, cts.Token })!;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
     }
 
     private static string[] GetGeneratedToolTypeNames()

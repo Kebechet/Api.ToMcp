@@ -449,8 +449,11 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        // Should not have trailing comma after invoker parameter when there are no other params
-        Assert.DoesNotContain("invoker,", result);
+        // The injected cancellation token is always the last parameter (so invoker is now
+        // followed by a comma), and there must be no dangling comma before the close paren.
+        Assert.Contains("IMcpHttpInvoker invoker,", result);
+        Assert.Contains("System.Threading.CancellationToken cancellationToken = default", result);
+        Assert.DoesNotContain("cancellationToken = default,", result);
     }
 
     [Fact]
@@ -475,7 +478,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(request);", result);
-        Assert.Contains("var response = await invoker.PostAsync(route, bodyJson);", result);
+        Assert.Contains("var response = await invoker.PostAsync(route, bodyJson, cancellationToken);", result);
     }
 
     #endregion
@@ -513,7 +516,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(request);", result);
-        Assert.Contains("var response = await invoker.PutAsync(route, bodyJson);", result);
+        Assert.Contains("var response = await invoker.PutAsync(route, bodyJson, cancellationToken);", result);
     }
 
     [Fact]
@@ -538,7 +541,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var response = await invoker.PutAsync(route, null);", result);
+        Assert.Contains("var response = await invoker.PutAsync(route, null, cancellationToken);", result);
     }
 
     #endregion
@@ -576,7 +579,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(patchDoc);", result);
-        Assert.Contains("var response = await invoker.PatchAsync(route, bodyJson);", result);
+        Assert.Contains("var response = await invoker.PatchAsync(route, bodyJson, cancellationToken);", result);
     }
 
     [Fact]
@@ -601,7 +604,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var response = await invoker.PatchAsync(route, null);", result);
+        Assert.Contains("var response = await invoker.PatchAsync(route, null, cancellationToken);", result);
     }
 
     #endregion
@@ -630,7 +633,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var response = await invoker.DeleteAsync(route);", result);
+        Assert.Contains("var response = await invoker.DeleteAsync(route, cancellationToken);", result);
     }
 
     [Fact]
@@ -665,7 +668,7 @@ public class ToolClassEmitterTests
 
         Assert.Contains("var routeorderId = System.Uri.EscapeDataString(orderId.ToString());", result);
         Assert.Contains("var routeitemId = System.Uri.EscapeDataString(itemId.ToString());", result);
-        Assert.Contains("var response = await invoker.DeleteAsync(route);", result);
+        Assert.Contains("var response = await invoker.DeleteAsync(route, cancellationToken);", result);
     }
 
     #endregion
@@ -688,7 +691,28 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Read);", result);
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);", result);
+    }
+
+    [Fact]
+    public void Emit_DeclaresInjectedCancellationTokenParameter_AndForwardsIt()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetAll",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            RequiredScope = McpScopeModel.Read
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        // The MCP server injects the token; it must be declared with a default and forwarded.
+        Assert.Contains("System.Threading.CancellationToken cancellationToken = default", result);
+        Assert.Contains("var response = await invoker.GetAsync(route, cancellationToken);", result);
     }
 
     [Fact]
@@ -707,7 +731,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write);", result);
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write, cancellationToken);", result);
     }
 
     [Fact]
@@ -726,7 +750,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write);", result);
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write, cancellationToken);", result);
     }
 
     [Fact]
@@ -745,7 +769,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write);", result);
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write, cancellationToken);", result);
     }
 
     [Fact]
@@ -764,7 +788,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Delete);", result);
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Delete, cancellationToken);", result);
     }
 
     [Fact]

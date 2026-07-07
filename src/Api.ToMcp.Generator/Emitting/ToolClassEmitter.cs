@@ -51,20 +51,22 @@ namespace Api.ToMcp.Generator.Emitting
                 .Where(p => p.Source != ParameterSourceModel.Services)
                 .ToList();
 
+            // The MCP server injects the request's CancellationToken into any tool method that
+            // declares one (bound by type, so it is not surfaced as a tool input parameter).
+            // Emitted last so its default value doesn't violate parameter ordering.
+            var paramDecls = new List<string> { "IMcpHttpInvoker invoker" };
+            paramDecls.AddRange(parameters.Select(FormatParameterDeclaration));
+            paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
+
             sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\")]");
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             sb.Append("        public static async Task<string> InvokeAsync(");
             sb.AppendLine();
 
-            var invokerComma = parameters.Count > 0 ? "," : "";
-            sb.AppendLine($"            IMcpHttpInvoker invoker{invokerComma}");
-
-            for (int i = 0; i < parameters.Count; i++)
+            for (int i = 0; i < paramDecls.Count; i++)
             {
-                var param = parameters[i];
-                var paramDecl = FormatParameterDeclaration(param);
-                var comma = i < parameters.Count - 1 ? "," : "";
-                sb.AppendLine($"            {paramDecl}{comma}");
+                var comma = i < paramDecls.Count - 1 ? "," : "";
+                sb.AppendLine($"            {paramDecls[i]}{comma}");
             }
 
             sb.AppendLine("        )");
@@ -188,22 +190,22 @@ namespace Api.ToMcp.Generator.Emitting
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
             var scopeName = action.RequiredScope.ToString();
 
-            sb.AppendLine($"            await invoker.BeforeInvokeAsync(McpScope.{scopeName});");
+            sb.AppendLine($"            await invoker.BeforeInvokeAsync(McpScope.{scopeName}, cancellationToken);");
 
             if (action.HttpMethod == "GET")
             {
-                sb.AppendLine("            var response = await invoker.GetAsync(route);");
+                sb.AppendLine("            var response = await invoker.GetAsync(route, cancellationToken);");
             }
             else if (action.HttpMethod == "POST")
             {
                 if (bodyParam != null)
                 {
                     sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            var response = await invoker.PostAsync(route, bodyJson);");
+                    sb.AppendLine("            var response = await invoker.PostAsync(route, bodyJson, cancellationToken);");
                 }
                 else
                 {
-                    sb.AppendLine("            var response = await invoker.PostAsync(route, null);");
+                    sb.AppendLine("            var response = await invoker.PostAsync(route, null, cancellationToken);");
                 }
             }
             else if (action.HttpMethod == "PUT")
@@ -211,11 +213,11 @@ namespace Api.ToMcp.Generator.Emitting
                 if (bodyParam != null)
                 {
                     sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            var response = await invoker.PutAsync(route, bodyJson);");
+                    sb.AppendLine("            var response = await invoker.PutAsync(route, bodyJson, cancellationToken);");
                 }
                 else
                 {
-                    sb.AppendLine("            var response = await invoker.PutAsync(route, null);");
+                    sb.AppendLine("            var response = await invoker.PutAsync(route, null, cancellationToken);");
                 }
             }
             else if (action.HttpMethod == "PATCH")
@@ -223,16 +225,16 @@ namespace Api.ToMcp.Generator.Emitting
                 if (bodyParam != null)
                 {
                     sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            var response = await invoker.PatchAsync(route, bodyJson);");
+                    sb.AppendLine("            var response = await invoker.PatchAsync(route, bodyJson, cancellationToken);");
                 }
                 else
                 {
-                    sb.AppendLine("            var response = await invoker.PatchAsync(route, null);");
+                    sb.AppendLine("            var response = await invoker.PatchAsync(route, null, cancellationToken);");
                 }
             }
             else if (action.HttpMethod == "DELETE")
             {
-                sb.AppendLine("            var response = await invoker.DeleteAsync(route);");
+                sb.AppendLine("            var response = await invoker.DeleteAsync(route, cancellationToken);");
             }
 
             sb.AppendLine("            return response;");

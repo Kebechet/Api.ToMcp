@@ -58,6 +58,8 @@ namespace TestApi
         Assert.Contains("public static class ProductsController_GetByIdTool", generated);
         Assert.Contains("$\"/api/products/{routeid}\"", generated);
         Assert.Contains("typeof(ProductsController_GetByIdTool)", generated);
+        Assert.Contains("System.Threading.CancellationToken cancellationToken = default", generated);
+        Assert.Contains("invoker.GetAsync(route, cancellationToken)", generated);
     }
 
     [Fact]
