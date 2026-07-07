@@ -422,7 +422,7 @@ public class McpHttpInvokerTests
             x => x.Log(
                 LogLevel.Warning,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((o, t) => o.ToString()!.Contains("Failed to parse Authorization header")),
+                It.Is<It.IsAnyType>((o, t) => o.ToString()!.Contains("Failed to parse incoming Authorization header")),
                 It.IsAny<Exception>(),
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.Once);
