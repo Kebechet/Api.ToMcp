@@ -286,6 +286,7 @@ You rarely need to implement this yourself, but you can substitute it — for ex
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
 - **Complex `[FromQuery]` objects are not flattened** into individual query parameters (only route- and body-bound complex types have their properties expanded).
 - **Tools return the raw response body as a string.** No typed output schema is emitted from the action's return type.
+- **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
 
 ## Troubleshooting
 

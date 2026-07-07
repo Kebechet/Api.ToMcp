@@ -33,6 +33,12 @@ namespace Microsoft.AspNetCore.Mvc
     public class HttpGetAttribute : Attribute { public HttpGetAttribute() { } public HttpGetAttribute(string template) { } }
     public class HttpPostAttribute : Attribute { public HttpPostAttribute() { } public HttpPostAttribute(string template) { } }
     public class RouteAttribute : Attribute { public RouteAttribute(string template) { } }
+    public class ApiVersionAttribute : Attribute
+    {
+        public ApiVersionAttribute(string version) { }
+        public ApiVersionAttribute(double version) { }
+        public ApiVersionAttribute(int major, int minor) { }
+    }
 }
 ";
 
@@ -144,6 +150,48 @@ namespace TestApi
         var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
 
         Assert.Contains("[Description(\"Parameter: id\")]", generated);
+    }
+
+    [Fact]
+    public void Generator_BakesApiVersion_FromControllerAttribute_IntoUrlSegmentRoute()
+    {
+        const string controller = @"
+namespace TestApi
+{
+    [ApiVersion(""2.0"")]
+    [Route(""api/v{version:apiVersion}/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public Task<string> GetById(Guid id) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("$\"/api/v2.0/products/{routeid}\"", generated);
+        Assert.DoesNotContain(":apiVersion", generated);
+        Assert.DoesNotContain("{version", generated);
+    }
+
+    [Fact]
+    public void Generator_DefaultsApiVersion_WhenPlaceholderPresentButNoAttribute()
+    {
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/v{version:apiVersion}/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet]
+        public Task<string> GetAll() => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("$\"/api/v1.0/products\"", generated);
+        Assert.DoesNotContain(":apiVersion", generated);
     }
 
     private static string RunGenerator(string source, string generatorJson)

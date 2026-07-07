@@ -50,6 +50,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var returnType = AnalyzeReturnType(method);
 
                 var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name);
+                fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
 
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
@@ -317,6 +318,47 @@ namespace Api.ToMcp.Generator.Parsing
                 return summary;
             }
             return null;
+        }
+
+        // ASP.NET Core URL-segment versioning uses an "apiVersion"-constrained placeholder
+        // (e.g. "api/v{version:apiVersion}/[controller]") whose value is supplied at runtime by
+        // the versioning middleware, not by an action parameter. Bake the concrete version from
+        // [ApiVersion] into the route so the generated tool targets a fixed version and compiles.
+        private static string ResolveApiVersionInRoute(string route, INamedTypeSymbol controller, IMethodSymbol method)
+        {
+            if (route.IndexOf(":apiVersion", StringComparison.OrdinalIgnoreCase) < 0)
+                return route;
+
+            var version = GetApiVersion(method) ?? GetApiVersion(controller) ?? "1.0";
+
+            return System.Text.RegularExpressions.Regex.Replace(
+                route, @"\{[^{}]*:apiVersion[^{}]*\}", version,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        private static string? GetApiVersion(ISymbol symbol)
+        {
+            var attribute = symbol.GetAttributes()
+                .LastOrDefault(a => a.AttributeClass?.Name == "ApiVersionAttribute");
+
+            if (attribute == null || attribute.ConstructorArguments.Length == 0)
+                return null;
+
+            var args = attribute.ConstructorArguments;
+
+            if (args.Length >= 2 && args[0].Value is int major && args[1].Value is int minor)
+                return $"{major}.{minor}";
+
+            var value = args[0].Value;
+            switch (value)
+            {
+                case string s:
+                    return s;
+                case double d:
+                    return d.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture);
+                default:
+                    return value?.ToString();
+            }
         }
 
         private static Dictionary<string, string> GetXmlDocParams(IMethodSymbol method)
