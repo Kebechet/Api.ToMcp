@@ -1,8 +1,8 @@
 using System.Net;
-using System.Text.Json;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
+using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -85,6 +85,8 @@ public class McpHttpInvokerTests
         }
         _httpContextAccessorMock.Setup(x => x.HttpContext).Returns(httpContext);
     }
+
+    private static string Text(CallToolResult result) => ((TextContentBlock)result.Content[0]).Text;
 
     #region GetAsync Tests
 
@@ -181,22 +183,21 @@ public class McpHttpInvokerTests
         var invoker = CreateInvoker();
         var result = await invoker.GetAsync("/api/test");
 
-        Assert.Equal(expectedContent, result);
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal(expectedContent, Text(result));
     }
 
     [Fact]
-    public async Task GetAsync_ReturnsErrorJson_OnFailure()
+    public async Task GetAsync_ReturnsIsError_OnFailure()
     {
         SetupHttpResponse(HttpStatusCode.BadRequest, "Bad Request Error");
 
         var invoker = CreateInvoker();
         var result = await invoker.GetAsync("/api/test");
 
-        var errorResponse = JsonDocument.Parse(result);
-        Assert.True(errorResponse.RootElement.GetProperty("error").GetBoolean());
-        Assert.Equal(400, errorResponse.RootElement.GetProperty("statusCode").GetInt32());
-        Assert.Contains("400", errorResponse.RootElement.GetProperty("message").GetString());
-        Assert.Equal("Bad Request Error", errorResponse.RootElement.GetProperty("body").GetString());
+        Assert.True(result.IsError);
+        Assert.Contains("400", Text(result));
+        Assert.Contains("Bad Request Error", Text(result));
     }
 
     [Fact]
@@ -326,21 +327,20 @@ public class McpHttpInvokerTests
         var invoker = CreateInvoker();
         var result = await invoker.PostAsync("/api/test", """{"name": "new"}""");
 
-        Assert.Equal(expectedContent, result);
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal(expectedContent, Text(result));
     }
 
     [Fact]
-    public async Task PostAsync_ReturnsErrorJson_OnFailure()
+    public async Task PostAsync_ReturnsIsError_OnFailure()
     {
         SetupHttpResponse(HttpStatusCode.InternalServerError, "Internal Server Error");
 
         var invoker = CreateInvoker();
         var result = await invoker.PostAsync("/api/test", """{"data": "test"}""");
 
-        var errorResponse = JsonDocument.Parse(result);
-        Assert.True(errorResponse.RootElement.GetProperty("error").GetBoolean());
-        Assert.Equal(500, errorResponse.RootElement.GetProperty("statusCode").GetInt32());
-        Assert.Contains("500", errorResponse.RootElement.GetProperty("message").GetString());
+        Assert.True(result.IsError);
+        Assert.Contains("500", Text(result));
     }
 
     [Fact]
@@ -433,7 +433,7 @@ public class McpHttpInvokerTests
     #region HandleResponse Tests
 
     [Fact]
-    public async Task HandleResponse_TruncatesContent_At1000Chars()
+    public async Task HandleResponse_TruncatesBody_At1000Chars()
     {
         var longContent = new string('x', 2000);
         SetupHttpResponse(HttpStatusCode.BadRequest, longContent);
@@ -441,12 +441,9 @@ public class McpHttpInvokerTests
         var invoker = CreateInvoker();
         var result = await invoker.GetAsync("/api/test");
 
-        var errorResponse = JsonDocument.Parse(result);
-        var body = errorResponse.RootElement.GetProperty("body").GetString();
-
-        Assert.NotNull(body);
-        Assert.Equal(1000, body.Length);
-        Assert.Equal(new string('x', 1000), body);
+        Assert.True(result.IsError);
+        Assert.Contains(new string('x', 1000), Text(result));
+        Assert.DoesNotContain(new string('x', 1001), Text(result));
     }
 
     [Fact]
@@ -511,20 +508,19 @@ public class McpHttpInvokerTests
     [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.InternalServerError)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
-    public async Task HandleResponse_ReturnsErrorJson_ForVariousStatusCodes(HttpStatusCode statusCode)
+    public async Task HandleResponse_ReturnsIsError_ForVariousStatusCodes(HttpStatusCode statusCode)
     {
         SetupHttpResponse(statusCode, "Error content");
 
         var invoker = CreateInvoker();
         var result = await invoker.GetAsync("/api/test");
 
-        var errorResponse = JsonDocument.Parse(result);
-        Assert.True(errorResponse.RootElement.GetProperty("error").GetBoolean());
-        Assert.Equal((int)statusCode, errorResponse.RootElement.GetProperty("statusCode").GetInt32());
+        Assert.True(result.IsError);
+        Assert.Contains(((int)statusCode).ToString(), Text(result));
     }
 
     [Fact]
-    public async Task HandleResponse_PreservesShortContent()
+    public async Task HandleResponse_PreservesShortBody()
     {
         var shortContent = "Short error message";
         SetupHttpResponse(HttpStatusCode.BadRequest, shortContent);
@@ -532,10 +528,7 @@ public class McpHttpInvokerTests
         var invoker = CreateInvoker();
         var result = await invoker.GetAsync("/api/test");
 
-        var errorResponse = JsonDocument.Parse(result);
-        var body = errorResponse.RootElement.GetProperty("body").GetString();
-
-        Assert.Equal(shortContent, body);
+        Assert.Contains(shortContent, Text(result));
     }
 
     #endregion
@@ -836,20 +829,20 @@ public class McpHttpInvokerTests
         var invoker = CreateInvoker();
         var result = await invoker.DeleteAsync("/api/test/1");
 
-        Assert.Equal(expectedContent, result);
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal(expectedContent, Text(result));
     }
 
     [Fact]
-    public async Task DeleteAsync_ReturnsErrorJson_OnFailure()
+    public async Task DeleteAsync_ReturnsIsError_OnFailure()
     {
         SetupHttpResponse(HttpStatusCode.NotFound, "Resource not found");
 
         var invoker = CreateInvoker();
         var result = await invoker.DeleteAsync("/api/test/999");
 
-        var errorResponse = JsonDocument.Parse(result);
-        Assert.True(errorResponse.RootElement.GetProperty("error").GetBoolean());
-        Assert.Equal(404, errorResponse.RootElement.GetProperty("statusCode").GetInt32());
+        Assert.True(result.IsError);
+        Assert.Contains("404", Text(result));
     }
 
     #endregion

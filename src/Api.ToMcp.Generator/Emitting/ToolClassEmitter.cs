@@ -24,6 +24,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("using System.Text.Json;");
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using ModelContextProtocol.Server;");
+            sb.AppendLine("using ModelContextProtocol.Protocol;");
             sb.AppendLine("using Api.ToMcp.Runtime;");
             sb.AppendLine("using Api.ToMcp.Abstractions.Scopes;");
             sb.AppendLine();
@@ -60,7 +61,7 @@ namespace Api.ToMcp.Generator.Emitting
 
             sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\")]");
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
-            sb.Append("        public static async Task<string> InvokeAsync(");
+            sb.Append("        public static async Task<CallToolResult> InvokeAsync(");
             sb.AppendLine();
 
             for (int i = 0; i < paramDecls.Count; i++)
@@ -194,18 +195,18 @@ namespace Api.ToMcp.Generator.Emitting
 
             if (action.HttpMethod == "GET")
             {
-                sb.AppendLine("            var response = await invoker.GetAsync(route, cancellationToken);");
+                sb.AppendLine("            return await invoker.GetAsync(route, cancellationToken);");
             }
             else if (action.HttpMethod == "POST")
             {
                 if (bodyParam != null)
                 {
                     sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            var response = await invoker.PostAsync(route, bodyJson, cancellationToken);");
+                    sb.AppendLine("            return await invoker.PostAsync(route, bodyJson, cancellationToken);");
                 }
                 else
                 {
-                    sb.AppendLine("            var response = await invoker.PostAsync(route, null, cancellationToken);");
+                    sb.AppendLine("            return await invoker.PostAsync(route, null, cancellationToken);");
                 }
             }
             else if (action.HttpMethod == "PUT")
@@ -213,11 +214,11 @@ namespace Api.ToMcp.Generator.Emitting
                 if (bodyParam != null)
                 {
                     sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            var response = await invoker.PutAsync(route, bodyJson, cancellationToken);");
+                    sb.AppendLine("            return await invoker.PutAsync(route, bodyJson, cancellationToken);");
                 }
                 else
                 {
-                    sb.AppendLine("            var response = await invoker.PutAsync(route, null, cancellationToken);");
+                    sb.AppendLine("            return await invoker.PutAsync(route, null, cancellationToken);");
                 }
             }
             else if (action.HttpMethod == "PATCH")
@@ -225,19 +226,17 @@ namespace Api.ToMcp.Generator.Emitting
                 if (bodyParam != null)
                 {
                     sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            var response = await invoker.PatchAsync(route, bodyJson, cancellationToken);");
+                    sb.AppendLine("            return await invoker.PatchAsync(route, bodyJson, cancellationToken);");
                 }
                 else
                 {
-                    sb.AppendLine("            var response = await invoker.PatchAsync(route, null, cancellationToken);");
+                    sb.AppendLine("            return await invoker.PatchAsync(route, null, cancellationToken);");
                 }
             }
             else if (action.HttpMethod == "DELETE")
             {
-                sb.AppendLine("            var response = await invoker.DeleteAsync(route, cancellationToken);");
+                sb.AppendLine("            return await invoker.DeleteAsync(route, cancellationToken);");
             }
-
-            sb.AppendLine("            return response;");
         }
 
         public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)

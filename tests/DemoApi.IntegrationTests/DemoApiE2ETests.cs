@@ -4,10 +4,16 @@ using System.Reflection;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using Xunit;
 
 namespace DemoApi.IntegrationTests;
@@ -85,11 +91,13 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
         var invoke = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
 
-        var task = (Task<string>)invoke.Invoke(null, new object?[] { invoker, LaptopId, CancellationToken.None })!;
-        var json = await task;
+        var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { invoker, LaptopId, CancellationToken.None })!;
+        var result = await task;
 
-        Assert.Contains("Laptop", json);
-        Assert.Contains(LaptopId.ToString(), json);
+        Assert.NotEqual(true, result.IsError);
+        var text = ((TextContentBlock)result.Content[0]).Text;
+        Assert.Contains("Laptop", text);
+        Assert.Contains(LaptopId.ToString(), text);
     }
 
     [Fact]
@@ -112,7 +120,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var task = (Task<string>)invoke.Invoke(null, new object?[] { invoker, LaptopId, cts.Token })!;
+        var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { invoker, LaptopId, cts.Token })!;
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
     }
@@ -132,6 +140,80 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         var idParam = method.GetParameters().Single(p => p.Name == "id");
         var paramDescription = idParam.GetCustomAttribute<DescriptionAttribute>()?.Description;
         Assert.Equal("The unique identifier of the product to retrieve.", paramDescription);
+    }
+
+    [Fact]
+    public async Task GeneratedTool_ReturnsIsError_WhenApiReturnsErrorStatus()
+    {
+        // A non-2xx downstream response must surface as isError = true on the tool result
+        // (issue #7) - conditioned, not thrown - so the model sees a deliberate failure.
+        var client = _factory.CreateClient();
+        var invoker = new McpHttpInvoker(
+            client,
+            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
+            new HttpContextAccessor(),
+            NullLogger<McpHttpInvoker>.Instance,
+            Options.Create(new McpScopeOptions()));
+
+        var toolType = typeof(Program).Assembly
+            .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
+        var invoke = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
+
+        var unknownId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { invoker, unknownId, CancellationToken.None })!;
+        var result = await task;
+
+        Assert.True(result.IsError);
+        Assert.Contains("404", ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_SurfacesIsError_OverTheWire()
+    {
+        // The definitive #7 test: drive the real /mcp endpoint with an MCP client and assert
+        // that a failed downstream call comes back as isError:true in the protocol response
+        // (verifies the SDK maps the returned CallToolResult.IsError onto the wire).
+        await using var client = await ConnectMcpClientAsync();
+
+        var ok = await client.CallToolAsync(
+            "Products_GetById",
+            new Dictionary<string, object?> { ["id"] = LaptopId.ToString() });
+        Assert.NotEqual(true, ok.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)ok.Content[0]).Text);
+
+        var failed = await client.CallToolAsync(
+            "Products_GetById",
+            new Dictionary<string, object?> { ["id"] = "ffffffff-ffff-ffff-ffff-ffffffffffff" });
+        Assert.True(failed.IsError);
+        Assert.Contains("404", ((TextContentBlock)failed.Content[0]).Text);
+    }
+
+    private async Task<McpClient> ConnectMcpClientAsync()
+    {
+        // Route the invoker's internal self-call back into the in-memory server (otherwise it
+        // uses a real HttpClient that can't reach the TestServer, and every call "fails").
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("McpTools:BaseUrl", "http://localhost");
+            builder.ConfigureTestServices(services =>
+            {
+                services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()
+                    .ConfigurePrimaryHttpMessageHandler(sp =>
+                        ((TestServer)sp.GetRequiredService<IServer>()).CreateHandler());
+            });
+        });
+
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/mcp"),
+                TransportMode = HttpTransportMode.StreamableHttp
+            },
+            factory.CreateClient(),
+            NullLoggerFactory.Instance,
+            ownsHttpClient: true);
+
+        return await McpClient.CreateAsync(transport);
     }
 
     private static string[] GetGeneratedToolTypeNames()

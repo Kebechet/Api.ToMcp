@@ -62,6 +62,7 @@ namespace TestApi
         var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
 
         Assert.Contains("public static class ProductsController_GetByIdTool", generated);
+        Assert.Contains("async Task<CallToolResult> InvokeAsync", generated);
         Assert.Contains("$\"/api/products/{routeid}\"", generated);
         Assert.Contains("typeof(ProductsController_GetByIdTool)", generated);
         Assert.Contains("System.Threading.CancellationToken cancellationToken = default", generated);

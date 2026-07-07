@@ -478,7 +478,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(request);", result);
-        Assert.Contains("var response = await invoker.PostAsync(route, bodyJson, cancellationToken);", result);
+        Assert.Contains("return await invoker.PostAsync(route, bodyJson, cancellationToken);", result);
     }
 
     #endregion
@@ -516,7 +516,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(request);", result);
-        Assert.Contains("var response = await invoker.PutAsync(route, bodyJson, cancellationToken);", result);
+        Assert.Contains("return await invoker.PutAsync(route, bodyJson, cancellationToken);", result);
     }
 
     [Fact]
@@ -541,7 +541,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var response = await invoker.PutAsync(route, null, cancellationToken);", result);
+        Assert.Contains("return await invoker.PutAsync(route, null, cancellationToken);", result);
     }
 
     #endregion
@@ -579,7 +579,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(patchDoc);", result);
-        Assert.Contains("var response = await invoker.PatchAsync(route, bodyJson, cancellationToken);", result);
+        Assert.Contains("return await invoker.PatchAsync(route, bodyJson, cancellationToken);", result);
     }
 
     [Fact]
@@ -604,7 +604,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var response = await invoker.PatchAsync(route, null, cancellationToken);", result);
+        Assert.Contains("return await invoker.PatchAsync(route, null, cancellationToken);", result);
     }
 
     #endregion
@@ -633,7 +633,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var response = await invoker.DeleteAsync(route, cancellationToken);", result);
+        Assert.Contains("return await invoker.DeleteAsync(route, cancellationToken);", result);
     }
 
     [Fact]
@@ -668,7 +668,7 @@ public class ToolClassEmitterTests
 
         Assert.Contains("var routeorderId = System.Uri.EscapeDataString(orderId.ToString());", result);
         Assert.Contains("var routeitemId = System.Uri.EscapeDataString(itemId.ToString());", result);
-        Assert.Contains("var response = await invoker.DeleteAsync(route, cancellationToken);", result);
+        Assert.Contains("return await invoker.DeleteAsync(route, cancellationToken);", result);
     }
 
     #endregion
@@ -712,7 +712,7 @@ public class ToolClassEmitterTests
 
         // The MCP server injects the token; it must be declared with a default and forwarded.
         Assert.Contains("System.Threading.CancellationToken cancellationToken = default", result);
-        Assert.Contains("var response = await invoker.GetAsync(route, cancellationToken);", result);
+        Assert.Contains("return await invoker.GetAsync(route, cancellationToken);", result);
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Options;
+using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -34,7 +35,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         _scopeOptions = scopeOptions.Value;
     }
 
-    public async Task<string> GetAsync(string route, CancellationToken ct = default)
+    public async Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
     {
         var url = BuildUrl(route);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -46,7 +47,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         return await HandleResponse(response, ct);
     }
 
-    public async Task<string> PostAsync(string route, string? jsonBody, CancellationToken ct = default)
+    public async Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default)
     {
         var url = BuildUrl(route);
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
@@ -63,7 +64,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         return await HandleResponse(response, ct);
     }
 
-    public async Task<string> PutAsync(string route, string? jsonBody, CancellationToken ct = default)
+    public async Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default)
     {
         var url = BuildUrl(route);
         using var request = new HttpRequestMessage(HttpMethod.Put, url);
@@ -80,7 +81,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         return await HandleResponse(response, ct);
     }
 
-    public async Task<string> PatchAsync(string route, string? jsonBody, CancellationToken ct = default)
+    public async Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default)
     {
         var url = BuildUrl(route);
         using var request = new HttpRequestMessage(HttpMethod.Patch, url);
@@ -97,7 +98,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         return await HandleResponse(response, ct);
     }
 
-    public async Task<string> DeleteAsync(string route, CancellationToken ct = default)
+    public async Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default)
     {
         var url = BuildUrl(route);
         using var request = new HttpRequestMessage(HttpMethod.Delete, url);
@@ -192,24 +193,29 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         }
     }
 
-    private async Task<string> HandleResponse(HttpResponseMessage response, CancellationToken ct)
+    private async Task<CallToolResult> HandleResponse(HttpResponseMessage response, CancellationToken ct)
     {
         var content = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)
         {
+            var truncatedBody = content.Length > 1000 ? content.Substring(0, 1000) : content;
+
             _logger.LogWarning("MCP HTTP call failed with status {StatusCode}: {Content}",
                 (int)response.StatusCode, content.Length > 500 ? content.Substring(0, 500) : content);
 
-            return System.Text.Json.JsonSerializer.Serialize(new
-            {
-                error = true,
-                statusCode = (int)response.StatusCode,
-                message = $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}",
-                body = content.Length > 1000 ? content.Substring(0, 1000) : content
-            });
+            // Report the failure via isError = true (not by throwing) so the model sees a
+            // deliberate error result rather than a soft success. See issue #7.
+            var message = $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}";
+            return ToResult(string.IsNullOrEmpty(truncatedBody) ? message : $"{message} - {truncatedBody}", isError: true);
         }
 
-        return content;
+        return ToResult(content, isError: false);
     }
+
+    private static CallToolResult ToResult(string text, bool isError) => new CallToolResult
+    {
+        IsError = isError,
+        Content = { new TextContentBlock { Text = text } }
+    };
 }
