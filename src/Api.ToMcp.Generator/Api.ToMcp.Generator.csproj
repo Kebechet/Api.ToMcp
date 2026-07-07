@@ -23,10 +23,11 @@
     <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="false" PackagePath="analyzers/dotnet/cs" Visible="false" />
   </ItemGroup>
 
-  <!-- Include .targets files in the NuGet package -->
+  <!-- build/ targets: imported by demo/Directory.Build.targets to mirror what a NuGet
+       consumer gets via ProjectReference. No buildTransitive/ - the config auto-creation
+       must not flow to transitive consumers (see Api.ToMcp package / issue #3). -->
   <ItemGroup>
     <None Include="build\**\*" Pack="true" PackagePath="build" />
-    <None Include="buildTransitive\**\*" Pack="true" PackagePath="buildTransitive" />
   </ItemGroup>
 
   <!-- Analyzer release tracking files -->
