@@ -88,6 +88,13 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static (string Method, string? Template)? GetHttpMethodInfo(IMethodSymbol method)
         {
+            // A method-level [Route("...")] supplies the template when the HTTP verb
+            // attribute carries none (e.g. [HttpGet] + [Route("search")]).
+            var routeAttrTemplate = method.GetAttributes()
+                .FirstOrDefault(attr => attr.AttributeClass?.Name == "RouteAttribute" &&
+                                        attr.ConstructorArguments.Length > 0)
+                ?.ConstructorArguments[0].Value?.ToString();
+
             foreach (var attr in method.GetAttributes())
             {
                 var attrName = attr.AttributeClass?.Name;
@@ -98,6 +105,9 @@ namespace Api.ToMcp.Generator.Parsing
                 var template = attr.ConstructorArguments.Length > 0
                     ? attr.ConstructorArguments[0].Value?.ToString()
                     : null;
+
+                if (string.IsNullOrEmpty(template))
+                    template = routeAttrTemplate;
 
                 return (httpMethod, template);
             }
