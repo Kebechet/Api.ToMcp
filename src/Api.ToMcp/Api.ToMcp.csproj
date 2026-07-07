@@ -72,10 +72,11 @@
     </None>
   </ItemGroup>
 
-  <!-- Include build targets -->
+  <!-- Include build targets. Deliberately NO buildTransitive: the generator.json
+       auto-creation must not flow to transitive consumers (e.g. test projects that
+       reference the API project). See https://github.com/Kebechet/Api.ToMcp/issues/3 -->
   <ItemGroup>
     <None Include="build\**\*" Pack="true" PackagePath="build" />
-    <None Include="buildTransitive\**\*" Pack="true" PackagePath="buildTransitive" />
   </ItemGroup>
 
   <!-- Automatically include Runtime and Abstractions DLLs in the package -->
