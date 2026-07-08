@@ -22,8 +22,21 @@
     <DebugType>embedded</DebugType>
     <PackageIcon>icon.png</PackageIcon>
     <PackageTags>mcp;model-context-protocol;source-generator;aspnetcore;api;claude;ai</PackageTags>
-    <Version>1.0.2</Version>
-    <PackageReleaseNotes>Fix for production routing from mcp to API and vice versa</PackageReleaseNotes>
+    <Version>2.0.0</Version>
+    <PackageReleaseNotes>
+Breaking:
+- Upgraded to ModelContextProtocol.AspNetCore 2.0.0-preview.1. Consumers must not reference a different ModelContextProtocol.* version (a mismatch causes a MissingMethodException at startup).
+- IMcpHttpInvoker methods now return Task&lt;CallToolResult&gt; instead of Task&lt;string&gt;. Failed (non-2xx) API calls are surfaced as isError:true instead of a soft error payload.
+
+Added:
+- Tool and parameter descriptions are pulled from XML &lt;summary&gt;/&lt;param&gt; docs (requires GenerateDocumentationFile).
+- The request CancellationToken is propagated through generated tools to the API call.
+- Method-level [Route] attributes are supported.
+- URL-segment API versioning: the version from [ApiVersion] is baked into the generated route.
+
+Fixed:
+- generator.json is no longer created in transitive consumers (e.g. test projects).
+    </PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
