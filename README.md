@@ -13,6 +13,8 @@ A C# source generator that automatically transforms your ASP.NET Core API endpoi
 
 Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and generates MCP-compatible tool classes. This allows AI assistants (like Claude) to interact with your REST API through the MCP protocol without writing any integration code manually.
 
+> **For APIs you own the source of.** Api.ToMcp is a source generator — it runs inside your API project's compilation, which is what lets it read your XML doc comments for tool descriptions, fail at build time instead of runtime, and route tool calls through your real middleware pipeline (auth, validation, filters). If you only have an OpenAPI spec — a third-party or legacy API you can't recompile — this package is not the right fit; use an OpenAPI-to-MCP proxy instead.
+
 > **Controllers only.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`). Minimal API endpoints (`app.MapGet(...)`, `app.MapPost(...)`, etc.) are **not** discovered. See [Limitations](#limitations).
 
 ## Features
