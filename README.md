@@ -287,7 +287,7 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ## Limitations
 
-- **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are.
+- **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are. Support is tracked in [#11](https://github.com/Kebechet/Api.ToMcp/issues/11).
 - **One HTTP verb per action.** If an action carries multiple verb attributes (e.g. `[HttpGet]` and `[HttpHead]`), only the first is used.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
 - **Complex `[FromQuery]` objects are not flattened** into individual query parameters (only route- and body-bound complex types have their properties expanded).
