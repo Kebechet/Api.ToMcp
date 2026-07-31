@@ -22,6 +22,12 @@ jobs:
         run: |
           VERSION=$(grep -oP '<Version>\K[^<]+' src/Api.ToMcp/Api.ToMcp.csproj)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          # SemVer prerelease versions carry a hyphen (2.0.0-preview.1); stable ones never do
+          if [[ "$VERSION" == *-* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
       - run: dotnet build src/Api.ToMcp.slnx -c Release
       - run: dotnet test src/Api.ToMcp.slnx -c Release --no-build
       - run: dotnet nuget push src/Api.ToMcp/bin/Release/*.nupkg -k ${{ secrets.NUGET_API_KEY }} -s https://api.nuget.org/v3/index.json --skip-duplicate
@@ -34,3 +40,4 @@ jobs:
           name: v${{ steps.version.outputs.version }}
           files: src/Api.ToMcp/bin/Release/*.nupkg
           generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.is_prerelease }}
