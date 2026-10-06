@@ -45,7 +45,7 @@ Fixed:
 
   <!-- ModelContextProtocol.AspNetCore as direct dependency for consumers -->
   <ItemGroup>
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.0.0-preview.1" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
   </ItemGroup>
 
   <!-- Reference Runtime (which transitively references Abstractions) - bundled in package -->
