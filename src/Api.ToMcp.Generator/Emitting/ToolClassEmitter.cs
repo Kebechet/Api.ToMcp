@@ -9,6 +9,12 @@ namespace Api.ToMcp.Generator.Emitting
 {
     internal static class ToolClassEmitter
     {
+        /// <summary>
+        /// Route and query values go through the runtime formatter, never <c>ToString()</c>: the binder reads
+        /// them with the invariant culture, and a <c>[FromQuery]</c> object has to be expanded into its properties.
+        /// </summary>
+        private const string RequestValueFormatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
+
         public static string Emit(ActionInfoModel action, GeneratorConfigModel config, string? overrideClassName = null)
         {
             var toolName = FormatToolName(action, config.Naming);
@@ -133,13 +139,9 @@ namespace Api.ToMcp.Generator.Emitting
             // Generate route variables
             foreach (var kvp in placeholderSources)
             {
-                var placeholder = kvp.Key;
-                var (expression, type, isNullable, varName) = kvp.Value;
+                var (expression, _, _, varName) = kvp.Value;
 
-                var toStringExpr = IsValueType(type) && !isNullable
-                    ? $"{expression}.ToString()"
-                    : $"{expression}?.ToString() ?? string.Empty";
-                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({toStringExpr});");
+                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({RequestValueFormatter}.Format({expression}));");
             }
 
             // Convert route template - replace placeholders with generated variable names
@@ -168,15 +170,7 @@ namespace Api.ToMcp.Generator.Emitting
                 sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
                 foreach (var param in queryParams)
                 {
-                    if (param.IsNullable || param.HasDefaultValue)
-                    {
-                        sb.AppendLine($"            if ({param.Name} != null)");
-                        sb.AppendLine($"                queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString()!)}}\");");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"            queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString()!)}}\");");
-                    }
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, \"{param.Name}\", {param.Name});");
                 }
                 sb.AppendLine("            if (queryParts.Count > 0)");
                 sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");

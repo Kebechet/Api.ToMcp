@@ -1,9 +1,11 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Net;
 using System.Reflection;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
+using DemoApi.Models;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
@@ -168,6 +170,63 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task GeneratedTool_SendsDateRouteValue_InIsoFormat_RegardlessOfCulture()
+    {
+        // DateOnly.ToString() follows the current culture ("9/28/2026" in en-US), which the
+        // route binder cannot parse, so every date-routed tool answered 400.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("en-US");
+        try
+        {
+            var invoke = GetGeneratedInvokeMethod("WeatherController_GetByDateTool");
+
+            var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), new DateOnly(2026, 9, 28), CancellationToken.None })!;
+            var result = await task;
+
+            var text = ((TextContentBlock)result.Content[0]).Text;
+            Assert.NotEqual(true, result.IsError);
+            Assert.Contains("2026-09-28", text);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
+    public async Task GeneratedTool_ExpandsFromQueryObject_IntoItsProperties()
+    {
+        // A [FromQuery] object used to be sent as "filter=<type name>", which the binder ignores,
+        // so the endpoint silently ran with an empty filter instead of failing.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("en-US");
+        try
+        {
+            var invoke = GetGeneratedInvokeMethod("WeatherController_SearchTool");
+            var filter = new WeatherSearchFilter
+            {
+                City = "Brno",
+                From = new DateOnly(2026, 9, 28),
+                Summaries = ["Mild", "Warm"]
+            };
+
+            var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), filter, CancellationToken.None })!;
+            var result = await task;
+
+            var text = ((TextContentBlock)result.Content[0]).Text;
+            Assert.NotEqual(true, result.IsError);
+            Assert.Contains("Brno", text);
+            Assert.Contains("Mild", text);
+            Assert.Contains("Warm", text);
+            Assert.Contains("2026-09-29", text);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
     public async Task McpProtocol_ToolsCall_SurfacesIsError_OverTheWire()
     {
         // The definitive #7 test: drive the real /mcp endpoint with an MCP client and assert
@@ -214,6 +273,24 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             ownsHttpClient: true);
 
         return await McpClient.CreateAsync(transport);
+    }
+
+    private McpHttpInvoker CreateDirectInvoker()
+    {
+        var client = _factory.CreateClient();
+        return new McpHttpInvoker(
+            client,
+            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
+            new HttpContextAccessor(),
+            NullLogger<McpHttpInvoker>.Instance,
+            Options.Create(new McpScopeOptions()));
+    }
+
+    private static MethodInfo GetGeneratedInvokeMethod(string toolTypeName)
+    {
+        var toolType = typeof(Program).Assembly
+            .GetType($"Api.ToMcp.Generated.{toolTypeName}", throwOnError: true)!;
+        return toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
     }
 
     private static string[] GetGeneratedToolTypeNames()

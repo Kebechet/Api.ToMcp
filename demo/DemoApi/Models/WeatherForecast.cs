@@ -16,3 +16,10 @@ public class CreateWeatherForecastRequest
     public int TemperatureC { get; set; }
     public string? Summary { get; set; }
 }
+
+public class WeatherSearchFilter
+{
+    public string? City { get; set; }
+    public DateOnly? From { get; set; }
+    public List<string> Summaries { get; set; } = [];
+}
