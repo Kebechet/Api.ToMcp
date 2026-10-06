@@ -25,14 +25,21 @@
     <Version>2.0.0-preview.1</Version>
     <PackageReleaseNotes>
 Breaking:
-- Upgraded to ModelContextProtocol.AspNetCore 2.0.0-preview.1. Consumers must not reference a different ModelContextProtocol.* version (a mismatch causes a MissingMethodException at startup).
+- Upgraded to ModelContextProtocol.AspNetCore 2.2.0. Consumers must not reference a different ModelContextProtocol.* version (a mismatch causes a MissingMethodException at startup).
 - IMcpHttpInvoker methods now return Task&lt;CallToolResult&gt; instead of Task&lt;string&gt;. Failed (non-2xx) API calls are surfaced as isError:true instead of a soft error payload.
 
 Added:
 - Tool and parameter descriptions are pulled from XML &lt;summary&gt;/&lt;param&gt; docs (requires GenerateDocumentationFile).
+- Request fields (DTO properties, nested objects, array items) without a [Description] are described from their XML &lt;summary&gt; at runtime, read from the .xml next to each assembly; an assembly without that file is reported with one warning at startup. Off via McpScopeOptions.ArePropertyDescriptionsFromXmlDocs.
+- [McpExpose(Scope = ...)] overrides the scope derived from the HTTP method.
+- Route and query values are sent culture-invariantly (ISO 8601 dates) and [FromQuery] objects are expanded into their properties.
+- Action routes starting with "/" or "~/" are absolute, as in ASP.NET Core routing.
 - The request CancellationToken is propagated through generated tools to the API call.
 - Method-level [Route] attributes are supported.
 - URL-segment API versioning: the version from [ApiVersion] is baked into the generated route.
+
+Changed:
+- AddMcpTools registers the tools itself (same discovery as WithToolsFromAssembly, hand-written [McpServerToolType] classes included) and builds them when the host starts, so a tool that cannot be created fails at startup instead of at the first request.
 
 Fixed:
 - generator.json is no longer created in transitive consumers (e.g. test projects).
