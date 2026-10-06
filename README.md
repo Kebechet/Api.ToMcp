@@ -22,6 +22,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 ## Features
 
 - **Automatic Tool Generation** - Scans controllers and generates MCP tools at compile time
+- **Descriptions from XML docs** - Tool, argument and request-field descriptions come from the `<summary>` and `<param>` comments you already write
 - **Attribute Control** - Use `[McpExpose]` and `[McpIgnore]` to fine-tune which endpoints are exposed
 - **Flexible Selection** - Choose between allowlist (`SelectedOnly`) or blocklist (`AllExceptExcluded`) modes
 - **Customizable Naming** - Configure tool naming format via `generator.json`
@@ -144,6 +145,14 @@ Forces an endpoint to be exposed as an MCP tool, regardless of configuration mod
 public Task<Product> GetById(Guid id) { ... }
 ```
 
+`Scope` overrides the scope derived from the HTTP method (see [Scope-Based Access Control](#scope-based-access-control)). Use it when the verb says something else than what the endpoint does - a search that takes its filter as a POST body and changes nothing would otherwise require `Write`:
+
+```csharp
+[McpExpose(Scope = McpScope.Read)]
+[HttpPost("search")]
+public Task<IEnumerable<Product>> Search([FromBody] ProductFilter filter) { ... }
+```
+
 ### `[McpIgnore]`
 
 Forces an endpoint to be excluded from MCP exposure.
@@ -177,6 +186,35 @@ Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a gene
 >   <NoWarn>$(NoWarn);CS1591</NoWarn> <!-- optional: silence "missing XML comment" warnings -->
 > </PropertyGroup>
 > ```
+
+### Request fields: DTO properties, nested objects, array items
+
+The two rules above run at compile time. The fields *inside* an argument's type - a request DTO's properties, nested objects, array items - get their JSON schema at runtime from the MCP SDK, which reflects over the type and reads only `[Description]`. Api.ToMcp fills that gap: every such property without a `[Description]` gets its XML `<summary>` as its schema `description`, read from the `<AssemblyName>.xml` file next to the assembly that declares the property.
+
+```csharp
+public class CreateWeatherForecastRequest
+{
+    /// <summary>Name of the city the forecast is for.</summary>
+    public string City { get; set; } = "";
+
+    /// <summary>Temperature in degrees Celsius.</summary>
+    [Description("Air temperature in degrees Celsius.")] // wins over the <summary>
+    public int TemperatureC { get; set; }
+}
+```
+
+Precedence: `[Description]` → XML `<summary>` → no description. A property inherited from a base class takes the base class's `<summary>`. `<see cref="..."/>` renders as the member's name, `<c>`, `<paramref>` and `<typeparamref>` as their text or name, `<para>` as a separator; `<inheritdoc/>` is not resolved, so a property documented only that way stays undescribed. Framework types (`System.*`, `Microsoft.*`) and the MCP SDK's own are never looked up.
+
+This is on by default; `options.ArePropertyDescriptionsFromXmlDocs = false` in `AddMcpTools` turns it off.
+
+> **Every project whose types appear in tool arguments needs `<GenerateDocumentationFile>true</GenerateDocumentationFile>`** - not only the one with the controllers; a separate contracts project included. The compiler writes the docs to `<AssemblyName>.xml` next to the assembly, and that file has to be there at runtime:
+>
+> - `dotnet build` and `dotnet publish` copy the app's own `.xml` and the `.xml` of every `ProjectReference` that generates one into the output and publish folders. Verified with SDK 10.0.302 for a `net10.0` app (the demo) and a `net8.0` app; it is MSBuild's standard handling of a reference's related files (`AllowedReferenceRelatedFileExtensions` includes `.xml`), so nothing has to be added to the project.
+> - The `.xml` shipped inside a NuGet **package** is *not* copied to the output. For DTOs that come from a package, copy the file yourself (a `<None Include="..." CopyToOutputDirectory="PreserveNewest" />` item, for example).
+>
+> When an assembly whose types appear in a tool schema has no `.xml` next to it, the host logs **one warning per assembly at startup**, naming the assembly and the path it looked at, so a missing file shows up in the log instead of in a bare schema.
+
+**Responses are not described.** Generated tools return the API's response body as text in a `CallToolResult` and carry no output schema, so XML docs on response DTOs change nothing. Only the types used in tool *arguments* matter.
 
 ## Scope-Based Access Control
 
@@ -292,7 +330,6 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are. Support is tracked in [#11](https://github.com/Kebechet/Api.ToMcp/issues/11).
 - **One HTTP verb per action.** If an action carries multiple verb attributes (e.g. `[HttpGet]` and `[HttpHead]`), only the first is used.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
-- **Complex `[FromQuery]` objects are not flattened** into individual query parameters (only route- and body-bound complex types have their properties expanded).
 - **Tools return the raw response body as a string.** No typed output schema is emitted from the action's return type.
 - **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
 
@@ -310,7 +347,10 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - The invoker derives the correct `https://` base from the incoming request when the server only listens on HTTP, but the most reliable fix is to pin `McpTools:BaseUrl` explicitly.
 
 **`MissingMethodException` on `AddMcpTools` at startup** (e.g. `Method not found: '...McpServerServiceCollectionExtensions.AddMcpServer(...)'`).
-- Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.0.0-preview.1`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
+- Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
+
+**Startup warning `Assembly '...' has types in MCP tool schemas but no XML documentation file`.**
+- A type used in a tool argument lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, or the `.xml` was not deployed next to the assembly. Enable it in that project and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
 
 **Tool calls return `401`/`403`.**
 - Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim.
@@ -320,8 +360,9 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 1. **Compile Time**: The source generator scans your controllers for HTTP actions
 2. **Code Generation**: For each selected endpoint, a tool class is generated with `[McpServerToolType]` attribute
-3. **Runtime**: When an MCP client calls a tool, it invokes your API via HTTP internally
-4. **Loop Prevention**: The `X-MCP-Internal-Call` header prevents MCP endpoints from being called recursively
+3. **Startup**: `AddMcpTools` registers every `[McpServerToolType]` class of the assembly (generated and hand-written) and builds the tools and their argument schemas when the host starts, so a tool that cannot be created fails at startup rather than at the first request
+4. **Runtime**: When an MCP client calls a tool, it invokes your API via HTTP internally
+5. **Loop Prevention**: The `X-MCP-Internal-Call` header prevents MCP endpoints from being called recursively
 
 ### Generated Code Example
 
@@ -347,7 +388,7 @@ public static class ProductsController_GetByIdTool
 
 - .NET 8.0 or later
 - ASP.NET Core with controller-based endpoints (see [Limitations](#limitations))
-- `ModelContextProtocol.AspNetCore` **`2.0.0-preview.1`** — this is a transitive dependency of the package. **Do not add a different version of any `ModelContextProtocol.*` package to your app.** The MCP SDK is in preview and makes breaking API changes between versions; a version mismatch causes a `MissingMethodException` at startup (see [Troubleshooting](#troubleshooting)). Either omit the reference entirely and let it flow transitively, or pin the exact same version.
+- `ModelContextProtocol.AspNetCore` **`2.2.0`** — this is a transitive dependency of the package. **Do not add a different version of any `ModelContextProtocol.*` package to your app.** The MCP SDK makes breaking API changes between versions; a version mismatch causes a `MissingMethodException` at startup (see [Troubleshooting](#troubleshooting)). Either omit the reference entirely and let it flow transitively, or pin the exact same version.
 
 ## License
 

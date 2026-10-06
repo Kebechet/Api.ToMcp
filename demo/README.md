@@ -9,12 +9,18 @@ Example project demonstrating Api.ToMcp usage.
 **WeatherController** - All actions exposed as MCP tools
 - `GET /api/weather` - Get weather forecasts
 - `GET /api/weather/{city}` - Get weather for specific city
-- `POST /api/weather` - Create weather forecast
+- `GET /api/weather/on/{date}` - Get the forecast for a day (a `DateOnly` route value)
+- `GET /api/weather/search` - Search forecasts (a `[FromQuery]` filter object)
+- `POST /api/weather` - Create weather forecast (its request DTO is described from XML docs)
 
 **ProductsController** - Selective exposure
 - `GET /api/products` - Get all products (exposed)
 - `GET /api/products/{id}` - Get product by ID (exposed)
 - `DELETE /api/products/{id}` - Delete product (excluded via `[McpIgnore]`)
+
+### Hand-written tool
+
+`Mcp/ServerTools.cs` is an MCP-only tool with no endpoint behind it. `AddMcpTools` registers it alongside the generated tools because the class carries `[McpServerToolType]`; its `IHostEnvironment` parameter is injected, not exposed as an argument.
 
 ## Running the Demo
 
@@ -36,9 +42,12 @@ Based on `Mcp/generator.json` configuration, these tools are generated:
 |-----------|--------------|
 | `Weather_GetAll` | WeatherController.GetAll |
 | `Weather_GetByCity` | WeatherController.GetByCity |
+| `Weather_GetByDate` | WeatherController.GetByDate |
+| `Weather_Search` | WeatherController.Search |
 | `Weather_Create` | WeatherController.Create |
 | `Products_GetAll` | ProductsController.GetAll |
 | `Products_GetById` | ProductsController.GetById |
+| `Server_GetEnvironment` | hand-written in `Mcp/ServerTools.cs` |
 
 ## Generator Configuration
 
