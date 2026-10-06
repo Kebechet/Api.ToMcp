@@ -195,6 +195,29 @@ namespace TestApi
         Assert.DoesNotContain(":apiVersion", generated);
     }
 
+    [Theory]
+    [InlineData("/catalog/search")]
+    [InlineData("~/catalog/search")]
+    public void Generator_AbsoluteActionTemplate_ReplacesTheControllerPrefix(string template)
+    {
+        // ASP.NET routing ignores the controller's [Route] for an action template starting with "/" or "~/".
+        var controller = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet(""" + template + @""")]
+        public Task<string> Search(string query) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("var route = $\"/catalog/search\";", generated);
+        Assert.DoesNotContain("/api/products/", generated);
+    }
+
     [Fact]
     public void Generator_UsesScopeFromMcpExpose_OverTheHttpMethodDefault()
     {

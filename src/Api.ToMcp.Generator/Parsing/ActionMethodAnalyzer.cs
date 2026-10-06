@@ -287,6 +287,11 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static string BuildFullRoute(string? prefix, string? template, string controllerName)
         {
+            // An action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
+            var isAbsoluteTemplate = template != null && (template.StartsWith("/") || template.StartsWith("~/"));
+            if (isAbsoluteTemplate)
+                return "/" + template!.TrimStart('~').TrimStart('/').TrimEnd('/');
+
             var parts = new List<string>();
 
             if (!string.IsNullOrEmpty(prefix))
