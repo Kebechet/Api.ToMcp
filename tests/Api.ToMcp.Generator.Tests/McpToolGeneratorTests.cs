@@ -195,6 +195,48 @@ namespace TestApi
         Assert.DoesNotContain(":apiVersion", generated);
     }
 
+    [Fact]
+    public void Generator_UsesScopeFromMcpExpose_OverTheHttpMethodDefault()
+    {
+        // Query-style endpoints that take their filter as a POST body would otherwise demand Write,
+        // locking read-only grants out of what is only a read.
+        const string controller = @"
+namespace Api.ToMcp.Abstractions.Scopes
+{
+    [Flags]
+    public enum McpScope { None = 0, Read = 1, Write = 2, Delete = 4 }
+}
+
+namespace Api.ToMcp.Abstractions
+{
+    public sealed class McpExposeAttribute : Attribute
+    {
+        public Api.ToMcp.Abstractions.Scopes.McpScope Scope { get; set; }
+    }
+}
+
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [Api.ToMcp.Abstractions.McpExpose(Scope = Api.ToMcp.Abstractions.Scopes.McpScope.Read)]
+        [HttpPost(""search"")]
+        public Task<string> Search(string query) => Task.FromResult(string.Empty);
+
+        [HttpPost]
+        public Task<string> Create(string name) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        var searchTool = generated.Substring(generated.IndexOf("class ReportsController_SearchTool", StringComparison.Ordinal));
+        var createTool = generated.Substring(generated.IndexOf("class ReportsController_CreateTool", StringComparison.Ordinal));
+        Assert.Contains("BeforeInvokeAsync(McpScope.Read,", searchTool.Substring(0, searchTool.IndexOf("return await", StringComparison.Ordinal)));
+        Assert.Contains("BeforeInvokeAsync(McpScope.Write,", createTool.Substring(0, createTool.IndexOf("return await", StringComparison.Ordinal)));
+    }
+
     private static string RunGenerator(string source, string generatorJson)
     {
         // DocumentationMode.Parse makes XML doc comments available via GetDocumentationCommentXml,

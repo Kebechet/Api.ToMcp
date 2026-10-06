@@ -55,6 +55,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customDescription = null;
+                var requiredScope = GetRequiredScope(httpInfo.Value.Method);
 
                 if (mcpExposeAttr != null)
                 {
@@ -64,6 +65,9 @@ namespace Api.ToMcp.Generator.Parsing
                             customToolName = tn;
                         if (namedArg.Key == "Description" && namedArg.Value.Value is string desc)
                             customDescription = desc;
+                        // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
+                        if (namedArg.Key == "Scope" && namedArg.Value.Value is int scopeValue && scopeValue != (int)McpScopeModel.None)
+                            requiredScope = (McpScopeModel)scopeValue;
                     }
                 }
 
@@ -80,7 +84,7 @@ namespace Api.ToMcp.Generator.Parsing
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
                     CustomDescription = customDescription,
-                    RequiredScope = GetRequiredScope(httpInfo.Value.Method)
+                    RequiredScope = requiredScope
                 });
             }
 
