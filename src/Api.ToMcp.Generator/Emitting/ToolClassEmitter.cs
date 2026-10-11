@@ -15,6 +15,8 @@ namespace Api.ToMcp.Generator.Emitting
         /// </summary>
         private const string RequestValueFormatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
 
+        private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
+
         public static string Emit(ActionInfoModel action, GeneratorConfigModel config, string? overrideClassName = null)
         {
             var toolName = FormatToolName(action, config.Naming);
@@ -183,9 +185,8 @@ namespace Api.ToMcp.Generator.Emitting
             List<ParameterInfoModel> parameters)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
-            var scopeName = action.RequiredScope.ToString();
 
-            sb.AppendLine($"            await invoker.BeforeInvokeAsync(McpScope.{scopeName}, cancellationToken);");
+            sb.AppendLine($"            await invoker.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope)}, cancellationToken);");
 
             if (action.HttpMethod == "GET")
             {
@@ -231,6 +232,30 @@ namespace Api.ToMcp.Generator.Emitting
             {
                 sb.AppendLine("            return await invoker.DeleteAsync(route, cancellationToken);");
             }
+        }
+
+        /// <summary>
+        /// McpScope is a [Flags] enum, so the <c>ToString()</c> of a combined value is "Read, Write", which is not C#.
+        /// A combination of named flags is written as <c>McpScope.Read | McpScope.Write</c>, and a value with bits no
+        /// flag names as a cast, so the generated tool always compiles.
+        /// </summary>
+        private static string GetScopeExpression(McpScopeModel scope)
+        {
+            if (Enum.IsDefined(typeof(McpScopeModel), scope))
+            {
+                return $"McpScope.{scope}";
+            }
+
+            var includedFlags = SingleScopes
+                .Where(x => (scope & x) == x)
+                .ToList();
+            var includedBits = includedFlags.Aggregate(McpScopeModel.None, (combined, x) => combined | x);
+            if (includedBits != scope)
+            {
+                return $"(McpScope){(int)scope}";
+            }
+
+            return string.Join(" | ", includedFlags.Select(x => $"McpScope.{x}"));
         }
 
         public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)

@@ -25,6 +25,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Api.ToMcp.Generator\Api.ToMcp.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
+    <!-- Lets a test compile the generated tools against the real runtime, ASP.NET Core and MCP SDK -->
+    <ProjectReference Include="..\..\src\Api.ToMcp.Runtime\Api.ToMcp.Runtime.csproj" />
   </ItemGroup>
 
 </Project>

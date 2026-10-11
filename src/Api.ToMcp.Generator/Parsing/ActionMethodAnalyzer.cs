@@ -28,6 +28,7 @@ namespace Api.ToMcp.Generator.Parsing
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
+            var controllerScope = GetScopeOverride(ControllerScanner.GetAttribute(controller, McpExposeAttributeFullName));
 
             foreach (var member in controller.GetMembers())
             {
@@ -55,7 +56,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customDescription = null;
-                var requiredScope = GetRequiredScope(httpInfo.Value.Method);
+                var requiredScope = GetScopeOverride(mcpExposeAttr) ?? controllerScope ?? GetRequiredScope(httpInfo.Value.Method);
 
                 if (mcpExposeAttr != null)
                 {
@@ -65,9 +66,6 @@ namespace Api.ToMcp.Generator.Parsing
                             customToolName = tn;
                         if (namedArg.Key == "Description" && namedArg.Value.Value is string desc)
                             customDescription = desc;
-                        // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
-                        if (namedArg.Key == "Scope" && namedArg.Value.Value is int scopeValue && scopeValue != (int)McpScopeModel.None)
-                            requiredScope = (McpScopeModel)scopeValue;
                     }
                 }
 
@@ -392,6 +390,29 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// The scope an <c>[McpExpose]</c> on an action or a controller sets, or null when it sets none:
+        /// <c>McpScope.None</c> means "follow the HTTP method".
+        /// </summary>
+        private static McpScopeModel? GetScopeOverride(AttributeData? mcpExposeAttribute)
+        {
+            if (mcpExposeAttribute is null)
+            {
+                return null;
+            }
+
+            foreach (var namedArgument in mcpExposeAttribute.NamedArguments)
+            {
+                // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
+                if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue && scopeValue != (int)McpScopeModel.None)
+                {
+                    return (McpScopeModel)scopeValue;
+                }
+            }
+
+            return null;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)

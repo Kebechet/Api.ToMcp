@@ -260,7 +260,142 @@ namespace TestApi
         Assert.Contains("BeforeInvokeAsync(McpScope.Write,", createTool.Substring(0, createTool.IndexOf("return await", StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData("McpScope.Read | McpScope.Write", "McpScope.Read | McpScope.Write")]
+    [InlineData("McpScope.Read | McpScope.Delete", "McpScope.Read | McpScope.Delete")]
+    [InlineData("McpScope.All", "McpScope.All")]
+    [InlineData("(McpScope)8", "(McpScope)8")]
+    public void Generator_CombinedOrUnnamedScope_EmitsAScopeExpressionThatIsValidCSharp(string scopeInSource, string expectedScopeExpression)
+    {
+        // McpScope is a [Flags] enum: the ToString() of Read | Write is "Read, Write", which is not C#.
+        var controller = @"
+using Api.ToMcp.Abstractions;
+using Api.ToMcp.Abstractions.Scopes;
+
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [McpExpose(Scope = " + scopeInSource + @")]
+        [HttpPost(""import"")]
+        public Task<string> Import(string name) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Equal(
+            $"await invoker.BeforeInvokeAsync({expectedScopeExpression}, cancellationToken);",
+            GetScopeCheck(generated, "ReportsController_ImportTool"));
+    }
+
+    [Fact]
+    public void Generator_UsesScopeFromAControllerMcpExpose_ForActionsWithoutTheirOwn()
+    {
+        const string controller = @"
+using Api.ToMcp.Abstractions;
+using Api.ToMcp.Abstractions.Scopes;
+
+namespace TestApi
+{
+    [McpExpose(Scope = McpScope.Read)]
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [HttpPost(""search"")]
+        public Task<string> Search(string query) => Task.FromResult(string.Empty);
+
+        [McpExpose(Scope = McpScope.Write)]
+        [HttpPost(""import"")]
+        public Task<string> Import(string name) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);", GetScopeCheck(generated, "ReportsController_SearchTool"));
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Write, cancellationToken);", GetScopeCheck(generated, "ReportsController_ImportTool"));
+    }
+
+    [Fact]
+    public void Generator_EmitsToolsThatCompile_AgainstTheRealRuntimeAndAspNetCore()
+    {
+        // The other tests assert on the emitted text only; this one is what catches emitted code that is not C#.
+        const string controller = @"
+using Api.ToMcp.Abstractions;
+using Api.ToMcp.Abstractions.Scopes;
+
+namespace TestApi
+{
+    public sealed class ReportFilter
+    {
+        public DateOnly? From { get; set; }
+        public string[] Tags { get; set; } = [];
+    }
+
+    [McpExpose(Scope = McpScope.Read)]
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public Task<string> GetById(Guid id) => Task.FromResult(string.Empty);
+
+        [HttpGet]
+        public Task<string> Find([FromQuery] ReportFilter filter, int page) => Task.FromResult(string.Empty);
+
+        [HttpPost(""search"")]
+        public Task<string> Search([FromBody] ReportFilter filter) => Task.FromResult(string.Empty);
+
+        [McpExpose(Scope = McpScope.Read | McpScope.Write)]
+        [HttpPost(""import"")]
+        public Task<string> Import(string name) => Task.FromResult(string.Empty);
+
+        [McpExpose(Scope = McpScope.Read | McpScope.Delete)]
+        [HttpDelete(""{id}"")]
+        public Task<string> Delete(Guid id) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var errors = CompileWithGeneratedTools(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
+    }
+
+    private static string GetScopeCheck(string generated, string toolClassName)
+    {
+        var tool = generated.Substring(generated.IndexOf($"class {toolClassName}", StringComparison.Ordinal));
+
+        return tool
+            .Split('\n')
+            .First(x => x.Contains("BeforeInvokeAsync"))
+            .Trim();
+    }
+
     private static string RunGenerator(string source, string generatorJson)
+    {
+        var runResult = CreateDriver(generatorJson)
+            .RunGenerators(CreateCompilation(source))
+            .GetRunResult();
+
+        return string.Join(
+            "\n",
+            runResult.Results
+                .SelectMany(r => r.GeneratedSources)
+                .Select(s => s.SourceText.ToString()));
+    }
+
+    private static List<Diagnostic> CompileWithGeneratedTools(string source, string generatorJson)
+    {
+        CreateDriver(generatorJson).RunGeneratorsAndUpdateCompilation(CreateCompilation(source), out var outputCompilation, out var generatorDiagnostics);
+
+        return generatorDiagnostics
+            .Concat(outputCompilation.GetDiagnostics())
+            .Where(x => x.Severity == DiagnosticSeverity.Error)
+            .ToList();
+    }
+
+    private static CSharpCompilation CreateCompilation(string source)
     {
         // DocumentationMode.Parse makes XML doc comments available via GetDocumentationCommentXml,
         // mirroring a consumer build with <GenerateDocumentationFile>true</GenerateDocumentationFile>.
@@ -272,25 +407,19 @@ namespace TestApi
             .Select(path => MetadataReference.CreateFromFile(path))
             .ToArray();
 
-        var compilation = CSharpCompilation.Create(
+        return CSharpCompilation.Create(
             "TestAssembly",
             new[] { syntaxTree },
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+    }
 
-        var driver = CSharpGeneratorDriver
+    private static GeneratorDriver CreateDriver(string generatorJson)
+    {
+        return CSharpGeneratorDriver
             .Create(new McpToolGenerator())
             .AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(
-                new InMemoryAdditionalText("Mcp/generator.json", generatorJson)))
-            .RunGenerators(compilation);
-
-        var runResult = driver.GetRunResult();
-
-        return string.Join(
-            "\n",
-            runResult.Results
-                .SelectMany(r => r.GeneratedSources)
-                .Select(s => s.SourceText.ToString()));
+                new InMemoryAdditionalText("Mcp/generator.json", generatorJson)));
     }
 
     private sealed class InMemoryAdditionalText : AdditionalText
