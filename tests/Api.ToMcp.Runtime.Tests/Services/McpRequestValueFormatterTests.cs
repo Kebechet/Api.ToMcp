@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using Api.ToMcp.Runtime.Services;
 using Xunit;
@@ -132,6 +133,74 @@ public class McpRequestValueFormatterTests
             queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_IndexesOnlyTheObjectsItSends_SoANullItemLeavesNoGap()
+    {
+        // The binder reads Stages[0], Stages[1], ... and stops at the first missing index.
+        var queryParts = new List<string>();
+        var filter = new StagesFilter
+        {
+            Stages = [null, new Stage { PlanId = Guid.Empty, DayId = 1 }, null, new Stage { PlanId = Guid.Empty, DayId = 2 }]
+        };
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", filter);
+
+        Assert.Equal(
+            new[]
+            {
+                "filter.Stages%5B0%5D.PlanId=00000000-0000-0000-0000-000000000000",
+                "filter.Stages%5B0%5D.DayId=1",
+                "filter.Stages%5B1%5D.PlanId=00000000-0000-0000-0000-000000000000",
+                "filter.Stages%5B1%5D.DayId=2"
+            },
+            queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsATypeWithAStringConverter_AsOneValueWrittenByTheConverter()
+    {
+        // The binder treats such a type as simple and reads it back through the converter; the record's own
+        // ToString() ("OrderId { Value = ... }") would not parse.
+        var queryParts = new List<string>();
+        var orderId = new OrderId(Guid.Parse("0189dfd3-5bd1-a760-bed1-d1d5751e4e8c"));
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "orderId", orderId);
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new OrderFilter { Order = orderId });
+
+        Assert.Equal(
+            new[] { "orderId=0189dfd3-5bd1-a760-bed1-d1d5751e4e8c", "filter.Order=0189dfd3-5bd1-a760-bed1-d1d5751e4e8c" },
+            queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsATypeWithTryParse_AsOneValue()
+    {
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "sku", new Sku("AB-12"));
+
+        Assert.Equal(new[] { "sku=AB-12" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsNumbersThatAreNotPrimitives()
+    {
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "signed", Int128.MaxValue);
+        McpRequestValueFormatter.AddQueryValue(queryParts, "unsigned", UInt128.MaxValue);
+        McpRequestValueFormatter.AddQueryValue(queryParts, "half", (Half)1.5);
+
+        Assert.Equal(
+            new[]
+            {
+                "signed=170141183460469231731687303715884105727",
+                "unsigned=340282366920938463463374607431768211455",
+                "half=1.5"
+            },
+            queryParts);
+    }
+
     private sealed class SearchFilter
     {
         public string? City { get; set; }
@@ -149,12 +218,56 @@ public class McpRequestValueFormatterTests
 
     private sealed class StagesFilter
     {
-        public List<Stage> Stages { get; set; } = [];
+        public List<Stage?> Stages { get; set; } = [];
     }
 
     private sealed class Stage
     {
         public Guid PlanId { get; set; }
         public int? DayId { get; set; }
+    }
+
+    private sealed class OrderFilter
+    {
+        public OrderId? Order { get; set; }
+    }
+
+    [TypeConverter(typeof(OrderIdConverter))]
+    private readonly record struct OrderId(Guid Value);
+
+    private sealed class OrderIdConverter : TypeConverter
+    {
+        public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
+        {
+            return sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
+        }
+
+        public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)
+        {
+            return value is string text
+                ? new OrderId(Guid.Parse(text))
+                : base.ConvertFrom(context, culture, value);
+        }
+
+        public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
+        {
+            return value is OrderId orderId && destinationType == typeof(string)
+                ? orderId.Value.ToString()
+                : base.ConvertTo(context, culture, value, destinationType);
+        }
+    }
+
+    private readonly record struct Sku(string Code)
+    {
+        public static bool TryParse(string? text, IFormatProvider? provider, out Sku sku)
+        {
+            sku = new Sku(text ?? string.Empty);
+            return text is not null;
+        }
+
+        public override string ToString()
+        {
+            return Code;
+        }
     }
 }

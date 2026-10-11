@@ -1,4 +1,6 @@
 using System.Collections;
+using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
 
@@ -17,6 +19,10 @@ public static class McpRequestValueFormatter
     /// </summary>
     private const int MaxObjectDepth = 8;
 
+    private const string TryParseMethodName = "TryParse";
+
+    private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
+
     /// <summary>
     /// Formats a single route or query value with the invariant culture and ISO 8601 dates.
     /// </summary>
@@ -34,13 +40,15 @@ public static class McpRequestValueFormatter
             TimeSpan timeSpan => timeSpan.ToString("c", CultureInfo.InvariantCulture),
             Enum enumValue => enumValue.ToString(),
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
-            _ => value.ToString() ?? string.Empty
+            // The binder reads a type with a converter back through that converter, which a record's ToString() would not round-trip.
+            _ => TypeDescriptor.GetConverter(value.GetType()).ConvertToInvariantString(value) ?? string.Empty
         };
     }
 
     /// <summary>
-    /// Adds a query parameter. A null value adds nothing, a collection repeats the key once per item, and an
-    /// object (a <c>[FromQuery]</c> filter) adds each property under the <c>name.Property</c> and
+    /// Adds a query parameter. A null value adds nothing, a value the binder reads from one string (a type with a
+    /// converter or a <c>TryParse</c>, a strongly-typed id among them) is sent whole, a collection repeats the key
+    /// once per item, and any other object (a <c>[FromQuery]</c> filter) adds each property under the <c>name.Property</c> and
     /// <c>name.Items[0].Property</c> keys the binder expects - sending the object's <c>ToString()</c> instead
     /// binds nothing and the endpoint silently runs with an empty filter.
     /// </summary>
@@ -64,18 +72,23 @@ public static class McpRequestValueFormatter
 
         if (value is IEnumerable items)
         {
+            // Only the objects actually sent are numbered: the binder reads Items[0], Items[1], ... and stops at the
+            // first missing index, so a null item must not leave a gap.
             var index = 0;
             foreach (var item in items)
             {
-                if (item is not null && !IsScalar(item.GetType()))
+                if (item is null)
                 {
-                    AddProperties(queryParts, $"{key}[{index}]", item, depth + 1);
-                }
-                else
-                {
-                    AddValue(queryParts, key, item, depth + 1);
+                    continue;
                 }
 
+                if (IsScalar(item.GetType()))
+                {
+                    AddValue(queryParts, key, item, depth + 1);
+                    continue;
+                }
+
+                AddProperties(queryParts, $"{key}[{index}]", item, depth + 1);
                 index++;
             }
 
@@ -107,18 +120,34 @@ public static class McpRequestValueFormatter
 
     private static bool IsScalar(Type type)
     {
-        var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+        return IsScalarByType.GetOrAdd(Nullable.GetUnderlyingType(type) ?? type, IsBoundFromOneValue);
+    }
 
-        return underlyingType.IsPrimitive ||
-            underlyingType.IsEnum ||
-            underlyingType == typeof(string) ||
-            underlyingType == typeof(decimal) ||
-            underlyingType == typeof(Guid) ||
-            underlyingType == typeof(DateTime) ||
-            underlyingType == typeof(DateTimeOffset) ||
-            underlyingType == typeof(DateOnly) ||
-            underlyingType == typeof(TimeOnly) ||
-            underlyingType == typeof(TimeSpan) ||
-            underlyingType == typeof(Uri);
+    /// <summary>
+    /// The binder's own rule for a simple type: one it can read from a single string, through a type converter or a
+    /// static <c>TryParse</c>. A strongly-typed id is such a type, and expanding it into its properties instead
+    /// binds nothing. Every other type is complex and bound property by property.
+    /// </summary>
+    private static bool IsBoundFromOneValue(Type type)
+    {
+        return TypeDescriptor.GetConverter(type).CanConvertFrom(typeof(string)) ||
+            type
+                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Any(x => x.Name == TryParseMethodName && IsTryParseSignature(x, type));
+    }
+
+    private static bool IsTryParseSignature(MethodInfo method, Type type)
+    {
+        var parameterTypes = method
+            .GetParameters()
+            .Select(x => x.ParameterType)
+            .ToList();
+        var resultType = type.MakeByRefType();
+
+        return method.ReturnType == typeof(bool) &&
+            (
+                parameterTypes.SequenceEqual([typeof(string), resultType]) ||
+                parameterTypes.SequenceEqual([typeof(string), typeof(IFormatProvider), resultType])
+            );
     }
 }
