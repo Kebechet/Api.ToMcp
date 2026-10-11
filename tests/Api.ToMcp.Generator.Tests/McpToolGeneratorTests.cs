@@ -422,6 +422,27 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_QueryAliasWithQuotesAndBackslashes_EmitsAnEscapedLiteralThatCompiles()
+    {
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [HttpGet]
+        public Task<string> Find([FromQuery(Name = ""q\""x\\y"")] string query) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+        var errors = CompileWithGeneratedTools(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("AddQueryValue(queryParts, \"q\\\"x\\\\y\", query);", generated);
+        Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
+    }
+
+    [Fact]
     public void Generator_ReplacesControllerAndActionTokens_InAbsoluteAndRelativeTemplates()
     {
         // ASP.NET Core replaces the tokens in an absolute template too; left in, the request goes to a literal "[controller]" and 404s.
@@ -439,6 +460,10 @@ namespace TestApi
 
         [HttpGet(""~/[Controller]/[Action]"")]
         public Task<string> RecentAsync() => Task.FromResult(string.Empty);
+
+        [ActionName(""lookup"")]
+        [HttpGet(""[action]"")]
+        public Task<string> FindAsync() => Task.FromResult(string.Empty);
     }
 }
 ";
@@ -448,6 +473,8 @@ namespace TestApi
         Assert.Equal("var route = $\"/api/products/popular\";", GetRouteLine(generated, "ProductsController_PopularTool"));
         // MVC drops the Async suffix from action names by default (SuppressAsyncSuffixInActionNames).
         Assert.Equal("var route = $\"/products/recent\";", GetRouteLine(generated, "ProductsController_RecentAsyncTool"));
+        // [ActionName] replaces the method name, Async suffix and all.
+        Assert.Equal("var route = $\"/api/products/lookup\";", GetRouteLine(generated, "ProductsController_FindAsyncTool"));
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 using Api.ToMcp.Generator.Models;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace Api.ToMcp.Generator.Emitting
 {
@@ -172,7 +173,9 @@ namespace Api.ToMcp.Generator.Emitting
                 sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
                 foreach (var param in queryParams)
                 {
-                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, \"{param.QueryName ?? param.Name}\", {param.Name});");
+                    // A [FromQuery(Name)] alias is any string, so it is written as an escaped C# literal.
+                    var queryKeyLiteral = SymbolDisplay.FormatLiteral(param.QueryName ?? param.Name, quote: true);
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, {queryKeyLiteral}, {param.Name});");
                 }
                 sb.AppendLine("            if (queryParts.Count > 0)");
                 sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");

@@ -51,7 +51,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var parameters = AnalyzeParameters(method, httpInfo.Value.Method);
                 var returnType = AnalyzeReturnType(method);
 
-                var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, method.Name);
+                var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, GetRouteActionName(method));
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
 
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
@@ -320,17 +320,30 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// ASP.NET Core replaces <c>[controller]</c> and <c>[action]</c> in every attribute route, an absolute one
-        /// included, case-insensitively: by the class name without "Controller" and the method name without the
-        /// "Async" suffix MVC drops by default (<c>SuppressAsyncSuffixInActionNames</c>).
+        /// included, case-insensitively: by the class name without "Controller" and the action's route name.
         /// </summary>
         private static string ReplaceRouteTokens(string route, string controllerName, string actionName)
         {
             var controllerToken = TrimSuffix(controllerName, "Controller").ToLowerInvariant();
-            var actionToken = TrimSuffix(actionName, "Async").ToLowerInvariant();
+            var actionToken = actionName.ToLowerInvariant();
 
             var routeWithController = Regex.Replace(route, @"\[controller\]", controllerToken, RegexOptions.IgnoreCase);
 
             return Regex.Replace(routeWithController, @"\[action\]", actionToken, RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
+        /// The name MVC gives an action: an <c>[ActionName]</c>'s, else the method name without the "Async" suffix
+        /// MVC drops by default (<c>SuppressAsyncSuffixInActionNames</c>), which it never applies to an explicit name.
+        /// </summary>
+        private static string GetRouteActionName(IMethodSymbol method)
+        {
+            var explicitActionName = method.GetAttributes()
+                .Where(x => x.AttributeClass?.Name == "ActionNameAttribute" && x.ConstructorArguments.Any())
+                .Select(x => x.ConstructorArguments.First().Value as string)
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+
+            return explicitActionName ?? TrimSuffix(method.Name, "Async");
         }
 
         private static string TrimSuffix(string name, string suffix)
