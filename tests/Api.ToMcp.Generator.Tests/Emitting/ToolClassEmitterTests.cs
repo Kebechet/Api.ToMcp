@@ -8,6 +8,8 @@ namespace Api.ToMcp.Generator.Tests.Emitting;
 
 public class ToolClassEmitterTests
 {
+    private const string Formatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
+
     #region RouteContainsParameter Tests
 
     [Theory]
@@ -260,10 +262,10 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routeid = System.Uri.EscapeDataString(id.ToString());", result);
+        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", result);
         Assert.Contains("var route = $\"/api/products/{routeid}\";", result);
         Assert.DoesNotContain("{id:guid}", result);
-        Assert.DoesNotContain("id?.ToString()", result);
+        Assert.DoesNotContain(".ToString()", result);
     }
 
     [Fact]
@@ -287,7 +289,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routeid = System.Uri.EscapeDataString(id.ToString());", result);
+        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", result);
         Assert.Contains("var route = $\"/api/orders/{routeid}\";", result);
     }
 
@@ -314,7 +316,32 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("queryParts.Add($\"category={System.Uri.EscapeDataString(category.ToString()!)}\");", result);
+        Assert.Contains($"{Formatter}.AddQueryValue(queryParts, \"category\", category);", result);
+    }
+
+    [Fact]
+    public void Emit_PassesFromQueryObjectToTheFormatter_NotItsToString()
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "Search",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products/search",
+            Parameters = ImmutableArray.Create(new ParameterInfoModel
+            {
+                Name = "filter",
+                Type = "ProductFilter",
+                Source = ParameterSourceModel.Query,
+                IsNullable = false
+            })
+        };
+
+        var config = new GeneratorConfigModel();
+        var result = ToolClassEmitter.Emit(action, config);
+
+        Assert.Contains($"{Formatter}.AddQueryValue(queryParts, \"filter\", filter);", result);
+        Assert.DoesNotContain(".ToString()", result);
     }
 
     [Fact]
@@ -338,7 +365,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("id?.ToString() ?? string.Empty", result);
+        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", result);
     }
 
     [Fact]
@@ -362,7 +389,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.DoesNotContain("queryParts.Add($\"id=", result);
+        Assert.DoesNotContain("AddQueryValue(queryParts, \"id\"", result);
         Assert.DoesNotContain("var queryParts", result);
     }
 
@@ -666,8 +693,8 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routeorderId = System.Uri.EscapeDataString(orderId.ToString());", result);
-        Assert.Contains("var routeitemId = System.Uri.EscapeDataString(itemId.ToString());", result);
+        Assert.Contains($"var routeorderId = System.Uri.EscapeDataString({Formatter}.Format(orderId));", result);
+        Assert.Contains($"var routeitemId = System.Uri.EscapeDataString({Formatter}.Format(itemId));", result);
         Assert.Contains("return await invoker.DeleteAsync(route, cancellationToken);", result);
     }
 
@@ -1022,8 +1049,8 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routedate = System.Uri.EscapeDataString(date.ToString());", result);
-        Assert.DoesNotContain("date?.ToString()", result);
+        Assert.Contains($"var routedate = System.Uri.EscapeDataString({Formatter}.Format(date));", result);
+        Assert.DoesNotContain(".ToString()", result);
     }
 
     [Fact]
@@ -1047,8 +1074,8 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routetime = System.Uri.EscapeDataString(time.ToString());", result);
-        Assert.DoesNotContain("time?.ToString()", result);
+        Assert.Contains($"var routetime = System.Uri.EscapeDataString({Formatter}.Format(time));", result);
+        Assert.DoesNotContain(".ToString()", result);
     }
 
     [Fact]
@@ -1072,7 +1099,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("date?.ToString() ?? string.Empty", result);
+        Assert.Contains($"var routedate = System.Uri.EscapeDataString({Formatter}.Format(date));", result);
     }
 
     #endregion
@@ -1104,7 +1131,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routerequest_MeasurementTypeId = System.Uri.EscapeDataString(request.MeasurementTypeId.ToString());", result);
+        Assert.Contains($"var routerequest_MeasurementTypeId = System.Uri.EscapeDataString({Formatter}.Format(request.MeasurementTypeId));", result);
         Assert.Contains("{routerequest_MeasurementTypeId}", result);
         Assert.DoesNotContain("{measurementTypeId}", result);
     }
@@ -1134,8 +1161,8 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("request.ExerciseId.ToString()", result);
-        Assert.Contains("request.SetId.ToString()", result);
+        Assert.Contains($"{Formatter}.Format(request.ExerciseId)", result);
+        Assert.Contains($"{Formatter}.Format(request.SetId)", result);
     }
 
     [Fact]
@@ -1171,8 +1198,8 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("var routeorderId = System.Uri.EscapeDataString(orderId.ToString());", result);
-        Assert.Contains("request.ItemId.ToString()", result);
+        Assert.Contains($"var routeorderId = System.Uri.EscapeDataString({Formatter}.Format(orderId));", result);
+        Assert.Contains($"{Formatter}.Format(request.ItemId)", result);
     }
 
     [Fact]
@@ -1199,7 +1226,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("filter.CategoryId?.ToString() ?? string.Empty", result);
+        Assert.Contains($"{Formatter}.Format(filter.CategoryId)", result);
     }
 
     [Fact]
@@ -1226,7 +1253,7 @@ public class ToolClassEmitterTests
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
 
-        Assert.Contains("request.itemId.ToString()", result);
+        Assert.Contains($"{Formatter}.Format(request.itemId)", result);
         Assert.DoesNotContain("{ItemId}", result);
     }
 

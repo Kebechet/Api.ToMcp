@@ -22,17 +22,25 @@
     <DebugType>embedded</DebugType>
     <PackageIcon>icon.png</PackageIcon>
     <PackageTags>mcp;model-context-protocol;source-generator;aspnetcore;api;claude;ai</PackageTags>
-    <Version>2.0.0-preview.1</Version>
+    <Version>2.0.0</Version>
     <PackageReleaseNotes>
 Breaking:
-- Upgraded to ModelContextProtocol.AspNetCore 2.0.0-preview.1. Consumers must not reference a different ModelContextProtocol.* version (a mismatch causes a MissingMethodException at startup).
+- Upgraded to ModelContextProtocol.AspNetCore 2.2.0. Consumers must not reference a different ModelContextProtocol.* version (a mismatch causes a MissingMethodException at startup).
 - IMcpHttpInvoker methods now return Task&lt;CallToolResult&gt; instead of Task&lt;string&gt;. Failed (non-2xx) API calls are surfaced as isError:true instead of a soft error payload.
 
 Added:
 - Tool and parameter descriptions are pulled from XML &lt;summary&gt;/&lt;param&gt; docs (requires GenerateDocumentationFile).
+- Request fields (DTO properties, nested objects, array items) without a [Description] are described from their XML &lt;summary&gt; at runtime, read from the .xml next to each assembly; an assembly without a readable file is reported with one warning at startup and never stops the host. Off via McpScopeOptions.ArePropertyDescriptionsFromXmlDocs.
+- [McpExpose(Scope = ...)] overrides the scope derived from the HTTP method, on an action or on a whole controller; combined flags require all of them.
+- Route and query values are sent culture-invariantly (ISO 8601 dates) and [FromQuery] objects are expanded into their properties, nested collections included; a type the binder reads from one value (a type converter or TryParse, such as a strongly-typed id) is sent whole, and a [FromQuery(Name = ...)] on a parameter or a property is sent under that name.
+- The package ships the XML docs of its public API for IntelliSense.
+- Action routes starting with "/" or "~/" are absolute, as in ASP.NET Core routing, and [controller]/[action] tokens are replaced in every route.
 - The request CancellationToken is propagated through generated tools to the API call.
 - Method-level [Route] attributes are supported.
 - URL-segment API versioning: the version from [ApiVersion] is baked into the generated route.
+
+Changed:
+- AddMcpTools registers the tools itself (same discovery as WithToolsFromAssembly, hand-written [McpServerToolType] classes included) and builds them when the host starts, so a tool that cannot be created fails at startup instead of at the first request.
 
 Fixed:
 - generator.json is no longer created in transitive consumers (e.g. test projects).
@@ -45,7 +53,7 @@ Fixed:
 
   <!-- ModelContextProtocol.AspNetCore as direct dependency for consumers -->
   <ItemGroup>
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.0.0-preview.1" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
   </ItemGroup>
 
   <!-- Reference Runtime (which transitively references Abstractions) - bundled in package -->
@@ -100,7 +108,9 @@ Fixed:
   <Target Name="IncludeBundledAssemblies">
     <ItemGroup>
       <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Runtime.dll" />
+      <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Runtime.xml" />
       <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Abstractions.dll" />
+      <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Abstractions.xml" />
     </ItemGroup>
   </Target>
 

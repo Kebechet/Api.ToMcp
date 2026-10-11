@@ -64,6 +64,11 @@ namespace Api.ToMcp.Generator.Models
         public ParameterSourceModel Source { get; set; }
         public ImmutableArray<PropertyInfoModel> Properties { get; set; } = ImmutableArray<PropertyInfoModel>.Empty;
         public string? Description { get; set; }
+
+        /// <summary>
+        /// The key a <c>[FromQuery(Name = "...")]</c> makes MVC bind the parameter from, or null when it names none.
+        /// </summary>
+        public string? QueryName { get; set; }
     }
 
     internal sealed class PropertyInfoModel

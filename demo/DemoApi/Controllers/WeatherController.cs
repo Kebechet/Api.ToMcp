@@ -47,6 +47,42 @@ public class WeatherController : ControllerBase
     }
 
     /// <summary>
+    /// Gets the weather forecast for a specific day.
+    /// </summary>
+    /// <param name="date">The day to forecast.</param>
+    [HttpGet("on/{date}")]
+    public Task<WeatherForecast> GetByDate(DateOnly date)
+    {
+        var forecast = new WeatherForecast
+        {
+            City = "Default",
+            Date = date.ToDateTime(TimeOnly.MinValue),
+            TemperatureC = Random.Shared.Next(-20, 55),
+            Summary = Summaries[Random.Shared.Next(Summaries.Length)]
+        };
+
+        return Task.FromResult(forecast);
+    }
+
+    /// <summary>
+    /// Gets one forecast per requested summary, starting on the requested day.
+    /// </summary>
+    [HttpGet("search")]
+    public Task<IEnumerable<WeatherForecast>> Search([FromQuery] WeatherSearchFilter filter)
+    {
+        var from = filter.From ?? DateOnly.FromDateTime(DateTime.Today);
+        var forecasts = filter.Summaries.Select((summary, index) => new WeatherForecast
+        {
+            City = filter.City ?? "Default",
+            Date = from.AddDays(index).ToDateTime(TimeOnly.MinValue),
+            TemperatureC = Random.Shared.Next(-20, 55),
+            Summary = summary
+        });
+
+        return Task.FromResult(forecasts);
+    }
+
+    /// <summary>
     /// Creates a new weather forecast entry.
     /// </summary>
     [HttpPost]

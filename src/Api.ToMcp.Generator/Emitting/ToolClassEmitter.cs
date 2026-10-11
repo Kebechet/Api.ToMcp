@@ -4,11 +4,20 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 using Api.ToMcp.Generator.Models;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace Api.ToMcp.Generator.Emitting
 {
     internal static class ToolClassEmitter
     {
+        /// <summary>
+        /// Route and query values go through the runtime formatter, never <c>ToString()</c>: the binder reads
+        /// them with the invariant culture, and a <c>[FromQuery]</c> object has to be expanded into its properties.
+        /// </summary>
+        private const string RequestValueFormatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
+
+        private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
+
         public static string Emit(ActionInfoModel action, GeneratorConfigModel config, string? overrideClassName = null)
         {
             var toolName = FormatToolName(action, config.Naming);
@@ -133,13 +142,9 @@ namespace Api.ToMcp.Generator.Emitting
             // Generate route variables
             foreach (var kvp in placeholderSources)
             {
-                var placeholder = kvp.Key;
-                var (expression, type, isNullable, varName) = kvp.Value;
+                var (expression, _, _, varName) = kvp.Value;
 
-                var toStringExpr = IsValueType(type) && !isNullable
-                    ? $"{expression}.ToString()"
-                    : $"{expression}?.ToString() ?? string.Empty";
-                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({toStringExpr});");
+                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({RequestValueFormatter}.Format({expression}));");
             }
 
             // Convert route template - replace placeholders with generated variable names
@@ -168,15 +173,9 @@ namespace Api.ToMcp.Generator.Emitting
                 sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
                 foreach (var param in queryParams)
                 {
-                    if (param.IsNullable || param.HasDefaultValue)
-                    {
-                        sb.AppendLine($"            if ({param.Name} != null)");
-                        sb.AppendLine($"                queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString()!)}}\");");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"            queryParts.Add($\"{param.Name}={{System.Uri.EscapeDataString({param.Name}.ToString()!)}}\");");
-                    }
+                    // A [FromQuery(Name)] alias is any string, so it is written as an escaped C# literal.
+                    var queryKeyLiteral = SymbolDisplay.FormatLiteral(param.QueryName ?? param.Name, quote: true);
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, {queryKeyLiteral}, {param.Name});");
                 }
                 sb.AppendLine("            if (queryParts.Count > 0)");
                 sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");
@@ -189,9 +188,8 @@ namespace Api.ToMcp.Generator.Emitting
             List<ParameterInfoModel> parameters)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
-            var scopeName = action.RequiredScope.ToString();
 
-            sb.AppendLine($"            await invoker.BeforeInvokeAsync(McpScope.{scopeName}, cancellationToken);");
+            sb.AppendLine($"            await invoker.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope)}, cancellationToken);");
 
             if (action.HttpMethod == "GET")
             {
@@ -237,6 +235,30 @@ namespace Api.ToMcp.Generator.Emitting
             {
                 sb.AppendLine("            return await invoker.DeleteAsync(route, cancellationToken);");
             }
+        }
+
+        /// <summary>
+        /// McpScope is a [Flags] enum, so the <c>ToString()</c> of a combined value is "Read, Write", which is not C#.
+        /// A combination of named flags is written as <c>McpScope.Read | McpScope.Write</c>, and a value with bits no
+        /// flag names as a cast, so the generated tool always compiles.
+        /// </summary>
+        private static string GetScopeExpression(McpScopeModel scope)
+        {
+            if (Enum.IsDefined(typeof(McpScopeModel), scope))
+            {
+                return $"McpScope.{scope}";
+            }
+
+            var includedFlags = SingleScopes
+                .Where(x => (scope & x) == x)
+                .ToList();
+            var includedBits = includedFlags.Aggregate(McpScopeModel.None, (combined, x) => combined | x);
+            if (includedBits != scope)
+            {
+                return $"(McpScope){(int)scope}";
+            }
+
+            return string.Join(" | ", includedFlags.Select(x => $"McpScope.{x}"));
         }
 
         public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)

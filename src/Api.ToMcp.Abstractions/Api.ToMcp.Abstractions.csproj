@@ -7,6 +7,9 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <DebugType>embedded</DebugType>
+    <!-- Shipped in the package so consumers see the attribute and scope docs in their IDE -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
 </Project>

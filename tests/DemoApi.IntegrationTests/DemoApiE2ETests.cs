@@ -1,15 +1,19 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Net;
 using System.Reflection;
+using System.Text.Json;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
+using DemoApi.Models;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
@@ -168,6 +172,63 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task GeneratedTool_SendsDateRouteValue_InIsoFormat_RegardlessOfCulture()
+    {
+        // DateOnly.ToString() follows the current culture ("9/28/2026" in en-US), which the
+        // route binder cannot parse, so every date-routed tool answered 400.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("en-US");
+        try
+        {
+            var invoke = GetGeneratedInvokeMethod("WeatherController_GetByDateTool");
+
+            var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), new DateOnly(2026, 9, 28), CancellationToken.None })!;
+            var result = await task;
+
+            var text = ((TextContentBlock)result.Content[0]).Text;
+            Assert.NotEqual(true, result.IsError);
+            Assert.Contains("2026-09-28", text);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
+    public async Task GeneratedTool_ExpandsFromQueryObject_IntoItsProperties()
+    {
+        // A [FromQuery] object used to be sent as "filter=<type name>", which the binder ignores,
+        // so the endpoint silently ran with an empty filter instead of failing.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("en-US");
+        try
+        {
+            var invoke = GetGeneratedInvokeMethod("WeatherController_SearchTool");
+            var filter = new WeatherSearchFilter
+            {
+                City = "Brno",
+                From = new DateOnly(2026, 9, 28),
+                Summaries = ["Mild", "Warm"]
+            };
+
+            var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), filter, CancellationToken.None })!;
+            var result = await task;
+
+            var text = ((TextContentBlock)result.Content[0]).Text;
+            Assert.NotEqual(true, result.IsError);
+            Assert.Contains("Brno", text);
+            Assert.Contains("Mild", text);
+            Assert.Contains("Warm", text);
+            Assert.Contains("2026-09-29", text);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
     public async Task McpProtocol_ToolsCall_SurfacesIsError_OverTheWire()
     {
         // The definitive #7 test: drive the real /mcp endpoint with an MCP client and assert
@@ -186,6 +247,78 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             new Dictionary<string, object?> { ["id"] = "ffffffff-ffff-ffff-ffff-ffffffffffff" });
         Assert.True(failed.IsError);
         Assert.Contains("404", ((TextContentBlock)failed.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsList_DescribesRequestFields_FromXmlDocs()
+    {
+        // The SDK reads only [Description] when it builds a parameter type's schema; each DTO property's XML
+        // <summary> is filled in at runtime from DemoApi.xml, and an explicit [Description] still wins.
+        await using var client = await ConnectMcpClientAsync();
+
+        var tools = await client.ListToolsAsync();
+
+        var requestProperties = tools.Single(x => x.Name == "Weather_Create").JsonSchema
+            .GetProperty("properties")
+            .GetProperty("request")
+            .GetProperty("properties");
+        Assert.Equal("Name of the city the forecast is for.", GetDescription(requestProperties, "city"));
+        Assert.Equal("Day the forecast applies to.", GetDescription(requestProperties, "date"));
+        Assert.Equal("Air temperature in degrees Celsius.", GetDescription(requestProperties, "temperatureC"));
+        Assert.Equal("One-word summary of the weather, such as Mild or Scorching.", GetDescription(requestProperties, "summary"));
+
+        var filterProperties = tools.Single(x => x.Name == "Weather_Search").JsonSchema
+            .GetProperty("properties")
+            .GetProperty("filter")
+            .GetProperty("properties");
+        Assert.Equal("Summaries to produce one forecast each for.", GetDescription(filterProperties, "summaries"));
+    }
+
+    [Fact]
+    public async Task McpProtocol_ListsAndCallsAHandWrittenTool_WithItsAnnotationsAndInjectedService()
+    {
+        // ServerTools has no endpoint behind it; AddMcpTools must register it exactly as the SDK's assembly scan
+        // did: name, description, annotations, and IHostEnvironment injected rather than exposed as an argument.
+        await using var client = await ConnectMcpClientAsync();
+
+        var tool = (await client.ListToolsAsync()).Single(x => x.Name == "Server_GetEnvironment");
+        Assert.Equal("Gets the name of the hosting environment the API runs in.", tool.Description);
+        Assert.True(tool.ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.True(tool.ProtocolTool.Annotations?.IdempotentHint);
+        Assert.False(tool.ProtocolTool.Annotations?.OpenWorldHint);
+        var hasEnvironmentArgument = tool.JsonSchema.TryGetProperty("properties", out var properties) && properties.TryGetProperty("environment", out _);
+        Assert.False(hasEnvironmentArgument);
+
+        var result = await client.CallToolAsync("Server_GetEnvironment");
+
+        Assert.NotEqual(true, result.IsError);
+        var environmentName = _factory.Services.GetRequiredService<IWebHostEnvironment>().EnvironmentName;
+        Assert.Equal(environmentName, ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    [Fact]
+    public void Startup_BuildsTheTools_AndReportsNoMissingXmlDocs()
+    {
+        // The tools are built when the host starts, not on the first MCP request, so a missing XML documentation
+        // file is warned about in the startup log. The demo ships DemoApi.xml, so nothing is missing.
+        var logs = new List<(LogLevel Level, string Message)>();
+        var factory = _factory.WithWebHostBuilder(builder => builder.ConfigureLogging(logging =>
+        {
+            logging.AddProvider(new ListLoggerProvider(logs));
+            logging.AddFilter<ListLoggerProvider>("Api.ToMcp", LogLevel.Debug);
+        }));
+
+        using var client = factory.CreateClient();
+
+        Assert.Contains(logs, x => x.Level == LogLevel.Debug && x.Message.Contains("MCP tools"));
+        Assert.Empty(logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
+    }
+
+    private static string? GetDescription(JsonElement properties, string propertyName)
+    {
+        return properties.GetProperty(propertyName).TryGetProperty("description", out var description)
+            ? description.GetString()
+            : null;
     }
 
     private async Task<McpClient> ConnectMcpClientAsync()
@@ -216,6 +349,24 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         return await McpClient.CreateAsync(transport);
     }
 
+    private McpHttpInvoker CreateDirectInvoker()
+    {
+        var client = _factory.CreateClient();
+        return new McpHttpInvoker(
+            client,
+            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
+            new HttpContextAccessor(),
+            NullLogger<McpHttpInvoker>.Instance,
+            Options.Create(new McpScopeOptions()));
+    }
+
+    private static MethodInfo GetGeneratedInvokeMethod(string toolTypeName)
+    {
+        var toolType = typeof(Program).Assembly
+            .GetType($"Api.ToMcp.Generated.{toolTypeName}", throwOnError: true)!;
+        return toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
+    }
+
     private static string[] GetGeneratedToolTypeNames()
     {
         var infoType = typeof(Program).Assembly
@@ -231,5 +382,52 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         private readonly string _baseUrl;
         public FixedBaseUrlProvider(string baseUrl) => _baseUrl = baseUrl;
         public string GetBaseUrl() => _baseUrl;
+    }
+
+    private sealed class ListLoggerProvider : ILoggerProvider
+    {
+        private readonly List<(LogLevel Level, string Message)> _logs;
+
+        public ListLoggerProvider(List<(LogLevel Level, string Message)> logs)
+        {
+            _logs = logs;
+        }
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            return new ListLogger(_logs);
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ListLogger : ILogger
+    {
+        private readonly List<(LogLevel Level, string Message)> _logs;
+
+        public ListLogger(List<(LogLevel Level, string Message)> logs)
+        {
+            _logs = logs;
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            lock (_logs)
+            {
+                _logs.Add((logLevel, formatter(state, exception)));
+            }
+        }
     }
 }

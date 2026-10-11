@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Api.ToMcp.Generator.Models;
@@ -28,6 +29,7 @@ namespace Api.ToMcp.Generator.Parsing
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
+            var controllerScope = GetDeclaredScope(FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute));
 
             foreach (var member in controller.GetMembers())
             {
@@ -49,12 +51,18 @@ namespace Api.ToMcp.Generator.Parsing
                 var parameters = AnalyzeParameters(method, httpInfo.Value.Method);
                 var returnType = AnalyzeReturnType(method);
 
-                var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name);
+                var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, GetRouteActionName(method));
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
 
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customDescription = null;
+                // An action that names a scope, McpScope.None included, overrides the controller's; None then means
+                // the HTTP method's scope, so inheriting the controller's Read cannot open a POST to a read-only grant.
+                var declaredScope = GetDeclaredScope(FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpExposeAttribute)) ?? controllerScope;
+                var requiredScope = declaredScope is null or McpScopeModel.None
+                    ? GetRequiredScope(httpInfo.Value.Method)
+                    : declaredScope.Value;
 
                 if (mcpExposeAttr != null)
                 {
@@ -80,7 +88,7 @@ namespace Api.ToMcp.Generator.Parsing
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
                     CustomDescription = customDescription,
-                    RequiredScope = GetRequiredScope(httpInfo.Value.Method)
+                    RequiredScope = requiredScope
                 });
             }
 
@@ -153,11 +161,22 @@ namespace Api.ToMcp.Generator.Parsing
                     DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
                     Source = source,
                     Properties = properties,
-                    Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null
+                    Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
+                    QueryName = GetFromQueryName(param)
                 });
             }
 
             return builder.ToImmutable();
+        }
+
+        private static string? GetFromQueryName(IParameterSymbol param)
+        {
+            return param.GetAttributes()
+                .Where(x => x.AttributeClass?.Name == "FromQueryAttribute")
+                .SelectMany(x => x.NamedArguments)
+                .Where(x => x.Key == "Name")
+                .Select(x => x.Value.Value as string)
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
         }
 
         private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type)
@@ -281,25 +300,60 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
-        private static string BuildFullRoute(string? prefix, string? template, string controllerName)
+        private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
         {
+            // An action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
+            var isAbsoluteTemplate = template != null && (template.StartsWith("/") || template.StartsWith("~/"));
+            if (isAbsoluteTemplate)
+                return ReplaceRouteTokens($"/{template!.TrimStart('~').TrimStart('/').TrimEnd('/')}", controllerName, actionName);
+
             var parts = new List<string>();
 
             if (!string.IsNullOrEmpty(prefix))
-            {
-                var normalizedPrefix = prefix!.TrimStart('/').TrimEnd('/');
-                // Replace [controller] placeholder
-                var controllerBaseName = controllerName.EndsWith("Controller")
-                    ? controllerName.Substring(0, controllerName.Length - "Controller".Length).ToLowerInvariant()
-                    : controllerName.ToLowerInvariant();
-                normalizedPrefix = normalizedPrefix.Replace("[controller]", controllerBaseName);
-                parts.Add(normalizedPrefix);
-            }
+                parts.Add(prefix!.TrimStart('/').TrimEnd('/'));
 
             if (!string.IsNullOrEmpty(template))
                 parts.Add(template!.TrimStart('/').TrimEnd('/'));
 
-            return "/" + string.Join("/", parts);
+            return ReplaceRouteTokens($"/{string.Join("/", parts)}", controllerName, actionName);
+        }
+
+        /// <summary>
+        /// ASP.NET Core replaces <c>[controller]</c> and <c>[action]</c> in every attribute route, an absolute one
+        /// included, case-insensitively: by the class name without "Controller" and the action's route name.
+        /// </summary>
+        private static string ReplaceRouteTokens(string route, string controllerName, string actionName)
+        {
+            var controllerToken = TrimSuffix(controllerName, "Controller").ToLowerInvariant();
+            var actionToken = actionName.ToLowerInvariant();
+
+            // An evaluator inserts the token as text: as a replacement pattern, an [ActionName] holding "$&" would be
+            // read as a substitution.
+            var routeWithController = Regex.Replace(route, @"\[controller\]", _ => controllerToken, RegexOptions.IgnoreCase);
+
+            return Regex.Replace(routeWithController, @"\[action\]", _ => actionToken, RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
+        /// The name MVC gives an action: an <c>[ActionName]</c>'s, declared on the action or inherited from the base
+        /// action it overrides, else the method name without the "Async" suffix MVC drops by default
+        /// (<c>SuppressAsyncSuffixInActionNames</c>), which it never applies to an explicit name.
+        /// </summary>
+        private static string GetRouteActionName(IMethodSymbol method)
+        {
+            var actionNameAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.Name == "ActionNameAttribute");
+            var explicitActionName = actionNameAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
+
+            return string.IsNullOrEmpty(explicitActionName)
+                ? TrimSuffix(method.Name, "Async")
+                : explicitActionName!;
+        }
+
+        private static string TrimSuffix(string name, string suffix)
+        {
+            return name.EndsWith(suffix, StringComparison.Ordinal) && name.Length > suffix.Length
+                ? name.Substring(0, name.Length - suffix.Length)
+                : name;
         }
 
         private static string? GetXmlDocSummary(IMethodSymbol method)
@@ -383,6 +437,55 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// The scope an <c>[McpExpose]</c> on an action or a controller names, <c>McpScope.None</c> included, or null
+        /// when it names none. Telling the two apart is what lets an action opt out of its controller's scope.
+        /// </summary>
+        private static McpScopeModel? GetDeclaredScope(AttributeData? mcpExposeAttribute)
+        {
+            if (mcpExposeAttribute is null)
+            {
+                return null;
+            }
+
+            foreach (var namedArgument in mcpExposeAttribute.NamedArguments)
+            {
+                // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
+                if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue)
+                {
+                    return (McpScopeModel)scopeValue;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The matching attribute a symbol declares, else the one its nearest base controller or overridden action
+        /// declares. <c>[McpExpose]</c> and MVC's <c>[ActionName]</c> are inherited, while Roslyn's <c>GetAttributes()</c>
+        /// returns only what a symbol declares itself; as with reflection, the nearest attribute replaces the base's as
+        /// a whole.
+        /// </summary>
+        private static AttributeData? FindNearestAttribute<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> getBase, Func<AttributeData, bool> isMatch)
+            where TSymbol : class, ISymbol
+        {
+            for (var current = symbol; current is not null; current = getBase(current))
+            {
+                var attribute = current.GetAttributes().FirstOrDefault(isMatch);
+                if (attribute is not null)
+                {
+                    return attribute;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsMcpExposeAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass?.ToDisplayString() == McpExposeAttributeFullName;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)
