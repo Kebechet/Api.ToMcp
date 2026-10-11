@@ -464,6 +464,23 @@ namespace TestApi
         [ActionName(""lookup"")]
         [HttpGet(""[action]"")]
         public Task<string> FindAsync() => Task.FromResult(string.Empty);
+
+        [ActionName(""price$&"")]
+        [HttpGet(""[action]"")]
+        public Task<string> Price() => Task.FromResult(string.Empty);
+    }
+
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+        [ActionName(""browse"")]
+        public virtual Task<string> List() => Task.FromResult(string.Empty);
+    }
+
+    [Route(""api/[controller]"")]
+    public class ShelvesController : CatalogControllerBase
+    {
+        [HttpGet(""[action]"")]
+        public override Task<string> List() => Task.FromResult(string.Empty);
     }
 }
 ";
@@ -475,6 +492,10 @@ namespace TestApi
         Assert.Equal("var route = $\"/products/recent\";", GetRouteLine(generated, "ProductsController_RecentAsyncTool"));
         // [ActionName] replaces the method name, Async suffix and all.
         Assert.Equal("var route = $\"/api/products/lookup\";", GetRouteLine(generated, "ProductsController_FindAsyncTool"));
+        // A "$&" in the name is text, not a regex substitution of the matched token.
+        Assert.Equal("var route = $\"/api/products/price$&\";", GetRouteLine(generated, "ProductsController_PriceTool"));
+        // MVC inherits [ActionName] from the base action an override replaces.
+        Assert.Equal("var route = $\"/api/shelves/browse\";", GetRouteLine(generated, "ShelvesController_ListTool"));
     }
 
     [Fact]

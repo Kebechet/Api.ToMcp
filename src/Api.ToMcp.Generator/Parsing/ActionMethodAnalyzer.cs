@@ -29,7 +29,7 @@ namespace Api.ToMcp.Generator.Parsing
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
-            var controllerScope = GetDeclaredScope(FindNearestMcpExposeAttribute(controller, x => x.BaseType));
+            var controllerScope = GetDeclaredScope(FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute));
 
             foreach (var member in controller.GetMembers())
             {
@@ -59,7 +59,7 @@ namespace Api.ToMcp.Generator.Parsing
                 string? customDescription = null;
                 // An action that names a scope, McpScope.None included, overrides the controller's; None then means
                 // the HTTP method's scope, so inheriting the controller's Read cannot open a POST to a read-only grant.
-                var declaredScope = GetDeclaredScope(FindNearestMcpExposeAttribute(method, x => x.OverriddenMethod)) ?? controllerScope;
+                var declaredScope = GetDeclaredScope(FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpExposeAttribute)) ?? controllerScope;
                 var requiredScope = declaredScope is null or McpScopeModel.None
                     ? GetRequiredScope(httpInfo.Value.Method)
                     : declaredScope.Value;
@@ -327,23 +327,26 @@ namespace Api.ToMcp.Generator.Parsing
             var controllerToken = TrimSuffix(controllerName, "Controller").ToLowerInvariant();
             var actionToken = actionName.ToLowerInvariant();
 
-            var routeWithController = Regex.Replace(route, @"\[controller\]", controllerToken, RegexOptions.IgnoreCase);
+            // An evaluator inserts the token as text: as a replacement pattern, an [ActionName] holding "$&" would be
+            // read as a substitution.
+            var routeWithController = Regex.Replace(route, @"\[controller\]", _ => controllerToken, RegexOptions.IgnoreCase);
 
-            return Regex.Replace(routeWithController, @"\[action\]", actionToken, RegexOptions.IgnoreCase);
+            return Regex.Replace(routeWithController, @"\[action\]", _ => actionToken, RegexOptions.IgnoreCase);
         }
 
         /// <summary>
-        /// The name MVC gives an action: an <c>[ActionName]</c>'s, else the method name without the "Async" suffix
-        /// MVC drops by default (<c>SuppressAsyncSuffixInActionNames</c>), which it never applies to an explicit name.
+        /// The name MVC gives an action: an <c>[ActionName]</c>'s, declared on the action or inherited from the base
+        /// action it overrides, else the method name without the "Async" suffix MVC drops by default
+        /// (<c>SuppressAsyncSuffixInActionNames</c>), which it never applies to an explicit name.
         /// </summary>
         private static string GetRouteActionName(IMethodSymbol method)
         {
-            var explicitActionName = method.GetAttributes()
-                .Where(x => x.AttributeClass?.Name == "ActionNameAttribute" && x.ConstructorArguments.Any())
-                .Select(x => x.ConstructorArguments.First().Value as string)
-                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+            var actionNameAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.Name == "ActionNameAttribute");
+            var explicitActionName = actionNameAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
 
-            return explicitActionName ?? TrimSuffix(method.Name, "Async");
+            return string.IsNullOrEmpty(explicitActionName)
+                ? TrimSuffix(method.Name, "Async")
+                : explicitActionName!;
         }
 
         private static string TrimSuffix(string name, string suffix)
@@ -460,23 +463,29 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The <c>[McpExpose]</c> a symbol declares, else the one its nearest base controller or overridden action
-        /// declares. The attribute is <c>Inherited = true</c>, while Roslyn's <c>GetAttributes()</c> returns only what
-        /// a symbol declares itself; as with reflection, the nearest attribute replaces the base's as a whole.
+        /// The matching attribute a symbol declares, else the one its nearest base controller or overridden action
+        /// declares. <c>[McpExpose]</c> and MVC's <c>[ActionName]</c> are inherited, while Roslyn's <c>GetAttributes()</c>
+        /// returns only what a symbol declares itself; as with reflection, the nearest attribute replaces the base's as
+        /// a whole.
         /// </summary>
-        private static AttributeData? FindNearestMcpExposeAttribute<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> getBase)
+        private static AttributeData? FindNearestAttribute<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> getBase, Func<AttributeData, bool> isMatch)
             where TSymbol : class, ISymbol
         {
             for (var current = symbol; current is not null; current = getBase(current))
             {
-                var mcpExposeAttribute = ControllerScanner.GetAttribute(current, McpExposeAttributeFullName);
-                if (mcpExposeAttribute is not null)
+                var attribute = current.GetAttributes().FirstOrDefault(isMatch);
+                if (attribute is not null)
                 {
-                    return mcpExposeAttribute;
+                    return attribute;
                 }
             }
 
             return null;
+        }
+
+        private static bool IsMcpExposeAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass?.ToDisplayString() == McpExposeAttributeFullName;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)
