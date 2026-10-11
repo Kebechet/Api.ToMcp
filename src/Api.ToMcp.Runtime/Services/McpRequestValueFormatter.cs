@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace Api.ToMcp.Runtime.Services;
 
@@ -22,6 +23,7 @@ public static class McpRequestValueFormatter
     private const string TryParseMethodName = "TryParse";
 
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
+    private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
 
     /// <summary>
     /// Formats a single route or query value with the invariant culture and ISO 8601 dates.
@@ -38,10 +40,13 @@ public static class McpRequestValueFormatter
             DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
             DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O", CultureInfo.InvariantCulture),
             TimeSpan timeSpan => timeSpan.ToString("c", CultureInfo.InvariantCulture),
+            // The binder reads such a type back through the converter it declares, whose text can differ from the
+            // type's own IFormattable output.
+            _ when HasDeclaredTypeConverter(value.GetType()) => ConvertToInvariantString(value),
             Enum enumValue => enumValue.ToString(),
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
             // The binder reads a type with a converter back through that converter, which a record's ToString() would not round-trip.
-            _ => TypeDescriptor.GetConverter(value.GetType()).ConvertToInvariantString(value) ?? string.Empty
+            _ => ConvertToInvariantString(value)
         };
     }
 
@@ -70,6 +75,12 @@ public static class McpRequestValueFormatter
             return;
         }
 
+        if (depth > MaxObjectDepth)
+        {
+            throw new InvalidOperationException(
+                $"Query object '{value.GetType().Name}' is nested deeper than {MaxObjectDepth} levels; a [FromQuery] parameter cannot hold a cyclic graph.");
+        }
+
         if (value is IEnumerable items)
         {
             // Only the objects actually sent are numbered: the binder reads Items[0], Items[1], ... and stops at the
@@ -88,7 +99,8 @@ public static class McpRequestValueFormatter
                     continue;
                 }
 
-                AddProperties(queryParts, $"{key}[{index}]", item, depth + 1);
+                // An object item expands into Items[0].Property keys, a nested collection repeats Items[0] per value.
+                AddValue(queryParts, $"{key}[{index}]", item, depth + 1);
                 index++;
             }
 
@@ -100,12 +112,6 @@ public static class McpRequestValueFormatter
 
     private static void AddProperties(List<string> queryParts, string prefix, object value, int depth)
     {
-        if (depth > MaxObjectDepth)
-        {
-            throw new InvalidOperationException(
-                $"Query object '{value.GetType().Name}' is nested deeper than {MaxObjectDepth} levels; a [FromQuery] parameter cannot hold a cyclic graph.");
-        }
-
         var properties = value.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
         foreach (var property in properties)
         {
@@ -114,8 +120,31 @@ public static class McpRequestValueFormatter
                 continue;
             }
 
-            AddValue(queryParts, $"{prefix}.{property.Name}", property.GetValue(value), depth);
+            AddValue(queryParts, $"{prefix}.{GetBinderModelName(property)}", property.GetValue(value), depth);
         }
+    }
+
+    /// <summary>
+    /// The key the binder reads a property under: the name a binding attribute such as <c>[FromQuery(Name = "q")]</c>
+    /// gives it, else its own name.
+    /// </summary>
+    private static string GetBinderModelName(PropertyInfo property)
+    {
+        return property
+            .GetCustomAttributes(inherit: true)
+            .OfType<IModelNameProvider>()
+            .Select(x => x.Name)
+            .FirstOrDefault(x => !string.IsNullOrEmpty(x)) ?? property.Name;
+    }
+
+    private static bool HasDeclaredTypeConverter(Type type)
+    {
+        return HasDeclaredTypeConverterByType.GetOrAdd(type, x => x.IsDefined(typeof(TypeConverterAttribute), inherit: true));
+    }
+
+    private static string ConvertToInvariantString(object value)
+    {
+        return TypeDescriptor.GetConverter(value.GetType()).ConvertToInvariantString(value) ?? string.Empty;
     }
 
     private static bool IsScalar(Type type)

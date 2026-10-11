@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using Api.ToMcp.Runtime.Services;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -201,6 +202,46 @@ public class McpRequestValueFormatterTests
             queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_KeysAnAliasedProperty_ByTheNameItsBindingAttributeGives()
+    {
+        // The binder reads such a property under its BinderModelName; under the CLR name it would stay at its default.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new AliasedFilter { Query = "squat", Page = 2 });
+
+        Assert.Equal(new[] { "filter.q=squat", "filter.Page=2" }, queryParts);
+    }
+
+    [Fact]
+    public void Format_WritesATypeThroughItsOwnConverter_BeforeItsIFormattable()
+    {
+        // The binder reads the value back through the converter, so the converter's text is the one that round-trips.
+        var wireId = new WireId(5);
+
+        Assert.Equal("5", McpRequestValueFormatter.Format(wireId));
+    }
+
+    [Fact]
+    public void AddQueryValue_IndexesNestedCollections_AndRepeatsTheKeyForTheirValues()
+    {
+        var queryParts = new List<string>();
+        var groups = new List<List<int>> { new() { 1, 2 }, new() { 3 } };
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "groups", groups);
+
+        Assert.Equal(new[] { "groups%5B0%5D=1", "groups%5B0%5D=2", "groups%5B1%5D=3" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_Throws_ForACollectionThatContainsItself()
+    {
+        var items = new List<object>();
+        items.Add(items);
+
+        Assert.Throws<InvalidOperationException>(() => McpRequestValueFormatter.AddQueryValue([], "items", items));
+    }
+
     private sealed class SearchFilter
     {
         public string? City { get; set; }
@@ -253,6 +294,39 @@ public class McpRequestValueFormatterTests
         {
             return value is OrderId orderId && destinationType == typeof(string)
                 ? orderId.Value.ToString()
+                : base.ConvertTo(context, culture, value, destinationType);
+        }
+    }
+
+    private sealed class AliasedFilter
+    {
+        [FromQuery(Name = "q")]
+        public string? Query { get; set; }
+
+        [FromQuery]
+        public int Page { get; set; }
+    }
+
+    [TypeConverter(typeof(WireIdConverter))]
+    private readonly record struct WireId(int Value) : IFormattable
+    {
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            return $"WireId-{Value}";
+        }
+    }
+
+    private sealed class WireIdConverter : TypeConverter
+    {
+        public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
+        {
+            return sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
+        }
+
+        public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
+        {
+            return value is WireId wireId && destinationType == typeof(string)
+                ? wireId.Value.ToString(CultureInfo.InvariantCulture)
                 : base.ConvertTo(context, culture, value, destinationType);
         }
     }
