@@ -218,6 +218,8 @@ This is on by default; `options.ArePropertyDescriptionsFromXmlDocs = false` in `
 
 **Responses are not described.** Generated tools return the API's response body as text in a `CallToolResult` and carry no output schema, so XML docs on response DTOs change nothing. Only the types used in tool *arguments* matter.
 
+A hand-written `[McpServerTool]` that returns your own type is the exception: the SDK builds a schema for its return type as well, and the same XML descriptions are applied to it. Clients see that schema only when the tool sets `UseStructuredContent = true`, but the return type's assembly counts either way, so without its `.xml` it is named in the startup warning.
+
 ## Scope-Based Access Control
 
 Api.ToMcp supports optional scope-based access control for MCP tools. Scopes are mapped from HTTP methods:
