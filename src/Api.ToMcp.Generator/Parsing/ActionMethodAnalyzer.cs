@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Api.ToMcp.Generator.Models;
@@ -50,7 +51,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var parameters = AnalyzeParameters(method, httpInfo.Value.Method);
                 var returnType = AnalyzeReturnType(method);
 
-                var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name);
+                var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, method.Name);
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
 
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
@@ -160,11 +161,22 @@ namespace Api.ToMcp.Generator.Parsing
                     DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
                     Source = source,
                     Properties = properties,
-                    Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null
+                    Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
+                    QueryName = GetFromQueryName(param)
                 });
             }
 
             return builder.ToImmutable();
+        }
+
+        private static string? GetFromQueryName(IParameterSymbol param)
+        {
+            return param.GetAttributes()
+                .Where(x => x.AttributeClass?.Name == "FromQueryAttribute")
+                .SelectMany(x => x.NamedArguments)
+                .Where(x => x.Key == "Name")
+                .Select(x => x.Value.Value as string)
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
         }
 
         private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type)
@@ -288,30 +300,44 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
-        private static string BuildFullRoute(string? prefix, string? template, string controllerName)
+        private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
         {
             // An action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
             var isAbsoluteTemplate = template != null && (template.StartsWith("/") || template.StartsWith("~/"));
             if (isAbsoluteTemplate)
-                return "/" + template!.TrimStart('~').TrimStart('/').TrimEnd('/');
+                return ReplaceRouteTokens($"/{template!.TrimStart('~').TrimStart('/').TrimEnd('/')}", controllerName, actionName);
 
             var parts = new List<string>();
 
             if (!string.IsNullOrEmpty(prefix))
-            {
-                var normalizedPrefix = prefix!.TrimStart('/').TrimEnd('/');
-                // Replace [controller] placeholder
-                var controllerBaseName = controllerName.EndsWith("Controller")
-                    ? controllerName.Substring(0, controllerName.Length - "Controller".Length).ToLowerInvariant()
-                    : controllerName.ToLowerInvariant();
-                normalizedPrefix = normalizedPrefix.Replace("[controller]", controllerBaseName);
-                parts.Add(normalizedPrefix);
-            }
+                parts.Add(prefix!.TrimStart('/').TrimEnd('/'));
 
             if (!string.IsNullOrEmpty(template))
                 parts.Add(template!.TrimStart('/').TrimEnd('/'));
 
-            return "/" + string.Join("/", parts);
+            return ReplaceRouteTokens($"/{string.Join("/", parts)}", controllerName, actionName);
+        }
+
+        /// <summary>
+        /// ASP.NET Core replaces <c>[controller]</c> and <c>[action]</c> in every attribute route, an absolute one
+        /// included, case-insensitively: by the class name without "Controller" and the method name without the
+        /// "Async" suffix MVC drops by default (<c>SuppressAsyncSuffixInActionNames</c>).
+        /// </summary>
+        private static string ReplaceRouteTokens(string route, string controllerName, string actionName)
+        {
+            var controllerToken = TrimSuffix(controllerName, "Controller").ToLowerInvariant();
+            var actionToken = TrimSuffix(actionName, "Async").ToLowerInvariant();
+
+            var routeWithController = Regex.Replace(route, @"\[controller\]", controllerToken, RegexOptions.IgnoreCase);
+
+            return Regex.Replace(routeWithController, @"\[action\]", actionToken, RegexOptions.IgnoreCase);
+        }
+
+        private static string TrimSuffix(string name, string suffix)
+        {
+            return name.EndsWith(suffix, StringComparison.Ordinal) && name.Length > suffix.Length
+                ? name.Substring(0, name.Length - suffix.Length)
+                : name;
         }
 
         private static string? GetXmlDocSummary(IMethodSymbol method)

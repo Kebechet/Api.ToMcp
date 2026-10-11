@@ -395,6 +395,62 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_SendsAQueryParameter_UnderTheNameItsFromQueryAttributeBinds()
+    {
+        // MVC binds [FromQuery(Name = "q")] from "q"; sent as "query", the action would silently run with its default.
+        const string controller = @"
+namespace TestApi
+{
+    public sealed class ReportFilter
+    {
+        public string? City { get; set; }
+    }
+
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [HttpGet]
+        public Task<string> Find([FromQuery(Name = ""q"")] string query, [FromQuery(Name = ""f"")] ReportFilter filter, int page) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("AddQueryValue(queryParts, \"q\", query);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"f\", filter);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"page\", page);", generated);
+    }
+
+    [Fact]
+    public void Generator_ReplacesControllerAndActionTokens_InAbsoluteAndRelativeTemplates()
+    {
+        // ASP.NET Core replaces the tokens in an absolute template too; left in, the request goes to a literal "[controller]" and 404s.
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet(""/catalog/[controller]/search"")]
+        public Task<string> Search(string query) => Task.FromResult(string.Empty);
+
+        [HttpGet(""[action]"")]
+        public Task<string> Popular() => Task.FromResult(string.Empty);
+
+        [HttpGet(""~/[Controller]/[Action]"")]
+        public Task<string> RecentAsync() => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Equal("var route = $\"/catalog/products/search\";", GetRouteLine(generated, "ProductsController_SearchTool"));
+        Assert.Equal("var route = $\"/api/products/popular\";", GetRouteLine(generated, "ProductsController_PopularTool"));
+        // MVC drops the Async suffix from action names by default (SuppressAsyncSuffixInActionNames).
+        Assert.Equal("var route = $\"/products/recent\";", GetRouteLine(generated, "ProductsController_RecentAsyncTool"));
+    }
+
+    [Fact]
     public void Generator_EmitsToolsThatCompile_AgainstTheRealRuntimeAndAspNetCore()
     {
         // The other tests assert on the emitted text only; this one is what catches emitted code that is not C#.
@@ -440,11 +496,21 @@ namespace TestApi
 
     private static string GetScopeCheck(string generated, string toolClassName)
     {
+        return GetToolLine(generated, toolClassName, "BeforeInvokeAsync");
+    }
+
+    private static string GetRouteLine(string generated, string toolClassName)
+    {
+        return GetToolLine(generated, toolClassName, "var route = ");
+    }
+
+    private static string GetToolLine(string generated, string toolClassName, string lineMarker)
+    {
         var tool = generated.Substring(generated.IndexOf($"class {toolClassName}", StringComparison.Ordinal));
 
         return tool
             .Split('\n')
-            .First(x => x.Contains("BeforeInvokeAsync"))
+            .First(x => x.Contains(lineMarker))
             .Trim();
     }
 

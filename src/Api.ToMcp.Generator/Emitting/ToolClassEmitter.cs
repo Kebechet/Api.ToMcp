@@ -172,7 +172,7 @@ namespace Api.ToMcp.Generator.Emitting
                 sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
                 foreach (var param in queryParams)
                 {
-                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, \"{param.Name}\", {param.Name});");
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, \"{param.QueryName ?? param.Name}\", {param.Name});");
                 }
                 sb.AppendLine("            if (queryParts.Count > 0)");
                 sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");
