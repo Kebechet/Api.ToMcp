@@ -1,4 +1,5 @@
 using System.Xml;
+using Api.ToMcp.Abstractions;
 using Api.ToMcp.Abstractions.Configuration;
 using Api.ToMcp.Runtime.Services;
 using ModelContextProtocol.Protocol;
@@ -72,15 +73,33 @@ public class XmlDocSummaryReaderTests
     [Fact]
     public void GetSummary_ReportsAnAssemblyWithoutXmlDocs_Once()
     {
-        // Api.ToMcp.Abstractions is built without GenerateDocumentationFile, so no .xml sits next to it.
+        using var assemblyCopy = new IsolatedAssemblyCopy(typeof(GeneratorConfig).Assembly, xmlDocContent: null);
         var reader = new XmlDocSummaryReader();
 
-        Assert.Null(reader.GetSummary(typeof(GeneratorConfig).GetProperty(nameof(GeneratorConfig.Mode))!));
-        Assert.Null(reader.GetSummary(typeof(GeneratorConfig).GetProperty(nameof(GeneratorConfig.Include))!));
+        Assert.Null(reader.GetSummary(assemblyCopy.GetProperty(typeof(GeneratorConfig), nameof(GeneratorConfig.Mode))));
+        Assert.Null(reader.GetSummary(assemblyCopy.GetProperty(typeof(GeneratorConfig), nameof(GeneratorConfig.Include))));
 
         var (assembly, xmlDocPath) = Assert.Single(reader.MissingXmlDocPathsByAssembly);
-        Assert.Same(typeof(GeneratorConfig).Assembly, assembly);
+        Assert.Same(assemblyCopy.Assembly, assembly);
         Assert.Equal(Path.ChangeExtension(assembly.Location, ".xml"), xmlDocPath);
+        Assert.Empty(reader.UnreadableXmlDocsByAssembly);
+    }
+
+    [Fact]
+    public void GetSummary_ReportsAnUnreadableXmlDocFile_InsteadOfThrowing()
+    {
+        // The startup check builds every tool, so a truncated file would otherwise keep the whole API from starting.
+        using var assemblyCopy = new IsolatedAssemblyCopy(typeof(McpExposeAttribute).Assembly, xmlDocContent: "<doc><members><member name=\"P:Api.ToMcp");
+        var reader = new XmlDocSummaryReader();
+
+        var exception = Record.Exception(() => reader.GetSummary(assemblyCopy.GetProperty(typeof(McpExposeAttribute), nameof(McpExposeAttribute.Scope))));
+
+        Assert.Null(exception);
+        var (assembly, xmlDocReadFailure) = Assert.Single(reader.UnreadableXmlDocsByAssembly);
+        Assert.Same(assemblyCopy.Assembly, assembly);
+        Assert.Equal(Path.ChangeExtension(assembly.Location, ".xml"), xmlDocReadFailure.XmlDocPath);
+        Assert.IsType<XmlException>(xmlDocReadFailure.Exception);
+        Assert.Empty(reader.MissingXmlDocPathsByAssembly);
     }
 
     [Theory]

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,7 +74,7 @@ public class McpExtensionsTests
     [Fact]
     public async Task StartupCheck_WarnsOncePerAssemblyWithoutXmlDocs_AndNamesTheFix()
     {
-        // ParityRequest.Config comes from Api.ToMcp.Abstractions, which ships no .xml; the test assembly itself does.
+        // ParityRequest.FromPackage comes from xunit.core, whose .xml is not copied; the test assembly ships its own.
         var logs = new List<(LogLevel Level, string Message)>();
         using var provider = BuildProvider(services => services.AddMcpTools(ToolAssembly), logs);
         var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
@@ -81,9 +82,34 @@ public class McpExtensionsTests
         await startupCheck.StartAsync(CancellationToken.None);
 
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
-        Assert.Contains("'Api.ToMcp.Abstractions'", warning.Message);
-        Assert.Contains("Api.ToMcp.Abstractions.xml", warning.Message);
+        Assert.Contains("'xunit.core'", warning.Message);
+        Assert.Contains("xunit.core.xml", warning.Message);
         Assert.Contains("<GenerateDocumentationFile>true</GenerateDocumentationFile>", warning.Message);
+        Assert.Contains("<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>", warning.Message);
+        Assert.Contains("McpScopeOptions.ArePropertyDescriptionsFromXmlDocs", warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_WarnsAboutAnUnreadableXmlDocFile_WithTheReason()
+    {
+        using var assemblyCopy = new IsolatedAssemblyCopy(typeof(McpExposeAttribute).Assembly, xmlDocContent: "<doc><members>");
+        var summaryReader = new XmlDocSummaryReader();
+        summaryReader.GetSummary(assemblyCopy.GetProperty(typeof(McpExposeAttribute), nameof(McpExposeAttribute.Scope)));
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddSingleton(summaryReader);
+                services.AddMcpTools(ToolAssembly);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains("could not be read"));
+        Assert.Contains("'Api.ToMcp.Abstractions'", warning.Message);
+        Assert.Contains(Path.ChangeExtension(assemblyCopy.Assembly.Location, ".xml"), warning.Message);
     }
 
     [Fact]

@@ -24,6 +24,20 @@ public class XmlDocPropertyDescriberTests
     }
 
     [Fact]
+    public void DescribeProperty_PrefersThePropertySummary_OverADescriptionOnThePropertysType()
+    {
+        // The SDK copies a [Description] on the property's type onto the property; the property's own docs are more specific.
+        Assert.Equal("Where to send the invoice.", GetDescription("properties", "order", "properties", "billTo"));
+        Assert.Equal("A postal address.", GetDescription("properties", "order", "properties", "returnTo"));
+    }
+
+    [Fact]
+    public void DescribeProperty_LetsADescriptionOnARecordParameterWin()
+    {
+        Assert.Equal("Code as printed on the coupon.", GetDescription("properties", "order", "properties", "coupon", "properties", "code"));
+    }
+
+    [Fact]
     public void DescribeProperty_DescribesNestedObjectAndArrayItemProperties()
     {
         Assert.Equal("Street and number.", GetDescription("properties", "order", "properties", "shipTo", "properties", "street"));
@@ -84,7 +98,24 @@ public class XmlDocPropertyDescriberTests
         public List<OrderLine> Lines { get; set; } = [];
 
         public string? Undocumented { get; set; }
+
+        /// <summary>Where to send the invoice.</summary>
+        public PostalAddress? BillTo { get; set; }
+
+        public PostalAddress? ReturnTo { get; set; }
+
+        /// <summary>Promotion applied to the order.</summary>
+        public Coupon? Coupon { get; set; }
     }
+
+    [Description("A postal address.")]
+    public sealed class PostalAddress
+    {
+        public string? City { get; set; }
+    }
+
+    /// <param name="Code">XML text that must lose to the attribute on the parameter.</param>
+    public sealed record Coupon([Description("Code as printed on the coupon.")] string Code);
 
     public sealed class Address
     {

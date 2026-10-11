@@ -38,6 +38,7 @@ internal sealed class XmlDocSummaryReader
 
     private readonly ConcurrentDictionary<Assembly, IReadOnlyDictionary<string, string>?> _summariesByAssembly = new();
     private readonly ConcurrentDictionary<Assembly, string> _missingXmlDocPathsByAssembly = new();
+    private readonly ConcurrentDictionary<Assembly, XmlDocReadFailure> _unreadableXmlDocsByAssembly = new();
 
     /// <summary>
     /// Expected XML documentation file path of every assembly that was asked for a summary and has no such file.
@@ -46,8 +47,14 @@ internal sealed class XmlDocSummaryReader
     public IReadOnlyDictionary<Assembly, string> MissingXmlDocPathsByAssembly => _missingXmlDocPathsByAssembly;
 
     /// <summary>
+    /// Every assembly that was asked for a summary and has an XML documentation file that could not be read: cut short,
+    /// malformed or locked. Its members stay undescribed, as with a missing file.
+    /// </summary>
+    public IReadOnlyDictionary<Assembly, XmlDocReadFailure> UnreadableXmlDocsByAssembly => _unreadableXmlDocsByAssembly;
+
+    /// <summary>
     /// Returns the normalized <c>&lt;summary&gt;</c> of a property or field, or null when the declaring assembly is a
-    /// framework assembly, has no XML documentation file, or documents the member without a summary.
+    /// framework assembly, has no readable XML documentation file, or documents the member without a summary.
     /// <c>&lt;inheritdoc/&gt;</c> is not resolved, so a member documented only that way yields null.
     /// </summary>
     public string? GetSummary(MemberInfo member)
@@ -181,9 +188,18 @@ internal sealed class XmlDocSummaryReader
             return null;
         }
 
-        using var xmlReader = XmlReader.Create(xmlDocPath, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit });
+        try
+        {
+            using var xmlReader = XmlReader.Create(xmlDocPath, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit });
 
-        return ReadSummaries(xmlReader);
+            return ReadSummaries(xmlReader);
+        }
+        catch (Exception exception) when (exception is XmlException or IOException or UnauthorizedAccessException)
+        {
+            // The descriptions are optional, and every tool is built at startup: a damaged file must not stop the host.
+            _unreadableXmlDocsByAssembly[assembly] = new XmlDocReadFailure(xmlDocPath, exception);
+            return null;
+        }
     }
 
     /// <summary>
@@ -283,3 +299,10 @@ internal sealed class XmlDocSummaryReader
         text.Append(element.Attribute(LangwordAttributeName)?.Value ?? element.Attribute(HrefAttributeName)?.Value);
     }
 }
+
+/// <summary>
+/// An XML documentation file that exists next to its assembly but could not be read.
+/// </summary>
+/// <param name="XmlDocPath">Path of the file.</param>
+/// <param name="Exception">Why reading it failed.</param>
+internal sealed record XmlDocReadFailure(string XmlDocPath, Exception Exception);

@@ -1,6 +1,6 @@
 using System.ComponentModel;
-using Api.ToMcp.Abstractions.Configuration;
 using ModelContextProtocol.Server;
+using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Tools;
 
@@ -20,8 +20,8 @@ public sealed class ParityRequest
     /// <summary>Documented from XML.</summary>
     public string? Documented { get; set; }
 
-    /// <summary>Declared in Api.ToMcp.Abstractions, which is built without an XML documentation file.</summary>
-    public GeneratorConfig? Config { get; set; }
+    /// <summary>Declared in xunit.core, a NuGet package assembly: the build does not copy a package's .xml next to it.</summary>
+    public FactAttribute? FromPackage { get; set; }
 }
 
 [McpServerToolType]
