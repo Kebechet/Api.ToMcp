@@ -319,6 +319,52 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_InheritsScopeFromTheNearestMcpExpose_OfABaseControllerOrOverriddenAction()
+    {
+        // [McpExpose] is Inherited = true, but Roslyn's GetAttributes() returns only what a symbol declares itself;
+        // missing the base's scope would fall back to the HTTP method's, a weaker check than the author asked for.
+        const string controller = @"
+using Api.ToMcp.Abstractions;
+using Api.ToMcp.Abstractions.Scopes;
+
+namespace TestApi
+{
+    [McpExpose(Scope = McpScope.All)]
+    public abstract class AdminControllerBase : ControllerBase
+    {
+        [McpExpose(Scope = McpScope.Read)]
+        [HttpPost(""search"")]
+        public virtual Task<string> Search(string query) => Task.FromResult(string.Empty);
+    }
+
+    [Route(""api/[controller]"")]
+    public class UsersController : AdminControllerBase
+    {
+        [HttpGet]
+        public Task<string> GetAll() => Task.FromResult(string.Empty);
+
+        [HttpPost(""search"")]
+        public override Task<string> Search(string query) => Task.FromResult(string.Empty);
+    }
+
+    [McpExpose]
+    [Route(""api/[controller]"")]
+    public class AuditsController : AdminControllerBase
+    {
+        [HttpGet]
+        public Task<string> GetAll() => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.All, cancellationToken);", GetScopeCheck(generated, "UsersController_GetAllTool"));
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);", GetScopeCheck(generated, "UsersController_SearchTool"));
+        // As with reflection, a derived [McpExpose] replaces the base's whole attribute, Scope included.
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);", GetScopeCheck(generated, "AuditsController_GetAllTool"));
+    }
+
+    [Fact]
     public void Generator_EmitsToolsThatCompile_AgainstTheRealRuntimeAndAspNetCore()
     {
         // The other tests assert on the emitted text only; this one is what catches emitted code that is not C#.

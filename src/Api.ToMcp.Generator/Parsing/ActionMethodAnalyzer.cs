@@ -28,7 +28,7 @@ namespace Api.ToMcp.Generator.Parsing
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
-            var controllerScope = GetScopeOverride(ControllerScanner.GetAttribute(controller, McpExposeAttributeFullName));
+            var controllerScope = GetScopeOverride(FindNearestMcpExposeAttribute(controller, x => x.BaseType));
 
             foreach (var member in controller.GetMembers())
             {
@@ -56,7 +56,9 @@ namespace Api.ToMcp.Generator.Parsing
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customDescription = null;
-                var requiredScope = GetScopeOverride(mcpExposeAttr) ?? controllerScope ?? GetRequiredScope(httpInfo.Value.Method);
+                var requiredScope = GetScopeOverride(FindNearestMcpExposeAttribute(method, x => x.OverriddenMethod)) ??
+                    controllerScope ??
+                    GetRequiredScope(httpInfo.Value.Method);
 
                 if (mcpExposeAttr != null)
                 {
@@ -409,6 +411,26 @@ namespace Api.ToMcp.Generator.Parsing
                 if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue && scopeValue != (int)McpScopeModel.None)
                 {
                     return (McpScopeModel)scopeValue;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The <c>[McpExpose]</c> a symbol declares, else the one its nearest base controller or overridden action
+        /// declares. The attribute is <c>Inherited = true</c>, while Roslyn's <c>GetAttributes()</c> returns only what
+        /// a symbol declares itself; as with reflection, the nearest attribute replaces the base's as a whole.
+        /// </summary>
+        private static AttributeData? FindNearestMcpExposeAttribute<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> getBase)
+            where TSymbol : class, ISymbol
+        {
+            for (var current = symbol; current is not null; current = getBase(current))
+            {
+                var mcpExposeAttribute = ControllerScanner.GetAttribute(current, McpExposeAttributeFullName);
+                if (mcpExposeAttribute is not null)
+                {
+                    return mcpExposeAttribute;
                 }
             }
 
