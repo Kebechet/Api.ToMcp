@@ -145,13 +145,15 @@ Forces an endpoint to be exposed as an MCP tool, regardless of configuration mod
 public Task<Product> GetById(Guid id) { ... }
 ```
 
-`Scope` overrides the scope derived from the HTTP method (see [Scope-Based Access Control](#scope-based-access-control)). Use it when the verb says something else than what the endpoint does - a search that takes its filter as a POST body and changes nothing would otherwise require `Write`:
+`Scope` overrides the scope derived from the HTTP method (see [Scope-Based Access Control](#scope-based-access-control)). Use it when the verb says something other than what the endpoint does - a search that takes its filter as a POST body and changes nothing would otherwise require `Write`:
 
 ```csharp
 [McpExpose(Scope = McpScope.Read)]
 [HttpPost("search")]
 public Task<IEnumerable<Product>> Search([FromBody] ProductFilter filter) { ... }
 ```
+
+On a controller, `Scope` applies to every action that sets none of its own; an action's own `Scope` wins. Flags combine, and a combined scope requires all of them: `McpScope.Read | McpScope.Write` admits only a grant that has both.
 
 ### `[McpIgnore]`
 
@@ -203,16 +205,16 @@ public class CreateWeatherForecastRequest
 }
 ```
 
-Precedence: `[Description]` → XML `<summary>` → no description. A property inherited from a base class takes the base class's `<summary>`. `<see cref="..."/>` renders as the member's name, `<c>`, `<paramref>` and `<typeparamref>` as their text or name, `<para>` as a separator; `<inheritdoc/>` is not resolved, so a property documented only that way stays undescribed. Framework types (`System.*`, `Microsoft.*`) and the MCP SDK's own are never looked up.
+Precedence: `[Description]` on the property (or on the record constructor parameter it comes from) → the property's XML `<summary>` → a `[Description]` on the property's type → no description. A property inherited from a base class takes the base class's `<summary>`. `<see cref="..."/>` renders as the member's name, `<c>`, `<paramref>` and `<typeparamref>` as their text or name, `<para>` as a separator; `<inheritdoc/>` is not resolved, so a property documented only that way stays undescribed. Framework types (`System.*`, `Microsoft.*`) and the MCP SDK's own are never looked up.
 
 This is on by default; `options.ArePropertyDescriptionsFromXmlDocs = false` in `AddMcpTools` turns it off.
 
 > **Every project whose types appear in tool arguments needs `<GenerateDocumentationFile>true</GenerateDocumentationFile>`** - not only the one with the controllers; a separate contracts project included. The compiler writes the docs to `<AssemblyName>.xml` next to the assembly, and that file has to be there at runtime:
 >
 > - `dotnet build` and `dotnet publish` copy the app's own `.xml` and the `.xml` of every `ProjectReference` that generates one into the output and publish folders. Verified with SDK 10.0.302 for a `net10.0` app (the demo) and a `net8.0` app; it is MSBuild's standard handling of a reference's related files (`AllowedReferenceRelatedFileExtensions` includes `.xml`), so nothing has to be added to the project.
-> - The `.xml` shipped inside a NuGet **package** is *not* copied to the output. For DTOs that come from a package, copy the file yourself (a `<None Include="..." CopyToOutputDirectory="PreserveNewest" />` item, for example).
+> - The `.xml` shipped inside a NuGet **package** is *not* copied to the output by default. For DTOs that come from a package, set `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>` in the app's project; the SDK then copies every package's `.xml` into both the build and the publish output (verified with SDK 10.0.302).
 >
-> When an assembly whose types appear in a tool schema has no `.xml` next to it, the host logs **one warning per assembly at startup**, naming the assembly and the path it looked at, so a missing file shows up in the log instead of in a bare schema.
+> When an assembly whose types appear in a tool schema has no `.xml` next to it, the host logs **one warning per assembly at startup**, naming the assembly and the path it looked at, so a missing file shows up in the log instead of in a bare schema. A file that exists but cannot be read (cut short, malformed, locked) is logged the same way with the reason, and never stops the host: its properties simply stay undescribed.
 
 **Responses are not described.** Generated tools return the API's response body as text in a `CallToolResult` and carry no output schema, so XML docs on response DTOs change nothing. Only the types used in tool *arguments* matter.
 
@@ -350,7 +352,8 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
 
 **Startup warning `Assembly '...' has types in MCP tool schemas but no XML documentation file`.**
-- A type used in a tool argument lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, or the `.xml` was not deployed next to the assembly. Enable it in that project and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
+- A type used in a tool argument lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, comes from a NuGet package while the app lacks `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>`, or the `.xml` was not deployed next to the assembly. Enable the matching property and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
+- The variant `... could not be read (...)` means the file is there but damaged; rebuild and redeploy it.
 
 **Tool calls return `401`/`403`.**
 - Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim.
