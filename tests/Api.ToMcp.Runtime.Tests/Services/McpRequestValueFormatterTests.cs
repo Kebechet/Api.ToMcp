@@ -199,6 +199,18 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_SendsAByteArray_AsOneBase64Value()
+    {
+        // MVC's ByteArrayModelBinder reads one Base64 value; one key per byte would not bind.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "data", new byte[] { 1, 2, 255 });
+
+        Assert.Equal(new[] { "data=AQL%2F" }, queryParts);
+        Assert.Equal("AQL/", McpRequestValueFormatter.Format(new byte[] { 1, 2, 255 }));
+    }
+
+    [Fact]
     public void AddQueryValue_SendsNumbersThatAreNotPrimitives()
     {
         var queryParts = new List<string>();

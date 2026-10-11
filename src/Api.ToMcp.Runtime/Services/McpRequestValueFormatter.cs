@@ -34,6 +34,8 @@ public static class McpRequestValueFormatter
         {
             null => string.Empty,
             string text => text,
+            // MVC's ByteArrayModelBinder reads a byte[] from one Base64 value.
+            byte[] bytes => Convert.ToBase64String(bytes),
             bool boolean => boolean ? "true" : "false",
             DateOnly date => date.ToString("O", CultureInfo.InvariantCulture),
             TimeOnly time => time.ToString("O", CultureInfo.InvariantCulture),
@@ -158,13 +160,14 @@ public static class McpRequestValueFormatter
     }
 
     /// <summary>
-    /// The binder's own rule for a simple type: one it can read from a single string, through a type converter or a
-    /// static <c>TryParse</c>. A strongly-typed id is such a type, and expanding it into its properties instead
+    /// The binder's own rule for a simple type: one it can read from a single string, through a type converter, a
+    /// static <c>TryParse</c> or, for a <c>byte[]</c>, Base64. A strongly-typed id is such a type, and expanding it into its properties instead
     /// binds nothing. Every other type is complex and bound property by property.
     /// </summary>
     private static bool IsBoundFromOneValue(Type type)
     {
-        return TypeDescriptor.GetConverter(type).CanConvertFrom(typeof(string)) ||
+        return type == typeof(byte[]) ||
+            TypeDescriptor.GetConverter(type).CanConvertFrom(typeof(string)) ||
             type
                 .GetMethods(BindingFlags.Public | BindingFlags.Static)
                 .Any(x => x.Name == TryParseMethodName && IsTryParseSignature(x, type));
