@@ -261,6 +261,25 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_SendsAnAcyclicObject_NestedAsDeepAsMvcBinds()
+    {
+        // MVC binds models up to MvcOptions.MaxModelBindingRecursionDepth (32 by default); a graph that deep is not a cycle.
+        var queryParts = new List<string>();
+        var root = new Node { Level = 0 };
+        var deepest = root;
+        foreach (var level in Enumerable.Range(1, 12))
+        {
+            deepest.Children = [new Node { Level = level }];
+            deepest = deepest.Children.Single();
+        }
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "tree", root);
+
+        Assert.Equal(13, queryParts.Count);
+        Assert.Equal($"tree{string.Concat(Enumerable.Repeat(".Children%5B0%5D", 12))}.Level=12", queryParts.Last());
+    }
+
+    [Fact]
     public void AddQueryValue_Throws_ForACollectionThatContainsItself()
     {
         var items = new List<object>();
@@ -323,6 +342,12 @@ public class McpRequestValueFormatterTests
                 ? orderId.Value.ToString()
                 : base.ConvertTo(context, culture, value, destinationType);
         }
+    }
+
+    private sealed class Node
+    {
+        public int Level { get; set; }
+        public List<Node> Children { get; set; } = [];
     }
 
     private sealed class Label

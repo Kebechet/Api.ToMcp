@@ -16,9 +16,10 @@ namespace Api.ToMcp.Runtime.Services;
 public static class McpRequestValueFormatter
 {
     /// <summary>
-    /// Query-bound filters are shallow; anything deeper than this is a cyclic graph, not a filter.
+    /// MVC's own binding limit (<c>MvcOptions.MaxModelBindingRecursionDepth</c>, 32 by default): nothing deeper would
+    /// bind, so reaching it means a cyclic graph rather than a filter.
     /// </summary>
-    private const int MaxObjectDepth = 8;
+    private const int MaxObjectDepth = 32;
 
     private const string TryParseMethodName = "TryParse";
 

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -21,6 +22,7 @@ public static class McpExtensions
     /// <param name="services">The service collection.</param>
     /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
     /// <param name="configureScopeOptions">Optional configuration for scope-based access control and schema descriptions. When null, all tools are accessible without scope validation.</param>
+    [RequiresUnreferencedCode("Tools are discovered by reflection over the assembly, as in the SDK's WithToolsFromAssembly; trimming can remove them.")]
     public static IServiceCollection AddMcpTools(
         this IServiceCollection services,
         Assembly toolAssembly,
