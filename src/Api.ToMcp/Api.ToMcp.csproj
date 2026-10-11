@@ -30,9 +30,10 @@ Breaking:
 
 Added:
 - Tool and parameter descriptions are pulled from XML &lt;summary&gt;/&lt;param&gt; docs (requires GenerateDocumentationFile).
-- Request fields (DTO properties, nested objects, array items) without a [Description] are described from their XML &lt;summary&gt; at runtime, read from the .xml next to each assembly; an assembly without that file is reported with one warning at startup. Off via McpScopeOptions.ArePropertyDescriptionsFromXmlDocs.
-- [McpExpose(Scope = ...)] overrides the scope derived from the HTTP method.
-- Route and query values are sent culture-invariantly (ISO 8601 dates) and [FromQuery] objects are expanded into their properties.
+- Request fields (DTO properties, nested objects, array items) without a [Description] are described from their XML &lt;summary&gt; at runtime, read from the .xml next to each assembly; an assembly without a readable file is reported with one warning at startup and never stops the host. Off via McpScopeOptions.ArePropertyDescriptionsFromXmlDocs.
+- [McpExpose(Scope = ...)] overrides the scope derived from the HTTP method, on an action or on a whole controller; combined flags require all of them.
+- Route and query values are sent culture-invariantly (ISO 8601 dates) and [FromQuery] objects are expanded into their properties; a type the binder reads from one value (a type converter or TryParse, such as a strongly-typed id) is sent whole.
+- The package ships the XML docs of its public API for IntelliSense.
 - Action routes starting with "/" or "~/" are absolute, as in ASP.NET Core routing.
 - The request CancellationToken is propagated through generated tools to the API call.
 - Method-level [Route] attributes are supported.
@@ -107,7 +108,9 @@ Fixed:
   <Target Name="IncludeBundledAssemblies">
     <ItemGroup>
       <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Runtime.dll" />
+      <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Runtime.xml" />
       <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Abstractions.dll" />
+      <BuildOutputInPackage Include="$(OutputPath)Api.ToMcp.Abstractions.xml" />
     </ItemGroup>
   </Target>
 
