@@ -28,7 +28,7 @@ namespace Api.ToMcp.Generator.Parsing
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
-            var controllerScope = GetScopeOverride(FindNearestMcpExposeAttribute(controller, x => x.BaseType));
+            var controllerScope = GetDeclaredScope(FindNearestMcpExposeAttribute(controller, x => x.BaseType));
 
             foreach (var member in controller.GetMembers())
             {
@@ -56,9 +56,12 @@ namespace Api.ToMcp.Generator.Parsing
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customDescription = null;
-                var requiredScope = GetScopeOverride(FindNearestMcpExposeAttribute(method, x => x.OverriddenMethod)) ??
-                    controllerScope ??
-                    GetRequiredScope(httpInfo.Value.Method);
+                // An action that names a scope, McpScope.None included, overrides the controller's; None then means
+                // the HTTP method's scope, so inheriting the controller's Read cannot open a POST to a read-only grant.
+                var declaredScope = GetDeclaredScope(FindNearestMcpExposeAttribute(method, x => x.OverriddenMethod)) ?? controllerScope;
+                var requiredScope = declaredScope is null or McpScopeModel.None
+                    ? GetRequiredScope(httpInfo.Value.Method)
+                    : declaredScope.Value;
 
                 if (mcpExposeAttr != null)
                 {
@@ -395,10 +398,10 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The scope an <c>[McpExpose]</c> on an action or a controller sets, or null when it sets none:
-        /// <c>McpScope.None</c> means "follow the HTTP method".
+        /// The scope an <c>[McpExpose]</c> on an action or a controller names, <c>McpScope.None</c> included, or null
+        /// when it names none. Telling the two apart is what lets an action opt out of its controller's scope.
         /// </summary>
-        private static McpScopeModel? GetScopeOverride(AttributeData? mcpExposeAttribute)
+        private static McpScopeModel? GetDeclaredScope(AttributeData? mcpExposeAttribute)
         {
             if (mcpExposeAttribute is null)
             {
@@ -408,7 +411,7 @@ namespace Api.ToMcp.Generator.Parsing
             foreach (var namedArgument in mcpExposeAttribute.NamedArguments)
             {
                 // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
-                if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue && scopeValue != (int)McpScopeModel.None)
+                if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue)
                 {
                     return (McpScopeModel)scopeValue;
                 }

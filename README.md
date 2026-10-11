@@ -153,7 +153,7 @@ public Task<Product> GetById(Guid id) { ... }
 public Task<IEnumerable<Product>> Search([FromBody] ProductFilter filter) { ... }
 ```
 
-On a controller, `Scope` applies to every action that sets none of its own; an action's own `Scope` wins. Flags combine, and a combined scope requires all of them: `McpScope.Read | McpScope.Write` admits only a grant that has both.
+On a controller, `Scope` applies to every action that names none of its own; an action's own `Scope` wins, and an action that sets `Scope = McpScope.None` explicitly follows its HTTP method again. Flags combine, and a combined scope requires all of them: `McpScope.Read | McpScope.Write` admits only a grant that has both.
 
 ### `[McpIgnore]`
 

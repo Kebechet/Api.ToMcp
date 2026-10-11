@@ -319,6 +319,36 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_ActionWithAnExplicitNoneScope_FollowsItsHttpMethod_NotTheControllerScope()
+    {
+        // Inheriting the controller's Read here would let a read-only grant call a state-changing POST.
+        const string controller = @"
+using Api.ToMcp.Abstractions;
+using Api.ToMcp.Abstractions.Scopes;
+
+namespace TestApi
+{
+    [McpExpose(Scope = McpScope.Read)]
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [McpExpose(Scope = McpScope.None)]
+        [HttpPost(""import"")]
+        public Task<string> Import(string name) => Task.FromResult(string.Empty);
+
+        [McpExpose(ToolName = ""reports_export"")]
+        [HttpPost(""export"")]
+        public Task<string> Export(string name) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Write, cancellationToken);", GetScopeCheck(generated, "ReportsController_ImportTool"));
+        Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);", GetScopeCheck(generated, "ReportsController_ExportTool"));
+    }
+
+    [Fact]
     public void Generator_InheritsScopeFromTheNearestMcpExpose_OfABaseControllerOrOverriddenAction()
     {
         // [McpExpose] is Inherited = true, but Roslyn's GetAttributes() returns only what a symbol declares itself;
