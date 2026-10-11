@@ -158,6 +158,21 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_IndexesOnlyTheItemsThatSendSomething_SoAnEmptyItemLeavesNoGap()
+    {
+        // An object with only null properties, or an empty nested collection, adds no key; numbering it anyway
+        // would start the next item at [1], and the binder would never reach it.
+        var queryParts = new List<string>();
+        var labels = new List<Label> { new() { Text = null }, new() { Text = "legs" } };
+        var groups = new List<List<int>> { new(), new() { 3 } };
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "labels", labels);
+        McpRequestValueFormatter.AddQueryValue(queryParts, "groups", groups);
+
+        Assert.Equal(new[] { "labels%5B0%5D.Text=legs", "groups%5B0%5D=3" }, queryParts);
+    }
+
+    [Fact]
     public void AddQueryValue_SendsATypeWithAStringConverter_AsOneValueWrittenByTheConverter()
     {
         // The binder treats such a type as simple and reads it back through the converter; the record's own
@@ -296,6 +311,11 @@ public class McpRequestValueFormatterTests
                 ? orderId.Value.ToString()
                 : base.ConvertTo(context, culture, value, destinationType);
         }
+    }
+
+    private sealed class Label
+    {
+        public string? Text { get; set; }
     }
 
     private sealed class AliasedFilter

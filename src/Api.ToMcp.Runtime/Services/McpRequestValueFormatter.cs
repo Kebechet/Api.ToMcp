@@ -100,8 +100,13 @@ public static class McpRequestValueFormatter
                 }
 
                 // An object item expands into Items[0].Property keys, a nested collection repeats Items[0] per value.
+                // An item that adds nothing (only null properties, an empty collection) takes no index.
+                var queryPartCountBeforeItem = queryParts.Count;
                 AddValue(queryParts, $"{key}[{index}]", item, depth + 1);
-                index++;
+                if (queryParts.Count > queryPartCountBeforeItem)
+                {
+                    index++;
+                }
             }
 
             return;
