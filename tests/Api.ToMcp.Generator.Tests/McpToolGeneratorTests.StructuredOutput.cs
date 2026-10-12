@@ -80,6 +80,7 @@ namespace TestApi
     [InlineData("[ProducesResponseType(typeof(Product), 200)] [ProducesResponseType(typeof(Order), 201)] public IActionResult Get() => Ok();")]
     [InlineData("[ProducesResponseType(typeof(Product), 200, \"text/csv\")] public IActionResult Get() => Ok();")]
     [InlineData("[Produces(\"text/csv\")] public ActionResult<Product> Get() => new Product();")]
+    [InlineData("[ProducesResponseType(StatusCodes.Status204NoContent)] public ActionResult<Product> Get() => Ok(new Product());")]
     [InlineData("[ProducesResponseType(typeof(Hidden), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
     [InlineData("[ProducesResponseType(typeof(List<Hidden>), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
     public void Generator_AdvertisesNoOutputSchema_WhenTheSuccessBodyIsNotReliablyTypedJson(string action)

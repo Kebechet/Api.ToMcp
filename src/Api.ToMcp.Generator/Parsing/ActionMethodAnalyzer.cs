@@ -91,7 +91,10 @@ namespace Api.ToMcp.Generator.Parsing
                     CustomToolName = customToolName,
                     CustomDescription = customDescription,
                     RequiredScope = requiredScope,
-                    OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType)
+                    OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType),
+                    IsOutputNullable = responseType.SuccessType is null ||
+                        responseType.HasBodylessSuccess ||
+                        EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct)
                 });
             }
 
