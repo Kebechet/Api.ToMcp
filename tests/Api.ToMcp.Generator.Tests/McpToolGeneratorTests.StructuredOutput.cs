@@ -29,6 +29,19 @@ namespace TestApi
     public sealed class Order
     {
     }
+
+#nullable disable
+    public static class LegacyRepository
+    {
+        public static Product Current;
+
+        public static Product CurrentProperty => null;
+
+        public static Product Find() => null;
+
+        public static Task<Product> FindAsync() => Task.FromResult<Product>(null);
+    }
+#nullable enable
 }
 ";
 
@@ -88,6 +101,92 @@ namespace TestApi
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
 
         AssertHasNoOutputSchema(tool);
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_ForAResponseTypeBuiltFromATypeParameter()
+    {
+        // A generic base controller is scanned as a controller of its own; its T means nothing in the generated tool.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class CrudController<T> : ControllerBase where T : class
+    {
+        [HttpGet(""list"")]
+        public ActionResult<List<T>> GetList() => new List<T>();
+
+        [HttpGet(""array"")]
+        public ActionResult<T[]> GetArray() => new T[0];
+
+        [HttpGet(""nested"")]
+        public ActionResult<Dictionary<string, List<T>>> GetNested() => new Dictionary<string, List<T>>();
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CrudController<Product>
+    {
+    }
+}
+";
+        var errors = CompileWithGeneratedTools(source, AllExceptExcludedConfig);
+        Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        Assert.DoesNotContain("UseStructuredContent", GetToolClass(generated, "CrudController_GetListTool"));
+        Assert.DoesNotContain("UseStructuredContent", GetToolClass(generated, "CrudController_GetArrayTool"));
+        Assert.DoesNotContain("UseStructuredContent", GetToolClass(generated, "CrudController_GetNestedTool"));
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenABaseControllerProducesANonJsonContentType()
+    {
+        // [Produces] is inherited, and MVC applies a base controller's to every action.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [Produces(""text/csv"")]
+    public abstract class CsvControllerBase : ControllerBase
+    {
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CsvControllerBase
+    {
+        [HttpGet]
+        public ActionResult<Product> Get() => new Product();
+    }
+}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheOverriddenActionProducesANonJsonContentType()
+    {
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class ReportControllerBase : ControllerBase
+    {
+        [Produces(""text/csv"")]
+        public virtual ActionResult<Product> Get() => new Product();
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ReportControllerBase
+    {
+        [HttpGet]
+        public override ActionResult<Product> Get() => new Product();
+    }
+}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
     }
 
     [Fact]

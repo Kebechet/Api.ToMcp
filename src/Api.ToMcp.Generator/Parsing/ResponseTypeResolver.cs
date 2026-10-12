@@ -53,8 +53,10 @@ namespace Api.ToMcp.Generator.Parsing
 
         public static ResponseTypeInfo Resolve(IMethodSymbol method, INamedTypeSymbol controller, Compilation compilation)
         {
-            // An action's [Produces] replaces its controller's: it runs later and sets the content types last.
-            var produces = ControllerScanner.GetAttribute(method, ProducesAttribute) ?? ControllerScanner.GetAttribute(controller, ProducesAttribute);
+            // An action's [Produces] replaces its controller's: it runs later and sets the content types last. Both are
+            // inherited, from the action an override replaces and from base controllers.
+            var produces = ActionMethodAnalyzer.FindNearestAttribute(method, x => x.OverriddenMethod, IsProducesAttribute) ??
+                ActionMethodAnalyzer.FindNearestAttribute(controller, x => x.BaseType, IsProducesAttribute);
             if (produces != null && !CanBeJson(GetContentTypes(produces, firstContentTypeArgument: 0)))
             {
                 return new ResponseTypeInfo(null, hasBodylessSuccess: false);
@@ -154,6 +156,11 @@ namespace Api.ToMcp.Generator.Parsing
             return type.AllInterfaces.Any(x => x.OriginalDefinition.ToDisplayString() == fullName);
         }
 
+        private static bool IsProducesAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass?.ToDisplayString() == ProducesAttribute;
+        }
+
         private static bool TryReadProducesResponseType(AttributeData attribute, out int statusCode, out ITypeSymbol? type, out IReadOnlyList<string> contentTypes)
         {
             statusCode = 200;
@@ -237,15 +244,8 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static bool CanDescribe(ITypeSymbol type, Compilation compilation)
         {
-            switch (type.TypeKind)
-            {
-                case TypeKind.Error:
-                case TypeKind.TypeParameter:
-                case TypeKind.Dynamic:
-                case TypeKind.Pointer:
-                case TypeKind.FunctionPointer:
-                    return false;
-            }
+            if (!CanBeNamed(type))
+                return false;
 
             // MVC writes a string as text/plain; an object's schema would be "anything".
             if (type.SpecialType == SpecialType.System_String || type.SpecialType == SpecialType.System_Object)
@@ -256,6 +256,36 @@ namespace Api.ToMcp.Generator.Parsing
 
             // The generated tool names the type in typeof(...), so it must be visible from the generated code.
             return compilation.IsSymbolAccessibleWithin(type, compilation.Assembly);
+        }
+
+        /// <summary>
+        /// Whether <c>typeof(...)</c> in the generated tool can name the type: not when any part of it is a type
+        /// parameter, such as the <c>T</c> of a generic base controller's <c>ActionResult&lt;List&lt;T&gt;&gt;</c>.
+        /// </summary>
+        private static bool CanBeNamed(ITypeSymbol type)
+        {
+            switch (type.TypeKind)
+            {
+                case TypeKind.Error:
+                case TypeKind.TypeParameter:
+                case TypeKind.Dynamic:
+                case TypeKind.Pointer:
+                case TypeKind.FunctionPointer:
+                    return false;
+            }
+
+            if (type is IArrayTypeSymbol arrayType)
+                return CanBeNamed(arrayType.ElementType);
+
+            if (type is INamedTypeSymbol namedType)
+            {
+                if (!namedType.TypeArguments.All(CanBeNamed))
+                    return false;
+
+                return namedType.ContainingType == null || CanBeNamed(namedType.ContainingType);
+            }
+
+            return true;
         }
     }
 }

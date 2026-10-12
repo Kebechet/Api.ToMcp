@@ -55,6 +55,17 @@ public partial class McpToolGeneratorTests
     [InlineData("public ActionResult<Product> Get(bool empty) => empty ? NoContent() : Ok(new Product());")]
     [InlineData("[ProducesResponseType(StatusCodes.Status200OK)] [ProducesResponseType(StatusCodes.Status204NoContent)] public ActionResult<Product> Get() => Ok(new Product());")]
     [InlineData("[ProducesResponseType(typeof(Product), 200)] public IActionResult Get(bool empty) { if (empty) return NoContent(); return Ok(new Product()); }")]
+    [InlineData("public ActionResult<Product> Get() => Ok(LegacyRepository.Find());")]
+    [InlineData("public ActionResult<Product> Get() => LegacyRepository.Find();")]
+    [InlineData("public ActionResult<Product> Get() => Ok(LegacyRepository.Current);")]
+    [InlineData("public ActionResult<Product> Get() => Ok(LegacyRepository.CurrentProperty);")]
+    [InlineData("public async Task<ActionResult<Product>> Get() => Ok(await LegacyRepository.FindAsync());")]
+    [InlineData("public ActionResult<Product> Get() { var product = LegacyRepository.Find(); return Ok(product); }")]
+    [InlineData("public ActionResult<Product> Get() { var product = new Product(); product = LegacyRepository.Find(); return product; }")]
+    [InlineData("public ActionResult<Product> Get() { var product = LegacyRepository.Find(); if (product is null) return NotFound(); return product; }")]
+    [InlineData("public Product Get() => LegacyRepository.Find();")]
+    [InlineData("public Task<Product> Get() => LegacyRepository.FindAsync();")]
+    [InlineData("public Task<ActionResult<Product>> Get() => Load(); private Task<ActionResult<Product>> Load() => Task.FromResult<ActionResult<Product>>(NoContent());")]
     public void Generator_MakesTheOutputSchemaNullable_WhenASuccessCanComeWithoutABody(string action)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);

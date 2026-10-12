@@ -53,9 +53,10 @@ namespace Api.ToMcp.Generator.Parsing
         {
             var returnedType = UnwrapTask(method.ReturnType);
 
-            // An action returning the value itself: the compiler enforces its nullable annotation.
-            if (!IsActionResult(returnedType))
-                return !IsNonNullable(returnedType);
+            // An action returning the value itself and declaring it nullable can send null. One declaring it not-null is
+            // still read like the others: a value from code without nullable annotations reaches it without a warning.
+            if (!IsActionResult(returnedType) && !IsNonNullable(returnedType))
+                return true;
 
             var declaration = method.DeclaringSyntaxReferences
                 .Select(x => x.GetSyntax(ct))
@@ -68,7 +69,7 @@ namespace Api.ToMcp.Generator.Parsing
 
             return GetReturnedExpressions(declaration)
                 .SelectMany(x => GetPossibleResults(x, semanticModel, ct))
-                .Any(x => !IsProvenBodyOrError(x, semanticModel, ct));
+                .Any(x => !IsProvenBodyOrError(x, declaration, semanticModel, ct));
         }
 
         private static ITypeSymbol UnwrapTask(ITypeSymbol type)
@@ -170,16 +171,16 @@ namespace Api.ToMcp.Generator.Parsing
                 type.OriginalDefinition.ToDisplayString() == "System.Threading.Tasks.ValueTask<TResult>";
         }
 
-        private static bool IsProvenBodyOrError(PossibleResult result, SemanticModel semanticModel, CancellationToken ct)
+        private static bool IsProvenBodyOrError(PossibleResult result, MethodDeclarationSyntax declaration, SemanticModel semanticModel, CancellationToken ct)
         {
             var typeInfo = semanticModel.GetTypeInfo(result.Expression, ct);
 
-            // The null literal has no type of its own.
-            if (typeInfo.Type == null)
+            // The null literal has no type of its own; a task the action did not build from its value hides that value.
+            if (typeInfo.Type == null || IsTask(typeInfo.Type))
                 return false;
 
             if (!IsActionResult(typeInfo.Type))
-                return result.IsKnownNotNull || IsNotNullValue(result.Expression, typeInfo);
+                return result.IsKnownNotNull || IsNotNullLeaf(result.Expression, typeInfo, declaration, semanticModel, ct);
 
             if (ErrorResultTypes.Any(x => ResponseTypeResolver.IsOrImplements(typeInfo.Type, x)))
                 return true;
@@ -187,9 +188,9 @@ namespace Api.ToMcp.Generator.Parsing
             switch (semanticModel.GetOperation(result.Expression, ct))
             {
                 case IInvocationOperation invocation:
-                    return IsProvenHelperResult(invocation.TargetMethod, invocation.Arguments, semanticModel, ct);
+                    return IsProvenHelperResult(invocation.TargetMethod, invocation.Arguments, declaration, semanticModel, ct);
                 case IObjectCreationOperation creation when creation.Constructor != null:
-                    return IsProvenHelperResult(creation.Constructor, creation.Arguments, semanticModel, ct);
+                    return IsProvenHelperResult(creation.Constructor, creation.Arguments, declaration, semanticModel, ct);
                 default:
                     return false;
             }
@@ -199,7 +200,12 @@ namespace Api.ToMcp.Generator.Parsing
         /// An <c>ObjectResult</c> built with a not-null <c>value</c> (<c>Ok(x)</c>, <c>CreatedAtAction(..., x)</c>,
         /// <c>new ObjectResult(x)</c>, ...), an error helper, or <c>StatusCode</c> with a constant error status.
         /// </summary>
-        private static bool IsProvenHelperResult(IMethodSymbol method, IEnumerable<IArgumentOperation> arguments, SemanticModel semanticModel, CancellationToken ct)
+        private static bool IsProvenHelperResult(
+            IMethodSymbol method,
+            IEnumerable<IArgumentOperation> arguments,
+            MethodDeclarationSyntax declaration,
+            SemanticModel semanticModel,
+            CancellationToken ct)
         {
             var argumentList = arguments.ToList();
             var resultType = method.MethodKind == MethodKind.Constructor ? method.ContainingType : method.ReturnType;
@@ -210,7 +216,7 @@ namespace Api.ToMcp.Generator.Parsing
                 if (value != null && value.ArgumentKind == ArgumentKind.Explicit)
                 {
                     var valueSyntax = UnwrapConversion(value.Value).Syntax as ExpressionSyntax;
-                    return valueSyntax != null && IsNotNullValue(valueSyntax, semanticModel.GetTypeInfo(valueSyntax, ct));
+                    return valueSyntax != null && IsNotNullValue(valueSyntax, declaration, semanticModel, ct);
                 }
             }
 
@@ -248,13 +254,32 @@ namespace Api.ToMcp.Generator.Parsing
             return false;
         }
 
+        private static bool IsTask(ITypeSymbol type)
+        {
+            var definition = type.OriginalDefinition.ToDisplayString();
+            return definition == "System.Threading.Tasks.Task" || definition == "System.Threading.Tasks.Task<TResult>" ||
+                definition == "System.Threading.Tasks.ValueTask" || definition == "System.Threading.Tasks.ValueTask<TResult>";
+        }
+
+        private static bool IsNotNullValue(ExpressionSyntax expression, MethodDeclarationSyntax declaration, SemanticModel semanticModel, CancellationToken ct)
+        {
+            return GetPossibleResults(expression, semanticModel, ct)
+                .All(x => x.IsKnownNotNull || IsNotNullLeaf(x.Expression, semanticModel.GetTypeInfo(x.Expression, ct), declaration, semanticModel, ct));
+        }
+
         /// <summary>
         /// A not-null value by the compiler's flow analysis: a non-nullable value type, or a reference whose null state
-        /// is not-null. Code without nullable annotations has no null state, so nothing in it is proven.
+        /// is not-null and that does not come from code without nullable annotations. Code without them has no null
+        /// state, so nothing in it is proven.
         /// </summary>
-        private static bool IsNotNullValue(ExpressionSyntax expression, TypeInfo typeInfo)
+        private static bool IsNotNullLeaf(
+            ExpressionSyntax expression,
+            TypeInfo typeInfo,
+            MethodDeclarationSyntax declaration,
+            SemanticModel semanticModel,
+            CancellationToken ct)
         {
-            if (expression.IsKind(SyntaxKind.NullLiteralExpression) || expression.IsKind(SyntaxKind.DefaultLiteralExpression))
+            if (IsNullOrDefaultLiteral(expression))
                 return false;
 
             var type = typeInfo.Type;
@@ -264,7 +289,141 @@ namespace Api.ToMcp.Generator.Parsing
             if (type.IsValueType)
                 return type.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T;
 
-            return typeInfo.Nullability.FlowState == NullableFlowState.NotNull;
+            return typeInfo.Nullability.FlowState == NullableFlowState.NotNull &&
+                IsFromAnnotatedCode(expression, typeInfo, declaration, semanticModel, ct, new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default));
+        }
+
+        /// <summary>
+        /// The compiler gives a value from code without nullable annotations, such as a legacy library's
+        /// <c>Find()</c>, a not-null state and a not-null expression annotation although it can be null; only the
+        /// member it comes from shows it, by having no annotation. A local takes the annotation of its declaration, so
+        /// whether it holds such a value depends on what is assigned to it.
+        /// </summary>
+        private static bool IsFromAnnotatedCode(
+            ExpressionSyntax expression,
+            TypeInfo typeInfo,
+            MethodDeclarationSyntax declaration,
+            SemanticModel semanticModel,
+            CancellationToken ct,
+            HashSet<ILocalSymbol> visitedLocals)
+        {
+            if (IsNullOrDefaultLiteral(expression) || typeInfo.Type?.IsValueType == true)
+                return true;
+
+            if (expression is AwaitExpressionSyntax awaitExpression)
+                return IsAnnotatedTaskResult(semanticModel.GetSymbolInfo(awaitExpression.Expression, ct).Symbol);
+
+            switch (semanticModel.GetSymbolInfo(expression, ct).Symbol)
+            {
+                case ILocalSymbol local:
+                    return IsAssignedOnlyFromAnnotatedCode(local, declaration, semanticModel, ct, visitedLocals);
+                case IMethodSymbol method:
+                    return method.MethodKind == MethodKind.Constructor || method.ReturnNullableAnnotation != NullableAnnotation.None;
+                case IPropertySymbol property:
+                    return property.NullableAnnotation != NullableAnnotation.None;
+                case IFieldSymbol field:
+                    return field.NullableAnnotation != NullableAnnotation.None;
+                case IParameterSymbol parameter:
+                    return parameter.NullableAnnotation != NullableAnnotation.None;
+                case null:
+                    // An array element has no symbol, and its array's annotation is not followed.
+                    return !(expression is ElementAccessExpressionSyntax);
+                default:
+                    return true;
+            }
+        }
+
+        /// <summary>
+        /// Whether the awaited method, property or field declares its task's result with an annotation; a task held in a
+        /// local is not followed.
+        /// </summary>
+        private static bool IsAnnotatedTaskResult(ISymbol? awaitedSymbol)
+        {
+            ITypeSymbol? taskType;
+            switch (awaitedSymbol)
+            {
+                case IMethodSymbol method:
+                    taskType = method.ReturnType;
+                    break;
+                case IPropertySymbol property:
+                    taskType = property.Type;
+                    break;
+                case IFieldSymbol field:
+                    taskType = field.Type;
+                    break;
+                default:
+                    return false;
+            }
+
+            return taskType is INamedTypeSymbol namedTaskType &&
+                namedTaskType.TypeArgumentNullableAnnotations.Length == 1 &&
+                (namedTaskType.TypeArguments[0].IsValueType || namedTaskType.TypeArgumentNullableAnnotations[0] != NullableAnnotation.None);
+        }
+
+        /// <summary>
+        /// Every value the action assigns to the local is from annotated code. A pattern variable is fine, as a pattern
+        /// never binds null; values that arrive another way (<c>out</c>, <c>ref</c>, deconstruction, <c>foreach</c>,
+        /// <c>is var</c>) are not followed and count as unknown.
+        /// </summary>
+        private static bool IsAssignedOnlyFromAnnotatedCode(
+            ILocalSymbol local,
+            MethodDeclarationSyntax declaration,
+            SemanticModel semanticModel,
+            CancellationToken ct,
+            HashSet<ILocalSymbol> visitedLocals)
+        {
+            if (!visitedLocals.Add(local))
+                return true;
+
+            foreach (var node in declaration.DescendantNodes())
+            {
+                switch (node)
+                {
+                    case VariableDeclaratorSyntax declarator when IsLocal(semanticModel.GetDeclaredSymbol(declarator, ct), local):
+                        if (declarator.Initializer != null && !IsValueFromAnnotatedCode(declarator.Initializer.Value, declaration, semanticModel, ct, visitedLocals))
+                            return false;
+                        break;
+                    case AssignmentExpressionSyntax assignment when assignment.Left is IdentifierNameSyntax target && IsLocal(semanticModel.GetSymbolInfo(target, ct).Symbol, local):
+                        if (!IsValueFromAnnotatedCode(assignment.Right, declaration, semanticModel, ct, visitedLocals))
+                            return false;
+                        break;
+                    case AssignmentExpressionSyntax deconstruction when deconstruction.Left is TupleExpressionSyntax tuple &&
+                        tuple.Arguments.Any(x => x.Expression is IdentifierNameSyntax target && IsLocal(semanticModel.GetSymbolInfo(target, ct).Symbol, local)):
+                        return false;
+                    case SingleVariableDesignationSyntax designation when IsLocal(semanticModel.GetDeclaredSymbol(designation, ct), local):
+                        if (!(designation.Parent is DeclarationPatternSyntax) && !(designation.Parent is RecursivePatternSyntax))
+                            return false;
+                        break;
+                    case ForEachStatementSyntax forEach when IsLocal(semanticModel.GetDeclaredSymbol(forEach, ct), local):
+                        return false;
+                    case ArgumentSyntax argument when !argument.RefKindKeyword.IsKind(SyntaxKind.None) &&
+                        argument.Expression is IdentifierNameSyntax target && IsLocal(semanticModel.GetSymbolInfo(target, ct).Symbol, local):
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsValueFromAnnotatedCode(
+            ExpressionSyntax value,
+            MethodDeclarationSyntax declaration,
+            SemanticModel semanticModel,
+            CancellationToken ct,
+            HashSet<ILocalSymbol> visitedLocals)
+        {
+            return GetPossibleResults(value, semanticModel, ct).All(x =>
+                x.IsKnownNotNull || IsFromAnnotatedCode(x.Expression, semanticModel.GetTypeInfo(x.Expression, ct), declaration, semanticModel, ct, visitedLocals));
+        }
+
+        private static bool IsLocal(ISymbol? symbol, ILocalSymbol local)
+        {
+            return SymbolEqualityComparer.Default.Equals(symbol, local);
+        }
+
+        private static bool IsNullOrDefaultLiteral(ExpressionSyntax expression)
+        {
+            return expression.IsKind(SyntaxKind.NullLiteralExpression) || expression.IsKind(SyntaxKind.DefaultLiteralExpression);
         }
 
         private readonly struct PossibleResult

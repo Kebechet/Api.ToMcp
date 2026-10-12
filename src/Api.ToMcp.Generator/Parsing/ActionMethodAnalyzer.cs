@@ -474,7 +474,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// returns only what a symbol declares itself; as with reflection, the nearest attribute replaces the base's as
         /// a whole.
         /// </summary>
-        private static AttributeData? FindNearestAttribute<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> getBase, Func<AttributeData, bool> isMatch)
+        internal static AttributeData? FindNearestAttribute<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> getBase, Func<AttributeData, bool> isMatch)
             where TSymbol : class, ISymbol
         {
             for (var current = symbol; current is not null; current = getBase(current))
