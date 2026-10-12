@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
@@ -18,6 +19,7 @@ internal sealed class McpOutputSchemaBuilder
     private const string TypeKeyword = "type";
     private const string AnyOfKeyword = "anyOf";
     private const string RefKeyword = "$ref";
+    private const string RequiredKeyword = "required";
     private const string NullType = "null";
 
     /// <summary>
@@ -42,7 +44,7 @@ internal sealed class McpOutputSchemaBuilder
     /// </summary>
     public JsonElement Build(Type type, bool isNullable, AIJsonSchemaCreateOptions? inferenceOptions)
     {
-        var schema = AIJsonUtilities.CreateJsonSchema(type, serializerOptions: _serializerOptions, inferenceOptions: inferenceOptions);
+        var schema = AIJsonUtilities.CreateJsonSchema(type, serializerOptions: _serializerOptions, inferenceOptions: RequireOnlyAlwaysWrittenProperties(inferenceOptions));
         if (!isNullable || JsonNode.Parse(schema.GetRawText()) is not JsonObject valueSchema)
         {
             return schema;
@@ -62,6 +64,75 @@ internal sealed class McpOutputSchemaBuilder
         options.TypeInfoResolver ??= new DefaultJsonTypeInfoResolver();
 
         return options;
+    }
+
+    /// <summary>
+    /// The exporter lists every required constructor parameter and <c>required</c> member in <c>required</c>, but MVC
+    /// leaves a property out of the body when an ignore condition says so (a positional record's nullable parameter
+    /// under <c>WhenWritingNull</c>, say), and a validating client rejects a body that lacks a required property.
+    /// </summary>
+    private static AIJsonSchemaCreateOptions RequireOnlyAlwaysWrittenProperties(AIJsonSchemaCreateOptions? inferenceOptions)
+    {
+        var transformSchemaNode = inferenceOptions?.TransformSchemaNode;
+
+        return (inferenceOptions ?? AIJsonSchemaCreateOptions.Default) with
+        {
+            TransformSchemaNode = (context, schema) =>
+                RemoveOmittableFromRequired(context, transformSchemaNode is null ? schema : transformSchemaNode(context, schema))
+        };
+    }
+
+    private static JsonNode RemoveOmittableFromRequired(AIJsonSchemaCreateContext context, JsonNode schema)
+    {
+        if (context.TypeInfo.Kind != JsonTypeInfoKind.Object || schema is not JsonObject schemaObject || schemaObject[RequiredKeyword] is not JsonArray required)
+        {
+            return schema;
+        }
+
+        var omittableNames = context.TypeInfo.Properties
+            .Where(CanBeOmitted)
+            .Select(x => x.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var name in required.Where(x => x is JsonValue value && value.TryGetValue<string>(out var text) && omittableNames.Contains(text)).ToList())
+        {
+            required.Remove(name);
+        }
+
+        if (required.Count == 0)
+        {
+            schemaObject.Remove(RequiredKeyword);
+        }
+
+        return schema;
+    }
+
+    /// <summary>
+    /// Whether MVC can write the object without the property: a custom <c>ShouldSerialize</c>, or the property's own
+    /// <c>[JsonIgnore(Condition = ...)]</c>, else the options' <c>DefaultIgnoreCondition</c>, omitting it.
+    /// </summary>
+    private static bool CanBeOmitted(JsonPropertyInfo property)
+    {
+        if (property.ShouldSerialize is not null)
+        {
+            return true;
+        }
+
+        var ignoreCondition = property.AttributeProvider?
+            .GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: true)
+            .OfType<JsonIgnoreAttribute>()
+            .FirstOrDefault()?
+            .Condition ?? property.Options.DefaultIgnoreCondition;
+
+        return ignoreCondition switch
+        {
+            JsonIgnoreCondition.WhenWritingDefault => true,
+            JsonIgnoreCondition.WhenWritingNull => !property.PropertyType.IsValueType || Nullable.GetUnderlyingType(property.PropertyType) is not null,
+#if NET9_0_OR_GREATER
+            JsonIgnoreCondition.WhenWriting => true,
+#endif
+            _ => false
+        };
     }
 
     private static JsonObject AllowNull(JsonObject valueSchema)

@@ -82,6 +82,49 @@ public class McpOutputSchemaBuilderTests
     }
 
     [Fact]
+    public void Build_DoesNotRequireAProperty_MvcOmitsWhenNull()
+    {
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+
+        var required = GetRequired(Build(typeof(OrderRecord), jsonOptions: jsonOptions));
+
+        Assert.Contains("id", required);
+        Assert.DoesNotContain("note", required);
+    }
+
+    [Fact]
+    public void Build_RequiresNoProperty_WhenMvcOmitsDefaultValues()
+    {
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault;
+
+        Assert.Empty(GetRequired(Build(typeof(OrderRecord), jsonOptions: jsonOptions)));
+    }
+
+    [Fact]
+    public void Build_DoesNotRequireAProperty_ItsOwnJsonIgnoreConditionOmits()
+    {
+        var required = GetRequired(Build(typeof(Shipment)));
+
+        Assert.Contains("carrier", required);
+        Assert.DoesNotContain("tracking", required);
+    }
+
+    [Fact]
+    public void Build_DoesNotRequireAnOmittedProperty_OfANestedObjectInANullableSchema()
+    {
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+
+        var schema = Build(typeof(OrderEnvelope), isNullable: true, jsonOptions: jsonOptions);
+
+        var order = schema.GetProperty("anyOf")[0].GetProperty("properties").GetProperty("order");
+        Assert.Contains("id", GetRequired(order));
+        Assert.DoesNotContain("note", GetRequired(order));
+    }
+
+    [Fact]
     public void Build_LeavesTheMvcJsonOptionsWritable()
     {
         var jsonOptions = new JsonOptions();
@@ -96,6 +139,13 @@ public class McpOutputSchemaBuilderTests
         var builder = new McpOutputSchemaBuilder(Microsoft.Extensions.Options.Options.Create(jsonOptions ?? new JsonOptions()));
 
         return builder.Build(type, isNullable, inferenceOptions?.SchemaCreateOptions);
+    }
+
+    private static List<string> GetRequired(JsonElement schema)
+    {
+        return schema.TryGetProperty("required", out var required)
+            ? required.EnumerateArray().Select(x => x.GetString()!).ToList()
+            : [];
     }
 
     private static IEnumerable<string> CollectRefs(JsonNode? node)
@@ -151,6 +201,21 @@ public class McpOutputSchemaBuilderTests
     {
         Small,
         Large
+    }
+
+    public sealed record OrderRecord(Guid Id, string? Note, int Quantity = 1);
+
+    public sealed class OrderEnvelope
+    {
+        public required OrderRecord Order { get; init; }
+    }
+
+    public sealed class Shipment
+    {
+        public required string Carrier { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public required string? Tracking { get; init; }
     }
 
     public sealed class TreeNode
