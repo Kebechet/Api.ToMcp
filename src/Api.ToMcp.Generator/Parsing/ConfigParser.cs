@@ -35,7 +35,8 @@ namespace Api.ToMcp.Generator.Parsing
                     {
                         ToolNameFormat = dto.Naming?.ToolNameFormat ?? "{Controller}_{Action}",
                         RemoveControllerSuffix = dto.Naming?.RemoveControllerSuffix ?? true
-                    }
+                    },
+                    StructuredOutput = dto.StructuredOutput ?? true
                 };
             }
             catch
@@ -65,6 +66,7 @@ namespace Api.ToMcp.Generator.Parsing
             public List<string>? Include { get; set; }
             public List<string>? Exclude { get; set; }
             public NamingDto? Naming { get; set; }
+            public bool? StructuredOutput { get; set; }
         }
 
         private sealed class NamingDto

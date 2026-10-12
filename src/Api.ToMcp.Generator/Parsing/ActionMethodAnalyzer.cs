@@ -26,6 +26,7 @@ namespace Api.ToMcp.Generator.Parsing
         public static ImmutableArray<ActionInfoModel> GetActions(
             INamedTypeSymbol controller,
             string? routePrefix,
+            Compilation compilation,
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
@@ -50,6 +51,7 @@ namespace Api.ToMcp.Generator.Parsing
 
                 var parameters = AnalyzeParameters(method, httpInfo.Value.Method);
                 var returnType = AnalyzeReturnType(method);
+                var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
                 var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, GetRouteActionName(method));
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
@@ -88,7 +90,8 @@ namespace Api.ToMcp.Generator.Parsing
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
                     CustomDescription = customDescription,
-                    RequiredScope = requiredScope
+                    RequiredScope = requiredScope,
+                    OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType)
                 });
             }
 

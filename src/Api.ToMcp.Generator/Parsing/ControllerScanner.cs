@@ -33,7 +33,7 @@ namespace Api.ToMcp.Generator.Parsing
             var hasMcpExpose = HasAttribute(namedType, McpExposeAttributeFullName);
             var hasMcpIgnore = HasAttribute(namedType, McpIgnoreAttributeFullName);
 
-            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, ct);
+            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, context.SemanticModel.Compilation, ct);
 
             return new ControllerInfoModel
             {

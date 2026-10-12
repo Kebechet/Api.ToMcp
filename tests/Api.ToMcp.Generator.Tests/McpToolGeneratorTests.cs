@@ -17,7 +17,7 @@ namespace Api.ToMcp.Generator.Tests;
 /// generator driver and assert on the emitted code, exercising the whole pipeline
 /// (config parsing, controller scanning, action analysis, and emission) together.
 /// </summary>
-public class McpToolGeneratorTests
+public partial class McpToolGeneratorTests
 {
     private const string Usings = @"
 using System;

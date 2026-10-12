@@ -12,6 +12,7 @@ namespace Api.ToMcp.Generator.Models
         public ImmutableArray<string> Include { get; set; } = ImmutableArray<string>.Empty;
         public ImmutableArray<string> Exclude { get; set; } = ImmutableArray<string>.Empty;
         public NamingConfigModel Naming { get; set; } = new NamingConfigModel();
+        public bool StructuredOutput { get; set; } = true;
     }
 
     internal enum SelectionModeModel
@@ -50,6 +51,17 @@ namespace Api.ToMcp.Generator.Models
         public string? CustomToolName { get; set; }
         public string? CustomDescription { get; set; }
         public McpScopeModel RequiredScope { get; set; } = McpScopeModel.Read;
+
+        /// <summary>
+        /// The success response type as a <c>typeof</c> operand, or null when the tool advertises no output schema.
+        /// </summary>
+        public string? OutputSchemaType { get; set; }
+
+        /// <summary>
+        /// Whether the action can succeed without a body, so the output schema has to allow null. True unless proven
+        /// otherwise: a schema that allows null is never wrong, one that does not breaks the call that sends none.
+        /// </summary>
+        public bool IsOutputNullable { get; set; } = true;
 
         public string ToolClassName => $"{ControllerName}_{Name}Tool";
     }

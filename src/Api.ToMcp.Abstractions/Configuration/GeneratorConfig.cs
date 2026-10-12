@@ -7,6 +7,13 @@ public sealed class GeneratorConfig
     public List<string> Include { get; set; } = new();
     public List<string> Exclude { get; set; } = new();
     public NamingConfig Naming { get; set; } = new();
+
+    /// <summary>
+    /// Whether generated tools advertise an output schema from the action's response type and return structured
+    /// content. On by default; turn it off when the API serializes with Newtonsoft.Json, whose attributes the schema
+    /// cannot see.
+    /// </summary>
+    public bool StructuredOutput { get; set; } = true;
 }
 
 public enum SelectionMode
