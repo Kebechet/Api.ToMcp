@@ -243,16 +243,17 @@ A tool gets no schema, and returns text as before, when the success body is not 
 
 ### The schema matches what your API writes
 
-The schema is built when the host starts, from the `System.Text.Json` options MVC writes responses with, `AddJsonOptions` included: property naming, `JsonStringEnumConverter` and the other settings you gave MVC. Structured content is the response body itself, so a client that validates it against the schema accepts it. Response DTO properties get their XML `<summary>` as descriptions, by the [request field rules](#request-fields-dto-properties-nested-objects-array-items).
+The schema is built when the host starts, from the `System.Text.Json` options MVC writes responses with, `AddJsonOptions` included: property naming, `JsonStringEnumConverter` and the other settings you gave MVC. Structured content is the response body itself, so a client that validates it against the schema accepts it. A property MVC can leave out of the body, through `DefaultIgnoreCondition` or its own `[JsonIgnore(Condition = ...)]`, is never listed as `required`. Response DTO properties get their XML `<summary>` as descriptions, by the [request field rules](#request-fields-dto-properties-nested-objects-array-items).
 
 ### Successes without a body
 
-MVC answers an action that returns `null` with `204 No Content`, and `NoContent()`, `Ok()` or `Accepted()` send no body either. Such a call returns `"structuredContent": null`, and the schema allows it, `{"anyOf": [<the type's schema>, {"type": "null"}]}`, whenever the action can send one. The generator reads each action to decide. The schema is the plain type only when it is proven that every success has a body:
+MVC answers an action that returns `null` with `204 No Content`, and `NoContent()`, `Ok()` or `Accepted()` send no body either. Such a call returns `"structuredContent": null`, and the schema allows it, `{"anyOf": [<the type's schema>, {"type": "null"}]}`, whenever the action can send one. The generator reads each action to decide. The schema is the plain type only when it is proven that every success has a body: an action returning the value itself does not declare it nullable (`Product?`, `Task<Product?>`), and every value the action's own `return` statements produce is
 
-- the action returns the value itself (`Product`, `Task<Product>`), declared not-null with nullable annotations enabled; or
-- every `return` of an `ActionResult<T>` or `IActionResult` action is a not-null value (`return product;` after a null check), an `ObjectResult` helper given a not-null value (`Ok(product)`, `CreatedAtAction(..., product)`), or an error (`NotFound()`, `BadRequest(...)`, `Problem()`, `StatusCode(404)`, ...).
+- a not-null value by the compiler's flow analysis, such as `return product;` after a null check or `new Product { ... }`;
+- an `ObjectResult` helper given such a value (`Ok(product)`, `CreatedAtAction(..., product)`); or
+- an error (`NotFound()`, `BadRequest(...)`, `Problem()`, `StatusCode(404)`, ...).
 
-Anything else, such as `NoContent()`, `Ok()`, `return null`, a maybe-null value, a helper method, a redirect or code without nullable annotations, makes the schema allow null, and so does a `[ProducesResponseType(204)]` declared next to the typed success. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
+Anything else makes the schema allow null: `NoContent()`, `Ok()`, `return null`, a maybe-null value, a task returned from another method, a helper method, a redirect, an action without nullable annotations, and a `[ProducesResponseType(204)]` declared next to the typed success. So does a value from code compiled without nullable annotations, such as an older library's `Find()`: the compiler treats it as not-null without knowing, so it proves nothing, even when held in a local and checked for null first. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
 
 ```csharp
 [HttpGet("{id:guid}")]
