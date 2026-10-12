@@ -4,7 +4,8 @@
   "include": [
     "WeatherController",
     "ProductsController.GetAll",
-    "ProductsController.GetById"
+    "ProductsController.GetById",
+    "ProductsController.GetCheapest"
   ],
   "exclude": [],
   "naming": {
