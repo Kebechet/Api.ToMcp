@@ -23,6 +23,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 
 - **Automatic Tool Generation** - Scans controllers and generates MCP tools at compile time
 - **Descriptions from XML docs** - Tool, argument and request-field descriptions come from the `<summary>` and `<param>` comments you already write
+- **Typed results** - Each tool advertises its action's response type as an output schema and returns the response as structured content
 - **Attribute Control** - Use `[McpExpose]` and `[McpIgnore]` to fine-tune which endpoints are exposed
 - **Flexible Selection** - Choose between allowlist (`SelectedOnly`) or blocklist (`AllExceptExcluded`) modes
 - **Customizable Naming** - Configure tool naming format via `generator.json`
@@ -134,6 +135,12 @@ public class ProductsController : ControllerBase
 - `"ProductsController"` - Include/exclude entire controller
 - `"ProductsController.GetById"` - Include/exclude specific action
 
+### Structured Output
+
+| Option | Description |
+|--------|-------------|
+| `structuredOutput` | `true` (the default) gives every tool whose action returns JSON of a known type an output schema and structured content; `false` turns both off. See [Output Schema and Structured Content](#output-schema-and-structured-content). |
+
 ## Attributes
 
 ### `[McpExpose]`
@@ -209,16 +216,71 @@ Precedence: `[Description]` on the property (or on the record constructor parame
 
 This is on by default; `options.ArePropertyDescriptionsFromXmlDocs = false` in `AddMcpTools` turns it off.
 
-> **Every project whose types appear in tool arguments needs `<GenerateDocumentationFile>true</GenerateDocumentationFile>`** - not only the one with the controllers; a separate contracts project included. The compiler writes the docs to `<AssemblyName>.xml` next to the assembly, and that file has to be there at runtime:
+> **Every project whose types appear in tool arguments or responses needs `<GenerateDocumentationFile>true</GenerateDocumentationFile>`** - not only the one with the controllers; a separate contracts project included. The compiler writes the docs to `<AssemblyName>.xml` next to the assembly, and that file has to be there at runtime:
 >
 > - `dotnet build` and `dotnet publish` copy the app's own `.xml` and the `.xml` of every `ProjectReference` that generates one into the output and publish folders. Verified with SDK 10.0.302 for a `net10.0` app (the demo) and a `net8.0` app; it is MSBuild's standard handling of a reference's related files (`AllowedReferenceRelatedFileExtensions` includes `.xml`), so nothing has to be added to the project.
 > - The `.xml` shipped inside a NuGet **package** is *not* copied to the output by default. For DTOs that come from a package, set `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>` in the app's project; the SDK then copies every package's `.xml` into both the build and the publish output (verified with SDK 10.0.302).
 >
 > When an assembly whose types appear in a tool schema has no `.xml` next to it, the host logs **one warning per assembly at startup**, naming the assembly and the path it looked at, so a missing file shows up in the log instead of in a bare schema. A file that exists but cannot be read (cut short, malformed, locked) is logged the same way with the reason, and never stops the host: its properties simply stay undescribed.
 
-**Responses are not described.** Generated tools return the API's response body as text in a `CallToolResult` and carry no output schema, so XML docs on response DTOs change nothing. Only the types used in tool *arguments* matter.
+**Responses are described the same way.** A generated tool's output schema (see [Output Schema and Structured Content](#output-schema-and-structured-content)) gets the XML descriptions of the response DTO's properties by these rules.
 
-A hand-written `[McpServerTool]` that returns your own type is the exception: the SDK builds a schema for its return type as well, and the same XML descriptions are applied to it. Clients see that schema only when the tool sets `UseStructuredContent = true`, but the return type's assembly counts either way, so without its `.xml` it is named in the startup warning.
+A hand-written `[McpServerTool]` that returns your own type is described too: the SDK builds a schema for its return type as well, and the same XML descriptions are applied to it. Clients see that schema only when the tool sets `UseStructuredContent = true`, but the return type's assembly counts either way, so without its `.xml` it is named in the startup warning.
+
+## Output Schema and Structured Content
+
+A generated tool advertises its action's success response type as the tool's `outputSchema` in `tools/list`, and returns a successful call's body as `structuredContent` next to the text content. Clients and models then know what a tool returns without guessing from a JSON blob. A failed call is unchanged: `isError: true` with the status and body as text, and no structured content (see [Error handling](#error-handling)).
+
+### Which type
+
+The type is decided the way ApiExplorer, and so Swagger, decides it:
+
+- The return type without `Task<T>` / `ValueTask<T>` and `ActionResult<T>`: `ActionResult<Product>`, `Task<Product>` and `Product` all mean `Product`.
+- A 2xx `[ProducesResponseType]` replaces the return type, which is how an `IActionResult` action names one: `[ProducesResponseType(typeof(Product), 200)]` or `[ProducesResponseType<Product>(200)]`. One without a type means the return type for 200 and 201, and no body for any other status, such as 204. Error statuses do not count.
+- When the success responses declare different types, the tool gets no schema.
+
+A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult` or `ActionResult`, `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type without JSON (`[Produces("text/csv")]`), or a type the generated code cannot reference, such as a private nested class.
+
+### The schema matches what your API writes
+
+The schema is built when the host starts, from the `System.Text.Json` options MVC writes responses with, `AddJsonOptions` included: property naming, `JsonStringEnumConverter` and the other settings you gave MVC. Structured content is the response body itself, so a client that validates it against the schema accepts it. Response DTO properties get their XML `<summary>` as descriptions, by the [request field rules](#request-fields-dto-properties-nested-objects-array-items).
+
+### Successes without a body
+
+MVC answers an action that returns `null` with `204 No Content`, and `NoContent()`, `Ok()` or `Accepted()` send no body either. Such a call returns `"structuredContent": null`, and the schema allows it, `{"anyOf": [<the type's schema>, {"type": "null"}]}`, whenever the action can send one. The generator reads each action to decide. The schema is the plain type only when it is proven that every success has a body:
+
+- the action returns the value itself (`Product`, `Task<Product>`), declared not-null with nullable annotations enabled; or
+- every `return` of an `ActionResult<T>` or `IActionResult` action is a not-null value (`return product;` after a null check), an `ObjectResult` helper given a not-null value (`Ok(product)`, `CreatedAtAction(..., product)`), or an error (`NotFound()`, `BadRequest(...)`, `Problem()`, `StatusCode(404)`, ...).
+
+Anything else, such as `NoContent()`, `Ok()`, `return null`, a maybe-null value, a helper method, a redirect or code without nullable annotations, makes the schema allow null, and so does a `[ProducesResponseType(204)]` declared next to the typed success. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
+
+```csharp
+[HttpGet("{id:guid}")]
+public ActionResult<Product> GetById(Guid id)   // output schema: Product
+{
+    var product = Find(id);
+    if (product is null)
+        return NotFound();
+    return product;
+}
+
+[HttpGet("cheapest")]
+public ActionResult<Product> GetCheapest(string category)   // output schema: Product or null
+{
+    var product = FindCheapest(category);
+    if (product is null)
+        return NoContent();
+    return product;
+}
+```
+
+### Clients on an older protocol
+
+Before protocol version `2026-07-28`, an output schema had to describe an object and structured content had to be one. For a client that negotiates an older version, the MCP SDK sends any other schema (an array, a number, or one that also allows null) wrapped as `{"type": "object", "properties": {"result": <schema>}, "required": ["result"]}`, and the content as `{"result": <value>}`. An object schema is sent as it is.
+
+### Turning it off
+
+Set `"structuredOutput": false` in `generator.json`, and every generated tool goes back to text-only results. Do this when the API serializes with Newtonsoft.Json (`AddNewtonsoftJson`): the schema follows `System.Text.Json` and cannot see Newtonsoft's attributes and settings.
 
 ## Scope-Based Access Control
 
@@ -334,7 +396,6 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are. Support is tracked in [#11](https://github.com/Kebechet/Api.ToMcp/issues/11).
 - **One HTTP verb per action.** If an action carries multiple verb attributes (e.g. `[HttpGet]` and `[HttpHead]`), only the first is used.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
-- **Tools return the raw response body as a string.** No typed output schema is emitted from the action's return type.
 - **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
 
 ## Troubleshooting
@@ -354,7 +415,7 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
 
 **Startup warning `Assembly '...' has types in MCP tool schemas but no XML documentation file`.**
-- A type used in a tool argument lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, comes from a NuGet package while the app lacks `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>`, or the `.xml` was not deployed next to the assembly. Enable the matching property and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
+- A type used in a tool argument or response lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, comes from a NuGet package while the app lacks `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>`, or the `.xml` was not deployed next to the assembly. Enable the matching property and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
 - The variant `... could not be read (...)` means the file is there but damaged; rebuild and redeploy it.
 
 **Tool calls return `401`/`403`.**
@@ -371,23 +432,30 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ### Generated Code Example
 
-For `ProductsController.GetById(Guid id)`, the generator creates:
+For `ProductsController.GetById(Guid id)` in the demo, the generator creates:
 
 ```csharp
 [McpServerToolType]
 public static class ProductsController_GetByIdTool
 {
-    [McpServerTool(Name = "Products_GetById")]
-    [Description("Invokes ProductsController.GetById")]
-    public static async Task<string> InvokeAsync(
+    [McpServerTool(Name = "Products_GetById", UseStructuredContent = true, OutputSchemaType = typeof(global::DemoApi.Models.Product))]
+    [global::Api.ToMcp.Runtime.McpGeneratedTool(IsOutputNullable = false)]
+    [Description("Gets a product by its unique identifier.")]
+    public static async Task<object> InvokeAsync(
         IMcpHttpInvoker invoker,
-        [Description("Parameter: id")] Guid id)
+        [Description("The unique identifier of the product to retrieve.")] System.Guid id,
+        System.Threading.CancellationToken cancellationToken = default
+    )
     {
-        var route = $"/api/products/{Uri.EscapeDataString(id.ToString())}";
-        return await invoker.GetAsync(route);
+        var routeid = System.Uri.EscapeDataString(global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter.Format(id));
+        var route = $"/api/products/{routeid}";
+        await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);
+        return global::Api.ToMcp.Runtime.Services.McpStructuredOutput.FromResult(await invoker.GetAsync(route, cancellationToken));
     }
 }
 ```
+
+On success `McpStructuredOutput.FromResult` returns the parsed body, which the SDK sends as structured content; on an error it returns the invoker's `CallToolResult` unchanged. `[McpGeneratedTool]` is for `AddMcpTools`, which builds the output schema from it. A tool without an output schema returns the invoker's `CallToolResult` directly, as `Task<CallToolResult>`.
 
 ## Requirements
 
