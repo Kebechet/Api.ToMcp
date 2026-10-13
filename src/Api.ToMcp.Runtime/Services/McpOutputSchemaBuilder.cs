@@ -20,6 +20,7 @@ internal sealed class McpOutputSchemaBuilder
     private const string AnyOfKeyword = "anyOf";
     private const string RefKeyword = "$ref";
     private const string RequiredKeyword = "required";
+    private const string FormatKeyword = "format";
     private const string SchemaKeyword = "$schema";
     private const string DescriptionKeyword = "description";
     private const string NullType = "null";
@@ -69,7 +70,7 @@ internal sealed class McpOutputSchemaBuilder
             return AnyValueSchema;
         }
 
-        var schema = AIJsonUtilities.CreateJsonSchema(type, serializerOptions: _serializerOptions, inferenceOptions: RequireOnlyAlwaysWrittenProperties(inferenceOptions));
+        var schema = AIJsonUtilities.CreateJsonSchema(type, serializerOptions: _serializerOptions, inferenceOptions: MatchWhatMvcWrites(inferenceOptions));
         if (!isNullable || JsonNode.Parse(schema.GetRawText()) is not JsonObject valueSchema)
         {
             return schema;
@@ -92,21 +93,25 @@ internal sealed class McpOutputSchemaBuilder
     }
 
     /// <summary>
-    /// The exporter lists every required constructor parameter and <c>required</c> member in <c>required</c>, but MVC
-    /// leaves a property out of the body when an ignore condition says so (a positional record's nullable parameter
-    /// under <c>WhenWritingNull</c>, say), and a validating client rejects a body that lacks a required property.
+    /// Takes out what the exporter promises but MVC does not always write, since a validating client rejects a body
+    /// that breaks any of it: properties MVC can omit from <c>required</c>, and formats MVC can miss.
     /// </summary>
-    private static AIJsonSchemaCreateOptions RequireOnlyAlwaysWrittenProperties(AIJsonSchemaCreateOptions? inferenceOptions)
+    private static AIJsonSchemaCreateOptions MatchWhatMvcWrites(AIJsonSchemaCreateOptions? inferenceOptions)
     {
         var transformSchemaNode = inferenceOptions?.TransformSchemaNode;
 
         return (inferenceOptions ?? AIJsonSchemaCreateOptions.Default) with
         {
             TransformSchemaNode = (context, schema) =>
-                RemoveOmittableFromRequired(context, transformSchemaNode is null ? schema : transformSchemaNode(context, schema))
+                RemoveFormatMvcCanMiss(context, RemoveOmittableFromRequired(context, transformSchemaNode is null ? schema : transformSchemaNode(context, schema)))
         };
     }
 
+    /// <summary>
+    /// The exporter lists every required constructor parameter and <c>required</c> member in <c>required</c>, but MVC
+    /// leaves a property out of the body when an ignore condition says so (a positional record's nullable parameter
+    /// under <c>WhenWritingNull</c>, say).
+    /// </summary>
     private static JsonNode RemoveOmittableFromRequired(AIJsonSchemaCreateContext context, JsonNode schema)
     {
         if (context.TypeInfo.Kind != JsonTypeInfoKind.Object || schema is not JsonObject schemaObject || schemaObject[RequiredKeyword] is not JsonArray required)
@@ -127,6 +132,22 @@ internal sealed class McpOutputSchemaBuilder
         if (required.Count == 0)
         {
             schemaObject.Remove(RequiredKeyword);
+        }
+
+        return schema;
+    }
+
+    /// <summary>
+    /// The <c>date-time</c> and <c>time</c> formats require an offset, which MVC writes for a <c>DateTime</c> only when
+    /// its kind is UTC or local (<c>"2026-09-28T00:00:00"</c> otherwise, as from a database) and never for a
+    /// <c>TimeOnly</c> (<c>"13:45:00"</c>), so both stay plain strings.
+    /// </summary>
+    private static JsonNode RemoveFormatMvcCanMiss(AIJsonSchemaCreateContext context, JsonNode schema)
+    {
+        var type = Nullable.GetUnderlyingType(context.TypeInfo.Type) ?? context.TypeInfo.Type;
+        if ((type == typeof(DateTime) || type == typeof(TimeOnly)) && schema is JsonObject schemaObject)
+        {
+            schemaObject.Remove(FormatKeyword);
         }
 
         return schema;

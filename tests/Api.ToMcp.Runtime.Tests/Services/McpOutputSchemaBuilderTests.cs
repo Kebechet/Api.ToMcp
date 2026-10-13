@@ -125,6 +125,31 @@ public class McpOutputSchemaBuilderTests
     }
 
     [Theory]
+    [InlineData("at")]
+    [InlineData("maybeAt")]
+    [InlineData("opensAt")]
+    [InlineData("maybeOpensAt")]
+    public void Build_ClaimsNoFormat_ForAValueMvcWritesWithoutAnOffset(string propertyName)
+    {
+        // MVC writes a DateTime of unspecified kind as "2026-09-28T00:00:00" and a TimeOnly as "13:45:00"; the
+        // date-time and time formats require an offset, so a validating client would reject them.
+        var property = Build(typeof(Schedule)).GetProperty("properties").GetProperty(propertyName);
+
+        Assert.False(property.TryGetProperty("format", out _));
+    }
+
+    [Theory]
+    [InlineData("stampedAt", "date-time")]
+    [InlineData("day", "date")]
+    [InlineData("id", "uuid")]
+    public void Build_KeepsTheFormat_OfAValueMvcAlwaysWritesInIt(string propertyName, string format)
+    {
+        var property = Build(typeof(Schedule)).GetProperty("properties").GetProperty(propertyName);
+
+        Assert.Equal(format, property.GetProperty("format").GetString());
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void Build_AcceptsAnyValue_WhenMvcPreservesReferences(bool isNullable)
@@ -214,6 +239,23 @@ public class McpOutputSchemaBuilderTests
     {
         Small,
         Large
+    }
+
+    public sealed class Schedule
+    {
+        public DateTime At { get; set; }
+
+        public DateTime? MaybeAt { get; set; }
+
+        public TimeOnly OpensAt { get; set; }
+
+        public TimeOnly? MaybeOpensAt { get; set; }
+
+        public DateTimeOffset StampedAt { get; set; }
+
+        public DateOnly Day { get; set; }
+
+        public Guid Id { get; set; }
     }
 
     public sealed record OrderRecord(Guid Id, string? Note, int Quantity = 1);
