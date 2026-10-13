@@ -24,6 +24,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 - **Automatic Tool Generation** - Scans controllers and generates MCP tools at compile time
 - **Descriptions from XML docs** - Tool, argument and request-field descriptions come from the `<summary>` and `<param>` comments you already write
 - **Typed results** - Each tool advertises its action's response type as an output schema and returns the response as structured content
+- **Tool annotations** - Every tool states its read-only, destructive, idempotent and open-world hints, derived from its scope and HTTP method
 - **Attribute Control** - Use `[McpExpose]` and `[McpIgnore]` to fine-tune which endpoints are exposed
 - **Flexible Selection** - Choose between allowlist (`SelectedOnly`) or blocklist (`AllExceptExcluded`) modes
 - **Customizable Naming** - Configure tool naming format via `generator.json`
@@ -161,6 +162,29 @@ public Task<IEnumerable<Product>> Search([FromBody] ProductFilter filter) { ... 
 ```
 
 On a controller, `Scope` applies to every action that names none of its own; an action's own `Scope` wins, and an action that sets `Scope = McpScope.None` explicitly follows its HTTP method again. Flags combine, and a combined scope requires all of them: `McpScope.Read | McpScope.Write` admits only a grant that has both.
+
+#### Tool annotations
+
+Every generated tool states all four [tool annotations](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations) explicitly. A client reads a hint that is left out as its spec default - not read-only, destructive, open-world - and directories such as ChatGPT's refuse a tool that omits any of them. The generator derives them from the tool's scope and HTTP method:
+
+| Hint | Derived value |
+|---|---|
+| `ReadOnly` | true when the scope is read only (a GET, or a POST with `Scope = McpScope.Read`). Never derived for PUT, PATCH or DELETE: a scope is a permission, and a loose one must not make a state-changing method look safe to run unconfirmed |
+| `Destructive` | true when the tool is not read-only and is a PUT, PATCH or DELETE, or its scope includes `Delete`: the spec reserves false for purely additive updates, which of the write methods only POST makes |
+| `Idempotent` | true when the tool is read-only, or for PUT and DELETE |
+| `OpenWorld` | false: a generated tool calls your own API, a closed system |
+
+Set a hint on `[McpExpose]` only where the derived value is wrong. An action's own value wins over its controller's, and a hint it does not set follows the controller, then the derivation. As with `Scope`, the nearest `[McpExpose]` replaces a base controller's as a whole: a derived controller's attribute hides every hint of its base's, including those it does not set.
+
+```csharp
+[McpExpose(Destructive = true)]           // wipes the user's progress, so a client should confirm first
+[HttpPost("{id}/reset")]
+public Task<ActionResult> ResetProgress(Guid id) { ... }
+
+[McpExpose(OpenWorld = true)]             // posts to a URL the caller chooses
+[HttpPost("webhooks/test")]
+public Task<ActionResult> SendTestWebhook([FromBody] WebhookTest test) { ... }
+```
 
 ### `[McpIgnore]`
 
@@ -439,7 +463,7 @@ For `ProductsController.GetById(Guid id)` in the demo, the generator creates:
 [McpServerToolType]
 public static class ProductsController_GetByIdTool
 {
-    [McpServerTool(Name = "Products_GetById", UseStructuredContent = true, OutputSchemaType = typeof(global::DemoApi.Models.Product))]
+    [McpServerTool(Name = "Products_GetById", UseStructuredContent = true, OutputSchemaType = typeof(global::DemoApi.Models.Product), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [global::Api.ToMcp.Runtime.McpGeneratedTool(IsOutputNullable = false)]
     [Description("Gets a product by its unique identifier.")]
     public static async Task<object> InvokeAsync(

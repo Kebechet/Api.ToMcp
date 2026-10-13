@@ -415,7 +415,7 @@ public class ToolClassEmitterTests
         };
 
         var result = ToolClassEmitter.Emit(action, config);
-        Assert.Contains("[McpServerTool(Name = \"Products_GetById\")]", result);
+        Assert.Contains("[McpServerTool(Name = \"Products_GetById\", ", result);
     }
 
     [Fact]
@@ -440,7 +440,68 @@ public class ToolClassEmitterTests
         };
 
         var result = ToolClassEmitter.Emit(action, config);
-        Assert.Contains("[McpServerTool(Name = \"ProductsController_GetById\")]", result);
+        Assert.Contains("[McpServerTool(Name = \"ProductsController_GetById\", ", result);
+    }
+
+    /// <summary>
+    /// The two patterns differ for every pair of hints, so emitting one hint's value under another's name fails one of
+    /// them; each runs on both emit paths, with and without an output schema.
+    /// </summary>
+    [Theory]
+    [InlineData(false, true, true, false, false)]
+    [InlineData(false, true, false, true, false)]
+    [InlineData(true, true, true, false, false)]
+    [InlineData(true, true, false, true, false)]
+    public void Emit_WritesEachAnnotationUnderItsOwnName_OnBothEmitPaths(bool hasOutputSchema, bool isReadOnly, bool isDestructive, bool isIdempotent, bool isOpenWorld)
+    {
+        var action = new ActionInfoModel
+        {
+            Name = "GetById",
+            ControllerName = "ProductsController",
+            HttpMethod = "GET",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty,
+            OutputSchemaType = hasOutputSchema ? "global::TestApi.Product" : null,
+            Annotations = new ToolAnnotationsModel
+            {
+                IsReadOnly = isReadOnly,
+                IsDestructive = isDestructive,
+                IsIdempotent = isIdempotent,
+                IsOpenWorld = isOpenWorld
+            }
+        };
+
+        var result = ToolClassEmitter.Emit(action, new GeneratorConfigModel());
+
+        var expectedAnnotations = $"ReadOnly = {FormatBool(isReadOnly)}, Destructive = {FormatBool(isDestructive)}, Idempotent = {FormatBool(isIdempotent)}, OpenWorld = {FormatBool(isOpenWorld)})]";
+        var expectedAttribute = hasOutputSchema
+            ? $"[McpServerTool(Name = \"Products_GetById\", UseStructuredContent = true, OutputSchemaType = typeof(global::TestApi.Product), {expectedAnnotations}"
+            : $"[McpServerTool(Name = \"Products_GetById\", {expectedAnnotations}";
+        Assert.Contains(expectedAttribute, result);
+    }
+
+    [Fact]
+    public void Emit_ActionWhoseAnnotationsWereNeverDerived_StatesTheSpecDefaults()
+    {
+        // A path that skips deriving the hints must not advertise a plausible "safe" tuple: the spec's defaults are the
+        // cautious ones, so a DELETE that slipped through still asks for confirmation.
+        var action = new ActionInfoModel
+        {
+            Name = "Delete",
+            ControllerName = "ProductsController",
+            HttpMethod = "DELETE",
+            RouteTemplate = "/api/products/{id}",
+            Parameters = ImmutableArray<ParameterInfoModel>.Empty
+        };
+
+        var result = ToolClassEmitter.Emit(action, new GeneratorConfigModel());
+
+        Assert.Contains("[McpServerTool(Name = \"Products_Delete\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]", result);
+    }
+
+    private static string FormatBool(bool value)
+    {
+        return value ? "true" : "false";
     }
 
     [Fact]
@@ -458,7 +519,7 @@ public class ToolClassEmitterTests
 
         var config = new GeneratorConfigModel();
         var result = ToolClassEmitter.Emit(action, config);
-        Assert.Contains("[McpServerTool(Name = \"custom_get_product\")]", result);
+        Assert.Contains("[McpServerTool(Name = \"custom_get_product\", ", result);
     }
 
     [Fact]

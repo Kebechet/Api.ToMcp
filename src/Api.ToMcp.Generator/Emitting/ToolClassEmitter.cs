@@ -72,14 +72,15 @@ namespace Api.ToMcp.Generator.Emitting
             paramDecls.AddRange(parameters.Select(FormatParameterDeclaration));
             paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
 
+            var annotations = FormatAnnotationArguments(action.Annotations);
             if (hasOutputSchema)
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}))]");
-                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {(action.IsOutputNullable ? "true" : "false")})]");
+                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
+                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
             }
             else
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\")]");
+                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", {annotations})]");
             }
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             // A tool with an output schema returns the parsed body on success, for the SDK to turn into structured content.
@@ -257,6 +258,16 @@ namespace Api.ToMcp.Generator.Emitting
             }
 
             return string.Join(" | ", includedFlags.Select(x => $"McpScope.{x}"));
+        }
+
+        private static string FormatAnnotationArguments(ToolAnnotationsModel annotations)
+        {
+            return $"ReadOnly = {FormatBool(annotations.IsReadOnly)}, Destructive = {FormatBool(annotations.IsDestructive)}, Idempotent = {FormatBool(annotations.IsIdempotent)}, OpenWorld = {FormatBool(annotations.IsOpenWorld)}";
+        }
+
+        private static string FormatBool(bool value)
+        {
+            return value ? "true" : "false";
         }
 
         public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)

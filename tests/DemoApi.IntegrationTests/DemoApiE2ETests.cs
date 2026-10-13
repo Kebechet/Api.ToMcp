@@ -276,6 +276,33 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_ToolsList_StatesEveryAnnotationExplicitly_ForGeneratedTools()
+    {
+        // A hint left out reads as its spec default on the client: a GET would count as destructive and open-world.
+        await using var client = await ConnectMcpClientAsync();
+
+        var tools = await client.ListToolsAsync();
+
+        var read = tools.Single(x => x.Name == "Weather_GetAll").ProtocolTool.Annotations;
+        Assert.True(read?.ReadOnlyHint);
+        Assert.False(read?.DestructiveHint);
+        Assert.True(read?.IdempotentHint);
+        Assert.False(read?.OpenWorldHint);
+
+        var write = tools.Single(x => x.Name == "Weather_Create").ProtocolTool.Annotations;
+        Assert.False(write?.ReadOnlyHint);
+        Assert.False(write?.DestructiveHint);
+        Assert.False(write?.IdempotentHint);
+        Assert.False(write?.OpenWorldHint);
+
+        var delete = tools.Single(x => x.Name == "Weather_DeleteByCity").ProtocolTool.Annotations;
+        Assert.False(delete?.ReadOnlyHint);
+        Assert.True(delete?.DestructiveHint);
+        Assert.True(delete?.IdempotentHint);
+        Assert.False(delete?.OpenWorldHint);
+    }
+
+    [Fact]
     public async Task McpProtocol_ToolsList_AdvertisesOutputSchemas_FromTheResponseTypes()
     {
         await using var client = await ConnectMcpClientAsync();
