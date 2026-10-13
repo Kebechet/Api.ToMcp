@@ -1,8 +1,10 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -21,11 +23,79 @@ public class McpExtensionsTests
     {
         // The SDK scan is the reference: with the XML docs off, every tool must come out identical in name,
         // description, annotations, metadata and input schema (DI-bound parameters left out, [Description]s kept).
-        var expectedTools = BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly));
-        var actualTools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false));
+        // Generated tools are left out: their output schema is meant to differ, it follows MVC's JSON options.
+        var expectedTools = BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly)).Where(x => !IsGenerated(x));
+        var actualTools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false)).Where(x => !IsGenerated(x)).ToList();
 
-        Assert.Equal(3, actualTools.Count);
+        Assert.Equal(4, actualTools.Count);
         Assert.Equal(expectedTools.Select(ToJson).OrderBy(x => x), actualTools.Select(ToJson).OrderBy(x => x));
+    }
+
+    [Fact]
+    public void AddMcpTools_BuildsAGeneratedToolsOutputSchema_FromTheAppsMvcJsonOptions()
+    {
+        // The SDK's own options would give camelCase names and the enum as strings; MVC is configured otherwise.
+        var tools = BuildTools(services =>
+        {
+            services.Configure<JsonOptions>(options => options.JsonSerializerOptions.PropertyNamingPolicy = null);
+            services.AddMcpTools(ToolAssembly);
+        });
+
+        var outputSchema = GetOutputSchema(tools, "generated_strict");
+
+        Assert.Equal("object", outputSchema.GetProperty("type").GetString());
+        var properties = outputSchema.GetProperty("properties");
+        Assert.Equal(["Name", "Kind"], properties.EnumerateObject().Select(x => x.Name));
+        Assert.Equal("integer", properties.GetProperty("Kind").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void AddMcpTools_GivesAGeneratedToolASchemaOfAnyValue_WhenMvcPreservesReferences()
+    {
+        var tools = BuildTools(services =>
+        {
+            services.Configure<JsonOptions>(options => options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.Preserve);
+            services.AddMcpTools(ToolAssembly);
+        });
+
+        Assert.Equal("{}", GetOutputSchema(tools, "generated_strict").GetRawText());
+        Assert.Equal("{}", GetOutputSchema(tools, "generated_nullable").GetRawText());
+    }
+
+    [Fact]
+    public void AddMcpTools_DescribesAGeneratedToolsOutput_FromXmlDocs()
+    {
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+
+        var properties = GetOutputSchema(tools, "generated_strict").GetProperty("properties");
+
+        Assert.Equal("Name documented from XML.", properties.GetProperty("name").GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public void AddMcpTools_LetsANullableGeneratedToolsOutputSchemaAcceptNull()
+    {
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+
+        var branches = GetOutputSchema(tools, "generated_nullable").GetProperty("anyOf").EnumerateArray().ToList();
+
+        Assert.Equal("object", branches[0].GetProperty("type").GetString());
+        Assert.Equal("null", branches[1].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void AddMcpTools_LeavesAHandWrittenToolsOutputSchema_ToTheSdk()
+    {
+        var expected = GetOutputSchema(BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly)), "handwritten_structured");
+        var actual = GetOutputSchema(
+            BuildTools(services =>
+            {
+                services.Configure<JsonOptions>(options => options.JsonSerializerOptions.PropertyNamingPolicy = null);
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            }),
+            "handwritten_structured");
+
+        Assert.Equal(expected.GetRawText(), actual.GetRawText());
     }
 
     [Fact]
@@ -113,6 +183,26 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public async Task StartupCheck_Warns_WhenMvcPreservesReferences()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.Configure<JsonOptions>(options => options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.Preserve);
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("ReferenceHandler.Preserve", warning.Message);
+        Assert.Contains("\"structuredOutput\": false", warning.Message);
+    }
+
+    [Fact]
     public async Task StartupCheck_StaysSilent_WhenTheOptionIsOff()
     {
         var logs = new List<(LogLevel Level, string Message)>();
@@ -145,6 +235,19 @@ public class McpExtensionsTests
         register(services);
 
         return services.BuildServiceProvider();
+    }
+
+    private static bool IsGenerated(McpServerTool tool)
+    {
+        return tool.ProtocolTool.Name.StartsWith("generated_", StringComparison.Ordinal);
+    }
+
+    private static JsonElement GetOutputSchema(IEnumerable<McpServerTool> tools, string toolName)
+    {
+        var outputSchema = tools.Single(x => x.ProtocolTool.Name == toolName).ProtocolTool.OutputSchema;
+
+        Assert.NotNull(outputSchema);
+        return outputSchema.Value;
     }
 
     private static string ToJson(McpServerTool tool)

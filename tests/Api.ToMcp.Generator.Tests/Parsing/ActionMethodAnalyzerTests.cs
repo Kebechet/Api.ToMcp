@@ -44,9 +44,9 @@ namespace TestApi
     }
 }
 ";
-        var controller = GetControllerSymbol(Usings + AspNetStubs + controllerSource, "TestApi.ProductsController");
+        var (controller, compilation) = GetControllerSymbol(Usings + AspNetStubs + controllerSource, "TestApi.ProductsController");
 
-        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", CancellationToken.None);
+        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", compilation, CancellationToken.None);
 
         var search = Assert.Single(actions);
         Assert.Equal("/api/products/search", search.RouteTemplate);
@@ -66,15 +66,15 @@ namespace TestApi
     }
 }
 ";
-        var controller = GetControllerSymbol(Usings + AspNetStubs + controllerSource, "TestApi.ProductsController");
+        var (controller, compilation) = GetControllerSymbol(Usings + AspNetStubs + controllerSource, "TestApi.ProductsController");
 
-        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", CancellationToken.None);
+        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", compilation, CancellationToken.None);
 
         var getById = Assert.Single(actions);
         Assert.Equal("/api/products/{id}", getById.RouteTemplate);
     }
 
-    private static INamedTypeSymbol GetControllerSymbol(string source, string metadataName)
+    private static (INamedTypeSymbol Controller, Compilation Compilation) GetControllerSymbol(string source, string metadataName)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
 
@@ -96,6 +96,6 @@ namespace TestApi
 
         var symbol = compilation.GetTypeByMetadataName(metadataName);
         Assert.NotNull(symbol);
-        return symbol!;
+        return (symbol!, compilation);
     }
 }

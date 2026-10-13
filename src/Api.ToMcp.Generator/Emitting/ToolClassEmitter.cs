@@ -16,6 +16,9 @@ namespace Api.ToMcp.Generator.Emitting
         /// </summary>
         private const string RequestValueFormatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
 
+        private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
+        private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
+
         private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
 
         public static string Emit(ActionInfoModel action, GeneratorConfigModel config, string? overrideClassName = null)
@@ -43,7 +46,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine($"    public static class {className}");
             sb.AppendLine("    {");
 
-            EmitToolMethod(sb, action, toolName, description);
+            EmitToolMethod(sb, action, toolName, description, hasOutputSchema: config.StructuredOutput && action.OutputSchemaType != null);
 
             sb.AppendLine("    }");
             sb.AppendLine("}");
@@ -55,7 +58,8 @@ namespace Api.ToMcp.Generator.Emitting
             StringBuilder sb,
             ActionInfoModel action,
             string toolName,
-            string description)
+            string description,
+            bool hasOutputSchema)
         {
             var parameters = action.Parameters
                 .Where(p => p.Source != ParameterSourceModel.Services)
@@ -68,9 +72,21 @@ namespace Api.ToMcp.Generator.Emitting
             paramDecls.AddRange(parameters.Select(FormatParameterDeclaration));
             paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
 
-            sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\")]");
+            var annotations = FormatAnnotationArguments(action.Annotations);
+            if (hasOutputSchema)
+            {
+                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
+                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
+            }
+            else
+            {
+                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", {annotations})]");
+            }
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
-            sb.Append("        public static async Task<CallToolResult> InvokeAsync(");
+            // A tool with an output schema returns the parsed body on success, for the SDK to turn into structured content.
+            sb.Append(hasOutputSchema
+                ? "        public static async Task<object> InvokeAsync("
+                : "        public static async Task<CallToolResult> InvokeAsync(");
             sb.AppendLine();
 
             for (int i = 0; i < paramDecls.Count; i++)
@@ -83,7 +99,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        {");
 
             EmitRouteBuilding(sb, action, parameters);
-            EmitHttpCall(sb, action, parameters);
+            EmitHttpCall(sb, action, parameters, hasOutputSchema);
 
             sb.AppendLine("        }");
         }
@@ -165,7 +181,7 @@ namespace Api.ToMcp.Generator.Emitting
                 p.Source == ParameterSourceModel.Query ||
                 (p.Source == ParameterSourceModel.Auto &&
                  !RouteContainsParameter(route, p.Name) &&
-                 action.HttpMethod == "GET" &&
+                 action.HttpMethod == HttpMethodNames.Get &&
                  !IsComplexType(p.Type))).ToList();
 
             if (queryParams.Any())
@@ -185,56 +201,39 @@ namespace Api.ToMcp.Generator.Emitting
         private static void EmitHttpCall(
             StringBuilder sb,
             ActionInfoModel action,
-            List<ParameterInfoModel> parameters)
+            List<ParameterInfoModel> parameters,
+            bool hasOutputSchema)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
 
             sb.AppendLine($"            await invoker.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope)}, cancellationToken);");
 
-            if (action.HttpMethod == "GET")
+            string invokerCall;
+            switch (action.HttpMethod)
             {
-                sb.AppendLine("            return await invoker.GetAsync(route, cancellationToken);");
+                case HttpMethodNames.Get:
+                    invokerCall = "await invoker.GetAsync(route, cancellationToken)";
+                    break;
+                case HttpMethodNames.Post:
+                case HttpMethodNames.Put:
+                case HttpMethodNames.Patch:
+                    var invokerMethod = action.HttpMethod == HttpMethodNames.Post ? "PostAsync" : action.HttpMethod == HttpMethodNames.Put ? "PutAsync" : "PatchAsync";
+                    if (bodyParam != null)
+                    {
+                        sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
+                    }
+                    invokerCall = $"await invoker.{invokerMethod}(route, {(bodyParam != null ? "bodyJson" : "null")}, cancellationToken)";
+                    break;
+                case HttpMethodNames.Delete:
+                    invokerCall = "await invoker.DeleteAsync(route, cancellationToken)";
+                    break;
+                default:
+                    return;
             }
-            else if (action.HttpMethod == "POST")
-            {
-                if (bodyParam != null)
-                {
-                    sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            return await invoker.PostAsync(route, bodyJson, cancellationToken);");
-                }
-                else
-                {
-                    sb.AppendLine("            return await invoker.PostAsync(route, null, cancellationToken);");
-                }
-            }
-            else if (action.HttpMethod == "PUT")
-            {
-                if (bodyParam != null)
-                {
-                    sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            return await invoker.PutAsync(route, bodyJson, cancellationToken);");
-                }
-                else
-                {
-                    sb.AppendLine("            return await invoker.PutAsync(route, null, cancellationToken);");
-                }
-            }
-            else if (action.HttpMethod == "PATCH")
-            {
-                if (bodyParam != null)
-                {
-                    sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
-                    sb.AppendLine("            return await invoker.PatchAsync(route, bodyJson, cancellationToken);");
-                }
-                else
-                {
-                    sb.AppendLine("            return await invoker.PatchAsync(route, null, cancellationToken);");
-                }
-            }
-            else if (action.HttpMethod == "DELETE")
-            {
-                sb.AppendLine("            return await invoker.DeleteAsync(route, cancellationToken);");
-            }
+
+            sb.AppendLine(hasOutputSchema
+                ? $"            return {StructuredOutput}.FromResult({invokerCall});"
+                : $"            return {invokerCall};");
         }
 
         /// <summary>
@@ -259,6 +258,16 @@ namespace Api.ToMcp.Generator.Emitting
             }
 
             return string.Join(" | ", includedFlags.Select(x => $"McpScope.{x}"));
+        }
+
+        private static string FormatAnnotationArguments(ToolAnnotationsModel annotations)
+        {
+            return $"ReadOnly = {FormatBool(annotations.IsReadOnly)}, Destructive = {FormatBool(annotations.IsDestructive)}, Idempotent = {FormatBool(annotations.IsIdempotent)}, OpenWorld = {FormatBool(annotations.IsOpenWorld)}";
+        }
+
+        private static string FormatBool(bool value)
+        {
+            return value ? "true" : "false";
         }
 
         public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)

@@ -21,15 +21,18 @@ internal sealed class McpToolsStartupCheck : IHostedService
 
     private readonly IServiceProvider _serviceProvider;
     private readonly XmlDocPropertyDescriber _propertyDescriber;
+    private readonly McpOutputSchemaBuilder _outputSchemaBuilder;
     private readonly ILogger<McpToolsStartupCheck> _logger;
 
     public McpToolsStartupCheck(
         IServiceProvider serviceProvider,
         XmlDocPropertyDescriber propertyDescriber,
+        McpOutputSchemaBuilder outputSchemaBuilder,
         ILogger<McpToolsStartupCheck> logger)
     {
         _serviceProvider = serviceProvider;
         _propertyDescriber = propertyDescriber;
+        _outputSchemaBuilder = outputSchemaBuilder;
         _logger = logger;
     }
 
@@ -37,6 +40,12 @@ internal sealed class McpToolsStartupCheck : IHostedService
     {
         var toolCount = _serviceProvider.GetServices<McpServerTool>().Count();
         _logger.LogDebug("Built {ToolCount} MCP tools.", toolCount);
+
+        if (_outputSchemaBuilder.HasBuiltAnyValueSchema)
+        {
+            _logger.LogWarning(
+                "The app's MVC JSON options preserve references (ReferenceHandler.Preserve), which no JSON Schema describes, so generated tools advertise an output schema that accepts any value. Set \"structuredOutput\": false in generator.json to advertise none.");
+        }
 
         foreach (var (assembly, xmlDocPath) in _propertyDescriber.MissingXmlDocPathsByAssembly)
         {

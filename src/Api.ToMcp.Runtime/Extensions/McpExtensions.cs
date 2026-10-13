@@ -33,6 +33,7 @@ public static class McpExtensions
         services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>();
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
+        services.TryAddSingleton<McpOutputSchemaBuilder>();
         services.AddHostedService<McpToolsStartupCheck>();
 
         // Configure scope options (default is no scope checking)
@@ -108,6 +109,14 @@ public static class McpExtensions
                 ? serviceProvider.GetRequiredService<XmlDocPropertyDescriber>().SchemaCreateOptions
                 : null
         };
+
+        // The SDK would build this schema from OutputSchemaType with its own JSON options; an explicit one wins.
+        if (toolMethod.GetCustomAttribute<McpGeneratedToolAttribute>() is { } generatedTool &&
+            toolMethod.GetCustomAttribute<McpServerToolAttribute>() is { UseStructuredContent: true, OutputSchemaType: { } outputSchemaType })
+        {
+            createOptions.OutputSchema = serviceProvider.GetRequiredService<McpOutputSchemaBuilder>()
+                .Build(outputSchemaType, generatedTool.IsOutputNullable, createOptions.SchemaCreateOptions);
+        }
 
         if (toolMethod.IsStatic)
         {

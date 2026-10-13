@@ -29,4 +29,8 @@
     <ProjectReference Include="..\..\src\Api.ToMcp.Runtime\Api.ToMcp.Runtime.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Snapshots\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

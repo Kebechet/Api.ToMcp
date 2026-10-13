@@ -98,4 +98,13 @@ public class WeatherController : ControllerBase
 
         return Task.FromResult(forecast);
     }
+
+    /// <summary>
+    /// Deletes the stored forecasts of a city.
+    /// </summary>
+    [HttpDelete("{city}")]
+    public Task<ActionResult> DeleteByCity(string city)
+    {
+        return Task.FromResult<ActionResult>(NoContent());
+    }
 }

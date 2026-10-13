@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
@@ -31,6 +32,11 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 {
     // Seeded in ProductsController.
     private static readonly Guid LaptopId = Guid.Parse("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+
+    /// <summary>
+    /// A protocol from before 2026-07-28, which allowed only objects as output schemas and structured content.
+    /// </summary>
+    private const string OlderProtocolVersion = "2025-06-18";
 
     private readonly WebApplicationFactory<Program> _factory;
 
@@ -95,13 +101,12 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
         var invoke = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
 
-        var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { invoker, LaptopId, CancellationToken.None })!;
-        var result = await task;
+        // A tool with an output schema hands the parsed body to the SDK, which turns it into structured content.
+        var task = (Task<object>)invoke.Invoke(null, new object?[] { invoker, LaptopId, CancellationToken.None })!;
+        var product = Assert.IsType<JsonElement>(await task);
 
-        Assert.NotEqual(true, result.IsError);
-        var text = ((TextContentBlock)result.Content[0]).Text;
-        Assert.Contains("Laptop", text);
-        Assert.Contains(LaptopId.ToString(), text);
+        Assert.Equal("Laptop", product.GetProperty("name").GetString());
+        Assert.Equal(LaptopId, product.GetProperty("id").GetGuid());
     }
 
     [Fact]
@@ -124,7 +129,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { invoker, LaptopId, cts.Token })!;
+        var task = (Task<object>)invoke.Invoke(null, new object?[] { invoker, LaptopId, cts.Token })!;
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
     }
@@ -164,8 +169,8 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         var invoke = toolType.GetMethod("InvokeAsync", BindingFlags.Public | BindingFlags.Static)!;
 
         var unknownId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
-        var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { invoker, unknownId, CancellationToken.None })!;
-        var result = await task;
+        var task = (Task<object>)invoke.Invoke(null, new object?[] { invoker, unknownId, CancellationToken.None })!;
+        var result = Assert.IsType<CallToolResult>(await task);
 
         Assert.True(result.IsError);
         Assert.Contains("404", ((TextContentBlock)result.Content[0]).Text);
@@ -182,12 +187,10 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         {
             var invoke = GetGeneratedInvokeMethod("WeatherController_GetByDateTool");
 
-            var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), new DateOnly(2026, 9, 28), CancellationToken.None })!;
-            var result = await task;
+            var task = (Task<object>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), new DateOnly(2026, 9, 28), CancellationToken.None })!;
+            var forecast = Assert.IsType<JsonElement>(await task);
 
-            var text = ((TextContentBlock)result.Content[0]).Text;
-            Assert.NotEqual(true, result.IsError);
-            Assert.Contains("2026-09-28", text);
+            Assert.Contains("2026-09-28", forecast.GetProperty("date").GetString());
         }
         finally
         {
@@ -212,11 +215,9 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
                 Summaries = ["Mild", "Warm"]
             };
 
-            var task = (Task<CallToolResult>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), filter, CancellationToken.None })!;
-            var result = await task;
+            var task = (Task<object>)invoke.Invoke(null, new object?[] { CreateDirectInvoker(), filter, CancellationToken.None })!;
+            var text = Assert.IsType<JsonElement>(await task).GetRawText();
 
-            var text = ((TextContentBlock)result.Content[0]).Text;
-            Assert.NotEqual(true, result.IsError);
             Assert.Contains("Brno", text);
             Assert.Contains("Mild", text);
             Assert.Contains("Warm", text);
@@ -275,6 +276,122 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_ToolsList_StatesEveryAnnotationExplicitly_ForGeneratedTools()
+    {
+        // A hint left out reads as its spec default on the client: a GET would count as destructive and open-world.
+        await using var client = await ConnectMcpClientAsync();
+
+        var tools = await client.ListToolsAsync();
+
+        var read = tools.Single(x => x.Name == "Weather_GetAll").ProtocolTool.Annotations;
+        Assert.True(read?.ReadOnlyHint);
+        Assert.False(read?.DestructiveHint);
+        Assert.True(read?.IdempotentHint);
+        Assert.False(read?.OpenWorldHint);
+
+        var write = tools.Single(x => x.Name == "Weather_Create").ProtocolTool.Annotations;
+        Assert.False(write?.ReadOnlyHint);
+        Assert.False(write?.DestructiveHint);
+        Assert.False(write?.IdempotentHint);
+        Assert.False(write?.OpenWorldHint);
+
+        var delete = tools.Single(x => x.Name == "Weather_DeleteByCity").ProtocolTool.Annotations;
+        Assert.False(delete?.ReadOnlyHint);
+        Assert.True(delete?.DestructiveHint);
+        Assert.True(delete?.IdempotentHint);
+        Assert.False(delete?.OpenWorldHint);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsList_AdvertisesOutputSchemas_FromTheResponseTypes()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var tools = await client.ListToolsAsync();
+
+        var product = GetOutputSchema(tools, "Products_GetById");
+        Assert.Equal("object", product.GetProperty("type").GetString());
+        Assert.Equal("Display name of the product.", GetDescription(product.GetProperty("properties"), "name"));
+        Assert.Equal("array", GetOutputSchema(tools, "Products_GetAll").GetProperty("type").GetString());
+        // GetCheapest answers NoContent() for an empty category, so its schema allows null.
+        var cheapest = GetOutputSchema(tools, "Products_GetCheapest").GetProperty("anyOf");
+        Assert.Equal("object", cheapest[0].GetProperty("type").GetString());
+        Assert.Equal("null", cheapest[1].GetProperty("type").GetString());
+        Assert.Null(tools.Single(x => x.Name == "Server_GetEnvironment").ProtocolTool.OutputSchema);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsList_WrapsSchemasThatAreNotPlainObjects_ForAClientOnAnOlderProtocol()
+    {
+        // Before 2026-07-28 an output schema had to describe an object; the SDK moves any other under "result".
+        await using var client = await ConnectMcpClientAsync(OlderProtocolVersion);
+
+        var tools = await client.ListToolsAsync();
+
+        Assert.Equal(OlderProtocolVersion, client.NegotiatedProtocolVersion);
+        Assert.Equal("object", GetOutputSchema(tools, "Products_GetById").GetProperty("type").GetString());
+        Assert.Equal("array", GetResultSchema(GetOutputSchema(tools, "Products_GetAll")).GetProperty("type").GetString());
+        Assert.True(GetResultSchema(GetOutputSchema(tools, "Products_GetCheapest")).TryGetProperty("anyOf", out _));
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_ReturnsTheResponseBody_AsStructuredContent()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var product = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+        var products = await CallToolRawAsync(client, "Products_GetAll", new JsonObject());
+        var cheapest = await CallToolRawAsync(client, "Products_GetCheapest", new JsonObject { ["category"] = "Kitchen" });
+
+        Assert.Equal("Laptop", product["structuredContent"]!["name"]!.GetValue<string>());
+        Assert.Equal(3, products["structuredContent"]!.AsArray().Count);
+        Assert.Equal("Coffee Mug", cheapest["structuredContent"]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_SendsNullStructuredContent_ForASuccessWithoutABody()
+    {
+        // A client treats a missing structuredContent on a tool with an output schema as an error; null is a value.
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Products_GetCheapest", new JsonObject { ["category"] = "Garden" });
+
+        Assert.True(string.CompareOrdinal(client.NegotiatedProtocolVersion, "2026-07-28") >= 0);
+        Assert.True(result.AsObject().ContainsKey("structuredContent"));
+        Assert.Null(result["structuredContent"]);
+        Assert.Equal("null", Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_WrapsTheResult_ForAClientOnAnOlderProtocol()
+    {
+        // Before 2026-07-28 structured content had to be an object, so a list or a null comes back under "result".
+        await using var client = await ConnectMcpClientAsync(OlderProtocolVersion);
+
+        var products = await CallToolRawAsync(client, "Products_GetAll", new JsonObject());
+        var cheapest = await CallToolRawAsync(client, "Products_GetCheapest", new JsonObject { ["category"] = "Garden" });
+        var product = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+
+        Assert.Equal(3, products["structuredContent"]!["result"]!.AsArray().Count);
+        Assert.True(cheapest["structuredContent"]!.AsObject().ContainsKey("result"));
+        Assert.Null(cheapest["structuredContent"]!["result"]);
+        Assert.Equal("Laptop", product["structuredContent"]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_SendsNoStructuredContent_ForAnError()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = "ffffffff-ffff-ffff-ffff-ffffffffffff" });
+
+        Assert.True(result["isError"]!.GetValue<bool>());
+        Assert.False(result.AsObject().ContainsKey("structuredContent"));
+        Assert.Contains("404", result["content"]![0]!["text"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task McpProtocol_ListsAndCallsAHandWrittenTool_WithItsAnnotationsAndInjectedService()
     {
         // ServerTools has no endpoint behind it; AddMcpTools must register it exactly as the SDK's assembly scan
@@ -314,6 +431,39 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Empty(logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
     }
 
+    private static JsonElement GetOutputSchema(IList<McpClientTool> tools, string toolName)
+    {
+        var outputSchema = tools.Single(x => x.Name == toolName).ProtocolTool.OutputSchema;
+
+        Assert.NotNull(outputSchema);
+        return outputSchema.Value;
+    }
+
+    /// <summary>
+    /// The schema inside the SDK's envelope for older clients: <c>{"type":"object","properties":{"result":...},"required":["result"]}</c>.
+    /// </summary>
+    private static JsonElement GetResultSchema(JsonElement outputSchema)
+    {
+        Assert.Equal("object", outputSchema.GetProperty("type").GetString());
+        Assert.Equal(["result"], outputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+
+        return outputSchema.GetProperty("properties").GetProperty("result");
+    }
+
+    /// <summary>
+    /// The raw <c>tools/call</c> result: the typed client reads <c>"structuredContent": null</c> and a missing one alike.
+    /// </summary>
+    private static async Task<JsonNode> CallToolRawAsync(McpClient client, string toolName, JsonObject arguments)
+    {
+        var response = await client.SendRequestAsync(new JsonRpcRequest
+        {
+            Method = RequestMethods.ToolsCall,
+            Params = new JsonObject { ["name"] = toolName, ["arguments"] = arguments }
+        });
+
+        return response.Result!;
+    }
+
     private static string? GetDescription(JsonElement properties, string propertyName)
     {
         return properties.GetProperty(propertyName).TryGetProperty("description", out var description)
@@ -321,7 +471,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             : null;
     }
 
-    private async Task<McpClient> ConnectMcpClientAsync()
+    private async Task<McpClient> ConnectMcpClientAsync(string? protocolVersion = null)
     {
         // Route the invoker's internal self-call back into the in-memory server (otherwise it
         // uses a real HttpClient that can't reach the TestServer, and every call "fails").
@@ -346,7 +496,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             NullLoggerFactory.Instance,
             ownsHttpClient: true);
 
-        return await McpClient.CreateAsync(transport);
+        return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion });
     }
 
     private McpHttpInvoker CreateDirectInvoker()

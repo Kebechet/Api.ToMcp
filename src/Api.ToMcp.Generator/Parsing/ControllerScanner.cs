@@ -10,7 +10,6 @@ namespace Api.ToMcp.Generator.Parsing
 {
     internal static class ControllerScanner
     {
-        private const string ControllerBaseFullName = "Microsoft.AspNetCore.Mvc.ControllerBase";
         private const string ApiControllerAttributeFullName = "Microsoft.AspNetCore.Mvc.ApiControllerAttribute";
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
@@ -33,7 +32,7 @@ namespace Api.ToMcp.Generator.Parsing
             var hasMcpExpose = HasAttribute(namedType, McpExposeAttributeFullName);
             var hasMcpIgnore = HasAttribute(namedType, McpIgnoreAttributeFullName);
 
-            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, ct);
+            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, context.SemanticModel.Compilation, ct);
 
             return new ControllerInfoModel
             {
@@ -48,7 +47,7 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static bool IsController(INamedTypeSymbol type, Compilation compilation)
         {
-            var controllerBase = compilation.GetTypeByMetadataName(ControllerBaseFullName);
+            var controllerBase = compilation.GetTypeByMetadataName(KnownTypeNames.ControllerBase);
             if (controllerBase != null && InheritsFrom(type, controllerBase))
                 return true;
 

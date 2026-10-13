@@ -16,6 +16,7 @@ Example project demonstrating Api.ToMcp usage.
 **ProductsController** - Selective exposure
 - `GET /api/products` - Get all products (exposed)
 - `GET /api/products/{id}` - Get product by ID (exposed)
+- `GET /api/products/cheapest` - Cheapest product in a category, `204 No Content` when it has none (exposed; its output schema allows null)
 - `DELETE /api/products/{id}` - Delete product (excluded via `[McpIgnore]`)
 
 ### Hand-written tool
@@ -47,6 +48,7 @@ Based on `Mcp/generator.json` configuration, these tools are generated:
 | `Weather_Create` | WeatherController.Create |
 | `Products_GetAll` | ProductsController.GetAll |
 | `Products_GetById` | ProductsController.GetById |
+| `Products_GetCheapest` | ProductsController.GetCheapest |
 | `Server_GetEnvironment` | hand-written in `Mcp/ServerTools.cs` |
 
 ## Generator Configuration
@@ -59,14 +61,15 @@ The `Mcp/generator.json` uses `SelectedOnly` mode with explicit includes:
   "include": [
     "WeatherController",
     "ProductsController.GetAll",
-    "ProductsController.GetById"
+    "ProductsController.GetById",
+    "ProductsController.GetCheapest"
   ]
 }
 ```
 
 This demonstrates:
 - Including an entire controller (`WeatherController`)
-- Including specific actions (`ProductsController.GetAll`, `ProductsController.GetById`)
+- Including specific actions (`ProductsController.GetAll`, `ProductsController.GetById`, `ProductsController.GetCheapest`)
 - The `[McpIgnore]` attribute on `Delete` action as additional protection
 
 ## Testing with MCP Client

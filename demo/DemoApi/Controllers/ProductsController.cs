@@ -44,6 +44,23 @@ public class ProductsController : ControllerBase
     }
 
     /// <summary>
+    /// Gets the cheapest product in a category, or nothing when the category has no products.
+    /// </summary>
+    /// <param name="category">Category name to search, such as Electronics or Kitchen.</param>
+    [HttpGet("cheapest")]
+    public Task<ActionResult<Product>> GetCheapest([FromQuery] string category)
+    {
+        var product = _products
+            .Where(p => p.Category.Equals(category, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(p => p.Price)
+            .FirstOrDefault();
+        if (product is null)
+            return Task.FromResult<ActionResult<Product>>(NoContent());
+
+        return Task.FromResult<ActionResult<Product>>(product);
+    }
+
+    /// <summary>
     /// Creates a new product.
     /// </summary>
     [HttpPost]
