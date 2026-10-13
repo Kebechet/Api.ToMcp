@@ -68,7 +68,7 @@ namespace TestApi
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
 
-        Assert.Contains($"[McpServerTool(Name = \"Products_Get\", UseStructuredContent = true, OutputSchemaType = typeof({expectedType}))]", tool);
+        Assert.Contains($"[McpServerTool(Name = \"Products_Get\", UseStructuredContent = true, OutputSchemaType = typeof({expectedType}), ReadOnly = true, ", tool);
         Assert.Contains("[global::Api.ToMcp.Runtime.McpGeneratedTool(IsOutputNullable = ", tool);
         Assert.Contains("public static async Task<object> InvokeAsync(", tool);
         Assert.Contains("return global::Api.ToMcp.Runtime.Services.McpStructuredOutput.FromResult(await invoker.GetAsync(route, cancellationToken));", tool);
@@ -257,7 +257,7 @@ namespace TestApi
 
     private static void AssertHasNoOutputSchema(string tool)
     {
-        Assert.Contains("[McpServerTool(Name = \"Products_Get\")]", tool);
+        Assert.Contains("[McpServerTool(Name = \"Products_Get\", ReadOnly = true, ", tool);
         Assert.Contains("public static async Task<CallToolResult> InvokeAsync(", tool);
         Assert.Contains("return await invoker.GetAsync(route, cancellationToken);", tool);
         Assert.DoesNotContain("UseStructuredContent", tool);

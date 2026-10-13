@@ -13,6 +13,10 @@ namespace Api.ToMcp.Generator.Parsing
     {
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
+        private const string ReadOnlyHintPropertyName = "ReadOnly";
+        private const string DestructiveHintPropertyName = "Destructive";
+        private const string IdempotentHintPropertyName = "Idempotent";
+        private const string OpenWorldHintPropertyName = "OpenWorld";
 
         private static readonly HashSet<string> HttpMethodAttributes = new HashSet<string>
         {
@@ -30,7 +34,8 @@ namespace Api.ToMcp.Generator.Parsing
             CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
-            var controllerScope = GetDeclaredScope(FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute));
+            var controllerMcpExposeAttr = FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute);
+            var controllerScope = GetDeclaredScope(controllerMcpExposeAttr);
 
             foreach (var member in controller.GetMembers())
             {
@@ -61,7 +66,8 @@ namespace Api.ToMcp.Generator.Parsing
                 string? customDescription = null;
                 // An action that names a scope, McpScope.None included, overrides the controller's; None then means
                 // the HTTP method's scope, so inheriting the controller's Read cannot open a POST to a read-only grant.
-                var declaredScope = GetDeclaredScope(FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpExposeAttribute)) ?? controllerScope;
+                var actionMcpExposeAttr = FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpExposeAttribute);
+                var declaredScope = GetDeclaredScope(actionMcpExposeAttr) ?? controllerScope;
                 var requiredScope = declaredScope is null or McpScopeModel.None
                     ? GetRequiredScope(httpInfo.Value.Method)
                     : declaredScope.Value;
@@ -91,6 +97,7 @@ namespace Api.ToMcp.Generator.Parsing
                     CustomToolName = customToolName,
                     CustomDescription = customDescription,
                     RequiredScope = requiredScope,
+                    Annotations = GetToolAnnotations(httpInfo.Value.Method, requiredScope, actionMcpExposeAttr, controllerMcpExposeAttr),
                     OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType),
                     IsOutputNullable = responseType.SuccessType is null ||
                         responseType.HasBodylessSuccess ||
@@ -235,7 +242,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             // Auto-infer based on HTTP method and type
-            if ((httpMethod == "POST" || httpMethod == "PUT" || httpMethod == "PATCH") && IsComplexType(param.Type))
+            if ((httpMethod == HttpMethodNames.Post || httpMethod == HttpMethodNames.Put || httpMethod == HttpMethodNames.Patch) && IsComplexType(param.Type))
                 return ParameterSourceModel.Body;
 
             return ParameterSourceModel.Auto;
@@ -469,6 +476,63 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
+        /// Each hint as the action's <c>[McpExpose]</c> sets it, else as its controller's does, else derived as the more
+        /// cautious reading of scope and HTTP method: read-only when the scope is read only and the method is not PUT, PATCH
+        /// or DELETE, since a scope is a permission and a loose one must not make a state-changing method look safe (POST
+        /// follows the scope, as it serves queries too); destructive when not read-only and a PUT, PATCH or DELETE or a
+        /// scope with delete, because the spec reserves a false destructive hint for purely additive updates, which of the
+        /// write methods only POST makes; idempotent when read-only or a PUT or DELETE; and never open-world, since a
+        /// generated tool calls the host's own API.
+        /// </summary>
+        private static ToolAnnotationsModel GetToolAnnotations(
+            string httpMethod,
+            McpScopeModel requiredScope,
+            AttributeData? actionMcpExposeAttribute,
+            AttributeData? controllerMcpExposeAttribute)
+        {
+            bool? GetDeclaredHint(string propertyName)
+            {
+                return GetDeclaredBool(actionMcpExposeAttribute, propertyName) ?? GetDeclaredBool(controllerMcpExposeAttribute, propertyName);
+            }
+
+            var isNonAdditiveMethod = httpMethod is HttpMethodNames.Put or HttpMethodNames.Patch or HttpMethodNames.Delete;
+            var hasReadOnlyScope = (requiredScope & (McpScopeModel.Write | McpScopeModel.Delete)) == McpScopeModel.None;
+            var hasDeleteScope = (requiredScope & McpScopeModel.Delete) != McpScopeModel.None;
+            var isIdempotentMethod = httpMethod is HttpMethodNames.Put or HttpMethodNames.Delete;
+            var isReadOnly = GetDeclaredHint(ReadOnlyHintPropertyName) ?? (hasReadOnlyScope && !isNonAdditiveMethod);
+
+            return new ToolAnnotationsModel
+            {
+                IsReadOnly = isReadOnly,
+                IsDestructive = GetDeclaredHint(DestructiveHintPropertyName) ?? (!isReadOnly && (isNonAdditiveMethod || hasDeleteScope)),
+                IsIdempotent = GetDeclaredHint(IdempotentHintPropertyName) ?? (isReadOnly || isIdempotentMethod),
+                IsOpenWorld = GetDeclaredHint(OpenWorldHintPropertyName) ?? false
+            };
+        }
+
+        /// <summary>
+        /// The value an attribute's named argument sets, or null when the attribute does not set it - which a source
+        /// generator can tell apart from an explicit false, unlike reflection.
+        /// </summary>
+        private static bool? GetDeclaredBool(AttributeData? attribute, string propertyName)
+        {
+            if (attribute is null)
+            {
+                return null;
+            }
+
+            foreach (var namedArgument in attribute.NamedArguments)
+            {
+                if (namedArgument.Key == propertyName && namedArgument.Value.Value is bool value)
+                {
+                    return value;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// The matching attribute a symbol declares, else the one its nearest base controller or overridden action
         /// declares. <c>[McpExpose]</c> and MVC's <c>[ActionName]</c> are inherited, while Roslyn's <c>GetAttributes()</c>
         /// returns only what a symbol declares itself; as with reflection, the nearest attribute replaces the base's as
@@ -499,23 +563,23 @@ namespace Api.ToMcp.Generator.Parsing
             switch (httpMethod.ToUpperInvariant())
             {
                 // Safe methods - read-only, no server state modification
-                case "GET":
+                case HttpMethodNames.Get:
                     return McpScopeModel.Read;
-                case "HEAD":
+                case HttpMethodNames.Head:
                     return McpScopeModel.Read;
-                case "OPTIONS":
+                case HttpMethodNames.Options:
                     return McpScopeModel.Read;
 
                 // State-modifying methods - create or update resources
-                case "POST":
+                case HttpMethodNames.Post:
                     return McpScopeModel.Write;
-                case "PUT":
+                case HttpMethodNames.Put:
                     return McpScopeModel.Write;
-                case "PATCH":
+                case HttpMethodNames.Patch:
                     return McpScopeModel.Write;
 
                 // Destructive method - separate from Write for fine-grained permission control
-                case "DELETE":
+                case HttpMethodNames.Delete:
                     return McpScopeModel.Delete;
 
                 // Unknown methods default to Read (principle of least privilege)
