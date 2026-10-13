@@ -263,7 +263,7 @@ The type is decided the way ApiExplorer, and so Swagger, decides it:
 - A 2xx `[ProducesResponseType]` replaces the return type, which is how an `IActionResult` action names one: `[ProducesResponseType(typeof(Product), 200)]` or `[ProducesResponseType<Product>(200)]`. One without a type means the return type for 200 and 201, and no body for any other status, such as 204. Error statuses do not count.
 - When the success responses declare different types, the tool gets no schema.
 
-A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult` or `ActionResult`, `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type without JSON (`[Produces("text/csv")]`), or a type the generated code cannot reference, such as a private nested class.
+A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult` or `ActionResult`, `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type other than JSON, even next to JSON (`[Produces("application/json", "text/csv")]`), or a type the generated code cannot reference, such as a private nested class.
 
 ### The schema matches what your API writes
 

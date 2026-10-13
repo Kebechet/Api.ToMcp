@@ -242,11 +242,12 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// No content types means MVC's default, JSON.
+        /// No content types means MVC's default, JSON. Of several, MVC picks one by the request's <c>Accept</c> header and
+        /// the formatters the app registered, so every one has to be JSON.
         /// </summary>
         private static bool CanBeJson(IReadOnlyList<string> contentTypes)
         {
-            return contentTypes.Count == 0 || contentTypes.Any(x => x.IndexOf(JsonMediaTypeToken, StringComparison.OrdinalIgnoreCase) >= 0);
+            return contentTypes.All(x => x.IndexOf(JsonMediaTypeToken, StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static bool CanDescribe(ITypeSymbol type, Compilation compilation)

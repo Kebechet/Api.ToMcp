@@ -64,6 +64,7 @@ namespace TestApi
     [InlineData("[ProducesResponseType(typeof(ProblemDetails), 404)] public ActionResult<Product> Get() => new Product();", "global::TestApi.Product")]
     [InlineData("[ProducesResponseType(typeof(Product), 200)] [ProducesResponseType(typeof(Product), 201)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
     [InlineData("[Produces(\"application/json\")] public ActionResult<Product> Get() => new Product();", "global::TestApi.Product")]
+    [InlineData("[Produces(\"application/json\", \"application/problem+json\")] public ActionResult<Product> Get() => new Product();", "global::TestApi.Product")]
     public void Generator_AdvertisesTheSuccessResponseType_AsTheOutputSchema(string action, string expectedType)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
@@ -93,6 +94,8 @@ namespace TestApi
     [InlineData("[ProducesResponseType(typeof(Product), 200)] [ProducesResponseType(typeof(Order), 201)] public IActionResult Get() => Ok();")]
     [InlineData("[ProducesResponseType(typeof(Product), 200, \"text/csv\")] public IActionResult Get() => Ok();")]
     [InlineData("[Produces(\"text/csv\")] public ActionResult<Product> Get() => new Product();")]
+    [InlineData("[Produces(\"application/json\", \"text/csv\")] public ActionResult<Product> Get() => new Product();")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200, \"application/json\", \"text/csv\")] public IActionResult Get() => Ok();")]
     [InlineData("[ProducesResponseType(StatusCodes.Status204NoContent)] public ActionResult<Product> Get() => Ok(new Product());")]
     [InlineData("[ProducesResponseType(typeof(Hidden), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
     [InlineData("[ProducesResponseType(typeof(List<Hidden>), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
