@@ -12,7 +12,9 @@ namespace Api.ToMcp.Runtime.Services;
 /// </summary>
 public static class McpStructuredOutput
 {
-    private static readonly JsonElement NullValue = JsonDocument.Parse("null").RootElement.Clone();
+    private const string JsonNull = "null";
+
+    private static readonly JsonElement NullValue = JsonDocument.Parse(JsonNull).RootElement.Clone();
 
     /// <summary>
     /// An error result unchanged, so it stays text without structured content. A success's JSON body as a

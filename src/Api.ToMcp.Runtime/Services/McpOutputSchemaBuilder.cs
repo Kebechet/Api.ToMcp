@@ -20,14 +20,18 @@ internal sealed class McpOutputSchemaBuilder
     private const string AnyOfKeyword = "anyOf";
     private const string RefKeyword = "$ref";
     private const string RequiredKeyword = "required";
+    private const string SchemaKeyword = "$schema";
+    private const string DescriptionKeyword = "description";
     private const string NullType = "null";
 
     /// <summary>
     /// Keywords that describe the schema document or the response as a whole, so they stay at the root when the
     /// value's schema moves into an <c>anyOf</c> branch.
     /// </summary>
-    private static readonly string[] RootKeywords = ["$schema", "description"];
+    private static readonly string[] RootKeywords = [SchemaKeyword, DescriptionKeyword];
 
+    private const string RootPointer = "#";
+    private const string RootPointerPrefix = "#/";
     private const string ValueBranchPointer = "#/anyOf/0";
 
     private readonly JsonSerializerOptions _serializerOptions;
@@ -160,11 +164,11 @@ internal sealed class McpOutputSchemaBuilder
         {
             if (jsonObject[RefKeyword] is JsonValue refValue && refValue.TryGetValue<string>(out var reference))
             {
-                if (reference == "#")
+                if (reference == RootPointer)
                 {
                     jsonObject[RefKeyword] = ValueBranchPointer;
                 }
-                else if (reference.StartsWith("#/", StringComparison.Ordinal))
+                else if (reference.StartsWith(RootPointerPrefix, StringComparison.Ordinal))
                 {
                     jsonObject[RefKeyword] = ValueBranchPointer + reference.Substring(1);
                 }
