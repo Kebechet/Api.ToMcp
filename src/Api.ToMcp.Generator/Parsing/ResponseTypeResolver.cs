@@ -49,13 +49,23 @@ namespace Api.ToMcp.Generator.Parsing
         {
             KnownTypeNames.IActionResult,
             KnownTypeNames.IConvertToActionResult,
-            "Microsoft.AspNetCore.Http.IResult",
+            KnownTypeNames.IResult,
             "System.IO.Stream",
             "System.IO.Pipelines.PipeReader",
             "System.Text.Json.JsonElement",
             "System.Text.Json.JsonDocument",
             "System.Text.Json.Nodes.JsonNode",
             "System.Collections.Generic.IAsyncEnumerable<T>"
+        };
+
+        /// <summary>
+        /// Return types that name no body: a declared response type is the only type such an action has.
+        /// </summary>
+        private static readonly string[] OpenResultTypes =
+        {
+            KnownTypeNames.IActionResult,
+            KnownTypeNames.ActionResult,
+            KnownTypeNames.IResult
         };
 
         public static ResponseTypeInfo Resolve(IMethodSymbol method, INamedTypeSymbol controller, Compilation compilation)
@@ -103,8 +113,8 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             // Only the action's own declarations stand in for its return type; a controller's apply to every action,
-            // whatever each one returns.
-            if (actionResponses.Count == 0 && declaredType != null)
+            // whatever each one returns. A return type that names no body adds nothing to them.
+            if (actionResponses.Count == 0 && declaredType != null && !OpenResultTypes.Contains(declaredType.OriginalDefinition.ToDisplayString()))
                 successTypes.Add(declaredType);
 
             var distinctTypes = successTypes.Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToList();

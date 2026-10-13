@@ -16,5 +16,7 @@ internal static class KnownTypeNames
     public const string ControllerBase = "Microsoft.AspNetCore.Mvc.ControllerBase";
     public const string ActionResultOfTValue = "Microsoft.AspNetCore.Mvc.ActionResult<TValue>";
     public const string IActionResult = "Microsoft.AspNetCore.Mvc.IActionResult";
+    public const string ActionResult = "Microsoft.AspNetCore.Mvc.ActionResult";
+    public const string IResult = "Microsoft.AspNetCore.Http.IResult";
     public const string IConvertToActionResult = "Microsoft.AspNetCore.Mvc.Infrastructure.IConvertToActionResult";
 }

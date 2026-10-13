@@ -247,6 +247,30 @@ namespace TestApi
         Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
     }
 
+    [Theory]
+    [InlineData("public IActionResult Get() => Ok(new Product());")]
+    [InlineData("public ActionResult Get() => Ok(new Product());")]
+    [InlineData("public Task<IActionResult> Get() => Task.FromResult<IActionResult>(Ok(new Product()));")]
+    public void Generator_TakesTheControllersResponseType_ForAnActionWhoseReturnTypeNamesNoBody(string action)
+    {
+        // IActionResult says nothing about the body, so the controller's declaration is the only type there is.
+        var source = StructuredOutputSource(action, controllerAttributes: "[ProducesResponseType<Product>(StatusCodes.Status200OK)]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheControllerDeclaresATypeForAnActionReturningAFile()
+    {
+        var source = StructuredOutputSource(
+            "public FileContentResult Get() => File(new byte[0], \"text/plain\");",
+            controllerAttributes: "[ProducesResponseType<Product>(StatusCodes.Status200OK)]");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
     [Fact]
     public void Generator_IgnoresTheControllersErrorResponseTypes()
     {
