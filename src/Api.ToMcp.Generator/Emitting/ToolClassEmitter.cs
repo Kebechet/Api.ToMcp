@@ -181,7 +181,7 @@ namespace Api.ToMcp.Generator.Emitting
                 p.Source == ParameterSourceModel.Query ||
                 (p.Source == ParameterSourceModel.Auto &&
                  !RouteContainsParameter(route, p.Name) &&
-                 action.HttpMethod == "GET" &&
+                 action.HttpMethod == HttpMethodNames.Get &&
                  !IsComplexType(p.Type))).ToList();
 
             if (queryParams.Any())
@@ -211,20 +211,20 @@ namespace Api.ToMcp.Generator.Emitting
             string invokerCall;
             switch (action.HttpMethod)
             {
-                case "GET":
+                case HttpMethodNames.Get:
                     invokerCall = "await invoker.GetAsync(route, cancellationToken)";
                     break;
-                case "POST":
-                case "PUT":
-                case "PATCH":
-                    var invokerMethod = action.HttpMethod == "POST" ? "PostAsync" : action.HttpMethod == "PUT" ? "PutAsync" : "PatchAsync";
+                case HttpMethodNames.Post:
+                case HttpMethodNames.Put:
+                case HttpMethodNames.Patch:
+                    var invokerMethod = action.HttpMethod == HttpMethodNames.Post ? "PostAsync" : action.HttpMethod == HttpMethodNames.Put ? "PutAsync" : "PatchAsync";
                     if (bodyParam != null)
                     {
                         sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
                     }
                     invokerCall = $"await invoker.{invokerMethod}(route, {(bodyParam != null ? "bodyJson" : "null")}, cancellationToken)";
                     break;
-                case "DELETE":
+                case HttpMethodNames.Delete:
                     invokerCall = "await invoker.DeleteAsync(route, cancellationToken)";
                     break;
                 default:

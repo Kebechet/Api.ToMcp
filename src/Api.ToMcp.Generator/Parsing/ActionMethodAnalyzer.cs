@@ -242,7 +242,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             // Auto-infer based on HTTP method and type
-            if ((httpMethod == "POST" || httpMethod == "PUT" || httpMethod == "PATCH") && IsComplexType(param.Type))
+            if ((httpMethod == HttpMethodNames.Post || httpMethod == HttpMethodNames.Put || httpMethod == HttpMethodNames.Patch) && IsComplexType(param.Type))
                 return ParameterSourceModel.Body;
 
             return ParameterSourceModel.Auto;
@@ -495,10 +495,10 @@ namespace Api.ToMcp.Generator.Parsing
                 return GetDeclaredBool(actionMcpExposeAttribute, propertyName) ?? GetDeclaredBool(controllerMcpExposeAttribute, propertyName);
             }
 
-            var isNonAdditiveMethod = httpMethod is "PUT" or "PATCH" or "DELETE";
+            var isNonAdditiveMethod = httpMethod is HttpMethodNames.Put or HttpMethodNames.Patch or HttpMethodNames.Delete;
             var hasReadOnlyScope = (requiredScope & (McpScopeModel.Write | McpScopeModel.Delete)) == McpScopeModel.None;
             var hasDeleteScope = (requiredScope & McpScopeModel.Delete) != McpScopeModel.None;
-            var isIdempotentMethod = httpMethod is "PUT" or "DELETE";
+            var isIdempotentMethod = httpMethod is HttpMethodNames.Put or HttpMethodNames.Delete;
             var isReadOnly = GetDeclaredHint(ReadOnlyHintPropertyName) ?? (hasReadOnlyScope && !isNonAdditiveMethod);
 
             return new ToolAnnotationsModel
@@ -563,23 +563,23 @@ namespace Api.ToMcp.Generator.Parsing
             switch (httpMethod.ToUpperInvariant())
             {
                 // Safe methods - read-only, no server state modification
-                case "GET":
+                case HttpMethodNames.Get:
                     return McpScopeModel.Read;
-                case "HEAD":
+                case HttpMethodNames.Head:
                     return McpScopeModel.Read;
-                case "OPTIONS":
+                case HttpMethodNames.Options:
                     return McpScopeModel.Read;
 
                 // State-modifying methods - create or update resources
-                case "POST":
+                case HttpMethodNames.Post:
                     return McpScopeModel.Write;
-                case "PUT":
+                case HttpMethodNames.Put:
                     return McpScopeModel.Write;
-                case "PATCH":
+                case HttpMethodNames.Patch:
                     return McpScopeModel.Write;
 
                 // Destructive method - separate from Write for fine-grained permission control
-                case "DELETE":
+                case HttpMethodNames.Delete:
                     return McpScopeModel.Delete;
 
                 // Unknown methods default to Read (principle of least privilege)
