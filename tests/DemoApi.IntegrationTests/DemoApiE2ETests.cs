@@ -359,6 +359,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(string.CompareOrdinal(client.NegotiatedProtocolVersion, "2026-07-28") >= 0);
         Assert.True(result.AsObject().ContainsKey("structuredContent"));
         Assert.Null(result["structuredContent"]);
+        Assert.Equal("null", Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
         Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
     }
 
