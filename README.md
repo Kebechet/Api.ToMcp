@@ -267,7 +267,7 @@ A tool gets no schema, and returns text as before, when the success body is not 
 
 ### The schema matches what your API writes
 
-The schema is built when the host starts, from the `System.Text.Json` options MVC writes responses with, `AddJsonOptions` included: property naming, `JsonStringEnumConverter` and the other settings you gave MVC. Structured content is the response body itself, so a client that validates it against the schema accepts it. A property MVC can leave out of the body, through `DefaultIgnoreCondition` or its own `[JsonIgnore(Condition = ...)]`, is never listed as `required`. Response DTO properties get their XML `<summary>` as descriptions, by the [request field rules](#request-fields-dto-properties-nested-objects-array-items).
+The schema is built when the host starts, from the `System.Text.Json` options MVC writes responses with, `AddJsonOptions` included: property naming, `JsonStringEnumConverter` and the other settings you gave MVC. Structured content is the response body itself, so a client that validates it against the schema accepts it. A property MVC can leave out of the body, through `DefaultIgnoreCondition` or its own `[JsonIgnore(Condition = ...)]`, is never listed as `required`. Response DTO properties get their XML `<summary>` as descriptions, by the [request field rules](#request-fields-dto-properties-nested-objects-array-items). With `ReferenceHandler.Preserve`, whose `$id`/`$ref`/`$values` metadata no JSON Schema describes, every output schema accepts any value and a warning is logged at startup.
 
 ### Successes without a body
 

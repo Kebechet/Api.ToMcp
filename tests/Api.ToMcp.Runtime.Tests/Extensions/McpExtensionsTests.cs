@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
@@ -46,6 +47,19 @@ public class McpExtensionsTests
         var properties = outputSchema.GetProperty("properties");
         Assert.Equal(["Name", "Kind"], properties.EnumerateObject().Select(x => x.Name));
         Assert.Equal("integer", properties.GetProperty("Kind").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void AddMcpTools_GivesAGeneratedToolASchemaOfAnyValue_WhenMvcPreservesReferences()
+    {
+        var tools = BuildTools(services =>
+        {
+            services.Configure<JsonOptions>(options => options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.Preserve);
+            services.AddMcpTools(ToolAssembly);
+        });
+
+        Assert.Equal("{}", GetOutputSchema(tools, "generated_strict").GetRawText());
+        Assert.Equal("{}", GetOutputSchema(tools, "generated_nullable").GetRawText());
     }
 
     [Fact]
@@ -166,6 +180,26 @@ public class McpExtensionsTests
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains("could not be read"));
         Assert.Contains("'Api.ToMcp.Abstractions'", warning.Message);
         Assert.Contains(Path.ChangeExtension(assemblyCopy.Assembly.Location, ".xml"), warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_Warns_WhenMvcPreservesReferences()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.Configure<JsonOptions>(options => options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.Preserve);
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("ReferenceHandler.Preserve", warning.Message);
+        Assert.Contains("\"structuredOutput\": false", warning.Message);
     }
 
     [Fact]

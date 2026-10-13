@@ -34,20 +34,41 @@ internal sealed class McpOutputSchemaBuilder
     private const string RootPointerPrefix = "#/";
     private const string ValueBranchPointer = "#/anyOf/0";
 
+    private static readonly JsonElement AnyValueSchema = JsonDocument.Parse(new JsonObject().ToJsonString()).RootElement.Clone();
+
     private readonly JsonSerializerOptions _serializerOptions;
+
+    /// <summary>
+    /// Whether MVC writes references as <c>$id</c>/<c>$ref</c>/<c>$values</c> metadata, which no exported schema
+    /// describes; the exporter refuses such options. Every reference handler but <c>IgnoreCycles</c> preserves.
+    /// </summary>
+    private readonly bool _preservesReferences;
 
     public McpOutputSchemaBuilder(IOptions<JsonOptions> jsonOptions)
     {
         _serializerOptions = CopyOptions(jsonOptions.Value.JsonSerializerOptions);
+        _preservesReferences = _serializerOptions.ReferenceHandler is { } referenceHandler && referenceHandler != ReferenceHandler.IgnoreCycles;
     }
+
+    /// <summary>
+    /// Whether a schema that accepts any value was built because MVC preserves references, for the startup warning.
+    /// </summary>
+    public bool HasBuiltAnyValueSchema { get; private set; }
 
     /// <summary>
     /// The schema of <paramref name="type"/> as MVC writes it. A strict schema promises a value; a nullable one is
     /// <c>{"anyOf": [value, {"type": "null"}]}</c>, which also makes the SDK wrap it as <c>{"result": ...}</c> for
-    /// clients on a protocol older than 2026-07-28, whose structured content has to be an object.
+    /// clients on a protocol older than 2026-07-28, whose structured content has to be an object. When MVC preserves
+    /// references, a schema that accepts any value, so the tools still build.
     /// </summary>
     public JsonElement Build(Type type, bool isNullable, AIJsonSchemaCreateOptions? inferenceOptions)
     {
+        if (_preservesReferences)
+        {
+            HasBuiltAnyValueSchema = true;
+            return AnyValueSchema;
+        }
+
         var schema = AIJsonUtilities.CreateJsonSchema(type, serializerOptions: _serializerOptions, inferenceOptions: RequireOnlyAlwaysWrittenProperties(inferenceOptions));
         if (!isNullable || JsonNode.Parse(schema.GetRawText()) is not JsonObject valueSchema)
         {

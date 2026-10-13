@@ -124,6 +124,19 @@ public class McpOutputSchemaBuilderTests
         Assert.DoesNotContain("note", GetRequired(order));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Build_AcceptsAnyValue_WhenMvcPreservesReferences(bool isNullable)
+    {
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.Preserve;
+
+        var schema = Build(typeof(Gadget), isNullable, jsonOptions);
+
+        Assert.Equal("{}", schema.GetRawText());
+    }
+
     [Fact]
     public void Build_LeavesTheMvcJsonOptionsWritable()
     {
