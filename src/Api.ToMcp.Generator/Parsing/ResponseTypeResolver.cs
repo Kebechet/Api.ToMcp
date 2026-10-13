@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Api.ToMcp.Generator.Models;
 using Microsoft.CodeAnalysis;
 
 namespace Api.ToMcp.Generator.Parsing
@@ -29,10 +30,16 @@ namespace Api.ToMcp.Generator.Parsing
 
     internal static class ResponseTypeResolver
     {
-        private const string ActionResultOfT = "Microsoft.AspNetCore.Mvc.ActionResult<TValue>";
         private const string ProducesResponseTypeAttribute = "Microsoft.AspNetCore.Mvc.ProducesResponseTypeAttribute";
         private const string GenericProducesResponseTypeAttribute = "Microsoft.AspNetCore.Mvc.ProducesResponseTypeAttribute<T>";
         private const string ProducesAttribute = "Microsoft.AspNetCore.Mvc.ProducesAttribute";
+        private const string StatusCodePropertyName = "StatusCode";
+        private const string TypePropertyName = "Type";
+
+        /// <summary>
+        /// Found in every JSON media type: <c>application/json</c>, <c>text/json</c>, <c>application/problem+json</c>.
+        /// </summary>
+        private const string JsonMediaTypeToken = "json";
 
         /// <summary>
         /// Types whose body is not the JSON of a describable type: results that write their own body, streams, raw JSON
@@ -40,8 +47,8 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static readonly string[] UndescribableTypes =
         {
-            "Microsoft.AspNetCore.Mvc.IActionResult",
-            "Microsoft.AspNetCore.Mvc.Infrastructure.IConvertToActionResult",
+            KnownTypeNames.IActionResult,
+            KnownTypeNames.IConvertToActionResult,
             "Microsoft.AspNetCore.Http.IResult",
             "System.IO.Stream",
             "System.IO.Pipelines.PipeReader",
@@ -71,7 +78,7 @@ namespace Api.ToMcp.Generator.Parsing
             foreach (var attribute in method.GetAttributes())
             {
                 if (!TryReadProducesResponseType(attribute, out var statusCode, out var type, out var contentTypes) ||
-                    statusCode < 200 || statusCode > 299)
+                    !HttpStatusCodes.IsSuccess(statusCode))
                 {
                     continue;
                 }
@@ -85,7 +92,7 @@ namespace Api.ToMcp.Generator.Parsing
                 }
                 // As in ApiExplorer, a typeless 200 or 201 carries the action's declared type; any other typeless
                 // success, such as 204, has no body.
-                else if (statusCode == 200 || statusCode == 201)
+                else if (statusCode is HttpStatusCodes.Status200OK or HttpStatusCodes.Status201Created)
                 {
                     if (declaredType != null)
                         successTypes.Add(declaredType);
@@ -126,17 +133,17 @@ namespace Api.ToMcp.Generator.Parsing
             if (type is INamedTypeSymbol namedType)
             {
                 var definition = namedType.OriginalDefinition.ToDisplayString();
-                if (definition == "System.Threading.Tasks.Task" || definition == "System.Threading.Tasks.ValueTask")
+                if (definition is KnownTypeNames.Task or KnownTypeNames.ValueTask)
                     return null;
 
-                if (definition == "System.Threading.Tasks.Task<TResult>" || definition == "System.Threading.Tasks.ValueTask<TResult>")
+                if (definition is KnownTypeNames.TaskOfTResult or KnownTypeNames.ValueTaskOfTResult)
                     type = namedType.TypeArguments[0];
             }
 
             if (type.SpecialType == SpecialType.System_Void)
                 return null;
 
-            if (type is INamedTypeSymbol actionResult && actionResult.OriginalDefinition.ToDisplayString() == ActionResultOfT)
+            if (type is INamedTypeSymbol actionResult && actionResult.OriginalDefinition.ToDisplayString() == KnownTypeNames.ActionResultOfTValue)
                 type = actionResult.TypeArguments[0];
 
             return type;
@@ -163,7 +170,7 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static bool TryReadProducesResponseType(AttributeData attribute, out int statusCode, out ITypeSymbol? type, out IReadOnlyList<string> contentTypes)
         {
-            statusCode = 200;
+            statusCode = HttpStatusCodes.Status200OK;
             type = null;
             contentTypes = Array.Empty<string>();
 
@@ -198,9 +205,9 @@ namespace Api.ToMcp.Generator.Parsing
 
             foreach (var namedArgument in attribute.NamedArguments)
             {
-                if (namedArgument.Key == "StatusCode" && namedArgument.Value.Value is int namedStatusCode)
+                if (namedArgument.Key == StatusCodePropertyName && namedArgument.Value.Value is int namedStatusCode)
                     statusCode = namedStatusCode;
-                if (namedArgument.Key == "Type" && namedArgument.Value.Value is ITypeSymbol namedType)
+                if (namedArgument.Key == TypePropertyName && namedArgument.Value.Value is ITypeSymbol namedType)
                     type = namedType;
             }
 
@@ -239,7 +246,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static bool CanBeJson(IReadOnlyList<string> contentTypes)
         {
-            return contentTypes.Count == 0 || contentTypes.Any(x => x.IndexOf("json", StringComparison.OrdinalIgnoreCase) >= 0);
+            return contentTypes.Count == 0 || contentTypes.Any(x => x.IndexOf(JsonMediaTypeToken, StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static bool CanDescribe(ITypeSymbol type, Compilation compilation)

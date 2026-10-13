@@ -153,7 +153,7 @@ namespace Api.ToMcp.Generator.Parsing
                     continue;
 
                 // Skip CancellationToken
-                if (param.Type.ToDisplayString() == "System.Threading.CancellationToken")
+                if (param.Type.ToDisplayString() == KnownTypeNames.CancellationToken)
                     continue;
 
                 var properties = ImmutableArray<PropertyInfoModel>.Empty;
@@ -281,14 +281,12 @@ namespace Api.ToMcp.Generator.Parsing
             if (returnType is INamedTypeSymbol namedType)
             {
                 var typeName = namedType.OriginalDefinition.ToDisplayString();
-                if (typeName == "System.Threading.Tasks.Task<TResult>" ||
-                    typeName == "System.Threading.Tasks.ValueTask<TResult>")
+                if (typeName is KnownTypeNames.TaskOfTResult or KnownTypeNames.ValueTaskOfTResult)
                 {
                     isAsync = true;
                     innerType = namedType.TypeArguments[0];
                 }
-                else if (typeName == "System.Threading.Tasks.Task" ||
-                         typeName == "System.Threading.Tasks.ValueTask")
+                else if (typeName is KnownTypeNames.Task or KnownTypeNames.ValueTask)
                 {
                     isAsync = true;
                     innerType = null;
@@ -298,7 +296,7 @@ namespace Api.ToMcp.Generator.Parsing
                 if (innerType is INamedTypeSymbol innerNamed)
                 {
                     var innerTypeName = innerNamed.OriginalDefinition.ToDisplayString();
-                    if (innerTypeName == "Microsoft.AspNetCore.Mvc.ActionResult<TValue>")
+                    if (innerTypeName == KnownTypeNames.ActionResultOfTValue)
                     {
                         innerType = innerNamed.TypeArguments[0];
                     }

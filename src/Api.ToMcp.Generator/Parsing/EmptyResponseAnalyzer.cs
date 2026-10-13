@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
+using Api.ToMcp.Generator.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -15,14 +17,15 @@ namespace Api.ToMcp.Generator.Parsing
     /// </summary>
     internal static class EmptyResponseAnalyzer
     {
-        private const string ControllerBase = "Microsoft.AspNetCore.Mvc.ControllerBase";
         private const string ObjectResult = "Microsoft.AspNetCore.Mvc.ObjectResult";
         private const string ValueParameterName = "value";
+        private const string StatusCodeMethodName = "StatusCode";
+        private const string StatusCodeParameterName = "statusCode";
 
         private static readonly string[] ActionResultTypes =
         {
-            "Microsoft.AspNetCore.Mvc.IActionResult",
-            "Microsoft.AspNetCore.Mvc.Infrastructure.IConvertToActionResult"
+            KnownTypeNames.IActionResult,
+            KnownTypeNames.IConvertToActionResult
         };
 
         /// <summary>
@@ -77,7 +80,7 @@ namespace Api.ToMcp.Generator.Parsing
             if (type is INamedTypeSymbol namedType && namedType.IsGenericType)
             {
                 var definition = namedType.OriginalDefinition.ToDisplayString();
-                if (definition == "System.Threading.Tasks.Task<TResult>" || definition == "System.Threading.Tasks.ValueTask<TResult>")
+                if (definition is KnownTypeNames.TaskOfTResult or KnownTypeNames.ValueTaskOfTResult)
                     return namedType.TypeArguments[0];
             }
 
@@ -155,20 +158,20 @@ namespace Api.ToMcp.Generator.Parsing
         {
             if (invocation.ArgumentList.Arguments.Count != 1 ||
                 !(semanticModel.GetSymbolInfo(invocation, ct).Symbol is IMethodSymbol method) ||
-                method.Name != "FromResult")
+                method.Name != nameof(Task.FromResult))
             {
                 return false;
             }
 
             var containingType = method.ContainingType.ToDisplayString();
-            return containingType == "System.Threading.Tasks.Task" || containingType == "System.Threading.Tasks.ValueTask";
+            return containingType is KnownTypeNames.Task or KnownTypeNames.ValueTask;
         }
 
         private static bool IsValueTaskCreation(ObjectCreationExpressionSyntax creation, SemanticModel semanticModel, CancellationToken ct)
         {
             return creation.ArgumentList?.Arguments.Count == 1 &&
                 semanticModel.GetTypeInfo(creation, ct).Type is INamedTypeSymbol type &&
-                type.OriginalDefinition.ToDisplayString() == "System.Threading.Tasks.ValueTask<TResult>";
+                type.OriginalDefinition.ToDisplayString() == KnownTypeNames.ValueTaskOfTResult;
         }
 
         private static bool IsProvenBodyOrError(PossibleResult result, MethodDeclarationSyntax declaration, SemanticModel semanticModel, CancellationToken ct)
@@ -226,10 +229,10 @@ namespace Api.ToMcp.Generator.Parsing
             if (ErrorHelperNames.Contains(method.Name))
                 return true;
 
-            if (method.Name == "StatusCode")
+            if (method.Name == StatusCodeMethodName)
             {
-                var statusCode = argumentList.FirstOrDefault(x => x.Parameter?.Name == "statusCode")?.Value.ConstantValue;
-                return statusCode != null && statusCode.Value.HasValue && statusCode.Value.Value is int code && (code < 200 || code > 299);
+                var statusCode = argumentList.FirstOrDefault(x => x.Parameter?.Name == StatusCodeParameterName)?.Value.ConstantValue;
+                return statusCode != null && statusCode.Value.HasValue && statusCode.Value.Value is int code && !HttpStatusCodes.IsSuccess(code);
             }
 
             return false;
@@ -247,7 +250,7 @@ namespace Api.ToMcp.Generator.Parsing
         {
             for (var type = method.ContainingType; type != null; type = type.BaseType)
             {
-                if (type.ToDisplayString() == ControllerBase)
+                if (type.ToDisplayString() == KnownTypeNames.ControllerBase)
                     return true;
             }
 
@@ -257,8 +260,7 @@ namespace Api.ToMcp.Generator.Parsing
         private static bool IsTask(ITypeSymbol type)
         {
             var definition = type.OriginalDefinition.ToDisplayString();
-            return definition == "System.Threading.Tasks.Task" || definition == "System.Threading.Tasks.Task<TResult>" ||
-                definition == "System.Threading.Tasks.ValueTask" || definition == "System.Threading.Tasks.ValueTask<TResult>";
+            return definition is KnownTypeNames.Task or KnownTypeNames.TaskOfTResult or KnownTypeNames.ValueTask or KnownTypeNames.ValueTaskOfTResult;
         }
 
         private static bool IsNotNullValue(ExpressionSyntax expression, MethodDeclarationSyntax declaration, SemanticModel semanticModel, CancellationToken ct)
