@@ -71,19 +71,18 @@ namespace Api.ToMcp.Generator.Parsing
 
             var declaredType = GetDeclaredType(method.ReturnType);
             var successTypes = new List<ITypeSymbol>();
-            var hasSuccessAttribute = false;
             var hasBodylessSuccess = false;
             var hasNonJsonSuccess = false;
 
-            foreach (var attribute in method.GetAttributes())
-            {
-                if (!TryReadProducesResponseType(attribute, out var statusCode, out var type, out var contentTypes) ||
-                    !HttpStatusCodes.IsSuccess(statusCode))
-                {
-                    continue;
-                }
+            // MVC applies a controller's [ProducesResponseType] to every action, and an action's own declaration of a
+            // status replaces it. Both are inherited, from the action an override replaces and from base controllers.
+            var actionResponses = ReadSuccessResponses(GetInheritedAttributes(method, x => x.OverriddenMethod));
+            var actionStatusCodes = new HashSet<int>(actionResponses.Select(x => x.StatusCode));
+            var controllerResponses = ReadSuccessResponses(GetInheritedAttributes(controller, x => x.BaseType))
+                .Where(x => !actionStatusCodes.Contains(x.StatusCode));
 
-                hasSuccessAttribute = true;
+            foreach (var (statusCode, type, contentTypes) in actionResponses.Concat(controllerResponses))
+            {
                 hasNonJsonSuccess |= !CanBeJson(contentTypes);
 
                 if (type != null && type.SpecialType != SpecialType.System_Void)
@@ -103,7 +102,9 @@ namespace Api.ToMcp.Generator.Parsing
                 }
             }
 
-            if (!hasSuccessAttribute && declaredType != null)
+            // Only the action's own declarations stand in for its return type; a controller's apply to every action,
+            // whatever each one returns.
+            if (actionResponses.Count == 0 && declaredType != null)
                 successTypes.Add(declaredType);
 
             var distinctTypes = successTypes.Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToList();
@@ -161,6 +162,31 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return type.AllInterfaces.Any(x => x.OriginalDefinition.ToDisplayString() == fullName);
+        }
+
+        /// <summary>
+        /// The attributes of the symbol and of each one it inherits from, nearest first.
+        /// </summary>
+        private static IEnumerable<AttributeData> GetInheritedAttributes<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> next)
+            where TSymbol : class, ISymbol
+        {
+            for (var current = symbol; current != null; current = next(current))
+            {
+                foreach (var attribute in current.GetAttributes())
+                    yield return attribute;
+            }
+        }
+
+        private static List<(int StatusCode, ITypeSymbol? Type, IReadOnlyList<string> ContentTypes)> ReadSuccessResponses(IEnumerable<AttributeData> attributes)
+        {
+            var responses = new List<(int StatusCode, ITypeSymbol? Type, IReadOnlyList<string> ContentTypes)>();
+            foreach (var attribute in attributes)
+            {
+                if (TryReadProducesResponseType(attribute, out var statusCode, out var type, out var contentTypes) && HttpStatusCodes.IsSuccess(statusCode))
+                    responses.Add((statusCode, type, contentTypes));
+            }
+
+            return responses;
         }
 
         private static bool IsProducesAttribute(AttributeData attribute)

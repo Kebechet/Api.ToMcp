@@ -215,6 +215,117 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheControllerDeclaresAnotherSuccessType()
+    {
+        // MVC applies a controller's [ProducesResponseType] to every action, so a 201 Order is a success too.
+        var source = StructuredOutputSource(
+            "[ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());",
+            controllerAttributes: "[ProducesResponseType(typeof(Order), 201)]");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheControllerDeclaresASuccessTypeTheActionDoesNotReturn()
+    {
+        var source = StructuredOutputSource(
+            "public ActionResult<Product> Get() => new Product();",
+            controllerAttributes: "[ProducesResponseType(typeof(Order), 200)]");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_LetsTheActionsResponseTypeWin_OverTheControllersForTheSameStatus()
+    {
+        var source = StructuredOutputSource(
+            "[ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());",
+            controllerAttributes: "[ProducesResponseType(typeof(Order), 200)]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_IgnoresTheControllersErrorResponseTypes()
+    {
+        var source = StructuredOutputSource(
+            "public ActionResult<Product> Get() => new Product();",
+            controllerAttributes: "[ProducesResponseType(typeof(ProblemDetails), 400)]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+        Assert.Contains("IsOutputNullable = false", tool);
+    }
+
+    [Fact]
+    public void Generator_MakesTheOutputSchemaNullable_WhenTheControllerDeclaresANoContentSuccess()
+    {
+        var source = StructuredOutputSource(
+            "public ActionResult<Product> Get() => new Product();",
+            controllerAttributes: "[ProducesResponseType(StatusCodes.Status204NoContent)]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+        Assert.Contains("IsOutputNullable = true", tool);
+    }
+
+    [Fact]
+    public void Generator_ReadsTheResponseTypeOfTheOverriddenAction()
+    {
+        // [ProducesResponseType] is inherited: MVC reads the base action's for an override that declares none.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+        [ProducesResponseType<Product>(StatusCodes.Status200OK)]
+        public virtual IActionResult Get() => Ok(new Product());
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CatalogControllerBase
+    {
+        [HttpGet]
+        public override IActionResult Get() => Ok(new Product());
+    }
+}
+";
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_ReadsTheResponseTypesOfABaseController()
+    {
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [ProducesResponseType(typeof(Order), StatusCodes.Status201Created)]
+    public abstract class OrderingControllerBase : ControllerBase
+    {
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : OrderingControllerBase
+    {
+        [HttpGet]
+        public ActionResult<Product> Get() => new Product();
+    }
+}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
     public void Generator_AdvertisesNoOutputSchema_WhenStructuredOutputIsOffInTheConfig()
     {
         const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""structuredOutput"": false }";
