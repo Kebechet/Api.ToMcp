@@ -21,6 +21,7 @@ namespace Api.ToMcp.Generator.Parsing
         private const string ValueParameterName = "value";
         private const string StatusCodeMethodName = "StatusCode";
         private const string StatusCodeParameterName = "statusCode";
+        private const string StatusCodePropertyName = "StatusCode";
 
         private static readonly string[] ActionResultTypes =
         {
@@ -191,9 +192,9 @@ namespace Api.ToMcp.Generator.Parsing
             switch (semanticModel.GetOperation(result.Expression, ct))
             {
                 case IInvocationOperation invocation:
-                    return IsProvenHelperResult(invocation.TargetMethod, invocation.Arguments, declaration, semanticModel, ct);
+                    return IsProvenHelperResult(invocation.TargetMethod, invocation.Arguments, statusCodeAssignment: null, declaration, semanticModel, ct);
                 case IObjectCreationOperation creation when creation.Constructor != null:
-                    return IsProvenHelperResult(creation.Constructor, creation.Arguments, declaration, semanticModel, ct);
+                    return IsProvenHelperResult(creation.Constructor, creation.Arguments, GetStatusCodeAssignment(creation), declaration, semanticModel, ct);
                 default:
                     return false;
             }
@@ -201,11 +202,13 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// An <c>ObjectResult</c> built with a not-null <c>value</c> (<c>Ok(x)</c>, <c>CreatedAtAction(..., x)</c>,
-        /// <c>new ObjectResult(x)</c>, ...), an error helper, or <c>StatusCode</c> with a constant error status.
+        /// <c>new ObjectResult(x)</c>, ...) and a status that carries it, an error helper, or <c>StatusCode</c> with a
+        /// constant error status.
         /// </summary>
         private static bool IsProvenHelperResult(
             IMethodSymbol method,
             IEnumerable<IArgumentOperation> arguments,
+            IOperation? statusCodeAssignment,
             MethodDeclarationSyntax declaration,
             SemanticModel semanticModel,
             CancellationToken ct)
@@ -218,6 +221,20 @@ namespace Api.ToMcp.Generator.Parsing
                 var value = argumentList.FirstOrDefault(x => x.Parameter?.Name == ValueParameterName);
                 if (value != null && value.ArgumentKind == ArgumentKind.Explicit)
                 {
+                    // StatusCode(code, x) and new ObjectResult(x) { StatusCode = code } send the status they are given: an
+                    // error is reported as one, and a 204 or 205 has no body whatever the value.
+                    var statusCode = statusCodeAssignment ?? argumentList.FirstOrDefault(x => x.Parameter?.Name == StatusCodeParameterName)?.Value;
+                    if (statusCode != null)
+                    {
+                        // ObjectResult.StatusCode is an int?, so a constant assigned to it arrives as a conversion.
+                        var statusCodeValue = UnwrapConversion(statusCode).ConstantValue;
+                        if (!(statusCodeValue.HasValue && statusCodeValue.Value is int code) || HttpStatusCodes.IsBodiless(code))
+                            return false;
+
+                        if (!HttpStatusCodes.IsSuccess(code))
+                            return true;
+                    }
+
                     var valueSyntax = UnwrapConversion(value.Value).Syntax as ExpressionSyntax;
                     return valueSyntax != null && IsNotNullValue(valueSyntax, declaration, semanticModel, ct);
                 }
@@ -236,6 +253,14 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return false;
+        }
+
+        private static IOperation? GetStatusCodeAssignment(IObjectCreationOperation creation)
+        {
+            return creation.Initializer?.Initializers
+                .OfType<ISimpleAssignmentOperation>()
+                .FirstOrDefault(x => x.Target is IPropertyReferenceOperation property && property.Property.Name == StatusCodePropertyName)?
+                .Value;
         }
 
         private static IOperation UnwrapConversion(IOperation operation)
