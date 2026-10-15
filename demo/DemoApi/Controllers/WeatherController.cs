@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Api.ToMcp.Abstractions;
 using DemoApi.Models;
 
 namespace DemoApi.Controllers;
@@ -102,6 +103,7 @@ public class WeatherController : ControllerBase
     /// <summary>
     /// Deletes the stored forecasts of a city.
     /// </summary>
+    [McpExpose(Title = "Delete a city's forecasts")]
     [HttpDelete("{city}")]
     public Task<ActionResult> DeleteByCity(string city)
     {

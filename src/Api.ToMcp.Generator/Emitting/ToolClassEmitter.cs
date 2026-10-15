@@ -73,14 +73,15 @@ namespace Api.ToMcp.Generator.Emitting
             paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
 
             var annotations = FormatAnnotationArguments(action.Annotations);
+            var title = FormatTitleArgument(action.Title);
             if (hasOutputSchema)
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
+                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\"{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
                 sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
             }
             else
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\", {annotations})]");
+                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\"{title}, {annotations})]");
             }
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             // A tool with an output schema returns the parsed body on success, for the SDK to turn into structured content.
@@ -263,6 +264,17 @@ namespace Api.ToMcp.Generator.Emitting
         private static string FormatAnnotationArguments(ToolAnnotationsModel annotations)
         {
             return $"ReadOnly = {FormatBool(annotations.IsReadOnly)}, Destructive = {FormatBool(annotations.IsDestructive)}, Idempotent = {FormatBool(annotations.IsIdempotent)}, OpenWorld = {FormatBool(annotations.IsOpenWorld)}";
+        }
+
+        /// <summary>
+        /// The <c>Title</c> argument, which the SDK sends as <c>annotations.title</c>. A title is free text from
+        /// <c>[McpExpose(Title)]</c>, so it is written as an escaped C# literal.
+        /// </summary>
+        private static string FormatTitleArgument(string title)
+        {
+            return string.IsNullOrEmpty(title)
+                ? ""
+                : $", Title = {SymbolDisplay.FormatLiteral(title, quote: true)}";
         }
 
         private static string FormatBool(bool value)

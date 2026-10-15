@@ -303,6 +303,19 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_ToolsList_TitlesEveryGeneratedTool()
+    {
+        // Clients show the title in place of the tool name; without one a directory lists "Weather_GetAll".
+        await using var client = await ConnectMcpClientAsync();
+
+        var tools = await client.ListToolsAsync();
+
+        Assert.Equal("Get all", tools.Single(x => x.Name == "Weather_GetAll").ProtocolTool.Annotations?.Title);
+        Assert.Equal("Delete a city's forecasts", tools.Single(x => x.Name == "Weather_DeleteByCity").ProtocolTool.Annotations?.Title);
+        Assert.Equal("Get by id", tools.Single(x => x.Name == "Products_GetById").ProtocolTool.Annotations?.Title);
+    }
+
+    [Fact]
     public async Task McpProtocol_ToolsList_AdvertisesOutputSchemas_FromTheResponseTypes()
     {
         await using var client = await ConnectMcpClientAsync();

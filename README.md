@@ -25,6 +25,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 - **Descriptions from XML docs** - Tool, argument and request-field descriptions come from the `<summary>` and `<param>` comments you already write
 - **Typed results** - Each tool advertises its action's response type as an output schema and returns the response as structured content
 - **Tool annotations** - Every tool states its read-only, destructive, idempotent and open-world hints, derived from its scope and HTTP method
+- **Tool titles** - Every tool has a human-readable title for clients to show in place of its name, derived from the action name
 - **Attribute Control** - Use `[McpExpose]` and `[McpIgnore]` to fine-tune which endpoints are exposed
 - **Flexible Selection** - Choose between allowlist (`SelectedOnly`) or blocklist (`AllExceptExcluded`) modes
 - **Customizable Naming** - Configure tool naming format via `generator.json`
@@ -146,10 +147,10 @@ public class ProductsController : ControllerBase
 
 ### `[McpExpose]`
 
-Forces an endpoint to be exposed as an MCP tool, regardless of configuration mode. Use `ToolName` and `Description` to override the generated tool name and description.
+Forces an endpoint to be exposed as an MCP tool, regardless of configuration mode. Use `ToolName`, `Title` and `Description` to override the generated tool name, title and description.
 
 ```csharp
-[McpExpose(ToolName = "GetProduct", Description = "Retrieves a product by ID")]
+[McpExpose(ToolName = "GetProduct", Title = "Get a product", Description = "Retrieves a product by ID")]
 public Task<Product> GetById(Guid id) { ... }
 ```
 
@@ -186,6 +187,20 @@ public Task<ActionResult> ResetProgress(Guid id) { ... }
 public Task<ActionResult> SendTestWebhook([FromBody] WebhookTest test) { ... }
 ```
 
+#### Tool titles
+
+Every generated tool has a `title`, sent as `annotations.title`. Clients show it in place of the tool name: in a connector directory listing, and when asking the user to approve a call. The Claude directory flags every tool without one.
+
+The title is derived from the action name, split into words and read as a sentence: `LogWorkout` becomes "Log workout", `GetXRepMax` becomes "Get X rep max", and the `Async` suffix is dropped. With a custom `ToolName`, the title follows that name instead, because it is what the client lists: its part after the last underscore when that part is PascalCase (`Reports_GetSummary` reads "Get summary"), and the whole name otherwise (`get_report_summary` reads "Get report summary").
+
+Set `Title` where the derived one reads badly. It is read from the action only: one title cannot name every action of a controller.
+
+```csharp
+[McpExpose(Title = "Delete a city's forecasts")]
+[HttpDelete("{city}")]
+public Task<ActionResult> DeleteByCity(string city) { ... }
+```
+
 ### `[McpIgnore]`
 
 Forces an endpoint to be excluded from MCP exposure.
@@ -209,7 +224,7 @@ Good descriptions matter for MCP — they're what the AI client reads to decide 
 public Task<ActionResult<Product>> GetById(Guid id) { ... }
 ```
 
-Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`).
+Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`). Titles are derived from the action name instead; see [Tool titles](#tool-titles).
 
 > **Requires XML documentation generation.** The source generator can only read doc comments when the compiler produces them. Enable it in the project that hosts your controllers, otherwise descriptions fall back to the generic values:
 >
@@ -464,7 +479,7 @@ For `ProductsController.GetById(Guid id)` in the demo, the generator creates:
 [McpServerToolType]
 public static class ProductsController_GetByIdTool
 {
-    [McpServerTool(Name = "Products_GetById", UseStructuredContent = true, OutputSchemaType = typeof(global::DemoApi.Models.Product), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [McpServerTool(Name = "Products_GetById", Title = "Get by id", UseStructuredContent = true, OutputSchemaType = typeof(global::DemoApi.Models.Product), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [global::Api.ToMcp.Runtime.McpGeneratedTool(IsOutputNullable = false)]
     [Description("Gets a product by its unique identifier.")]
     public static async Task<object> InvokeAsync(

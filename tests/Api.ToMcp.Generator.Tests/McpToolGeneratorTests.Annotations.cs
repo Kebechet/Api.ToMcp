@@ -35,7 +35,7 @@ namespace TestApi
         var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
 
         Assert.Equal(
-            $"[McpServerTool(Name = \"Products_Handle\", ReadOnly = {readOnly}, Destructive = {destructive}, Idempotent = {idempotent}, OpenWorld = false)]",
+            $"[McpServerTool(Name = \"Products_Handle\", Title = \"Handle\", ReadOnly = {readOnly}, Destructive = {destructive}, Idempotent = {idempotent}, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ProductsController_HandleTool"));
     }
 
@@ -66,10 +66,10 @@ namespace TestApi
         var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
 
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_Search\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_Search\", Title = \"Search\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_SearchTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_Purge\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_Purge\", Title = \"Purge\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_PurgeTool"));
     }
 
@@ -109,19 +109,19 @@ namespace TestApi
         var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
 
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_Search\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_Search\", Title = \"Search\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_SearchTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_Replace\", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_Replace\", Title = \"Replace\", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_ReplaceTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_Rename\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_Rename\", Title = \"Rename\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_RenameTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_Remove\", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_Remove\", Title = \"Remove\", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_RemoveTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Reports_PreviewRemove\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Reports_PreviewRemove\", Title = \"Preview remove\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ReportsController_PreviewRemoveTool"));
     }
 
@@ -153,13 +153,13 @@ namespace TestApi
         var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
 
         Assert.Equal(
-            "[McpServerTool(Name = \"Webhooks_Send\", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true)]",
+            "[McpServerTool(Name = \"Webhooks_Send\", Title = \"Send\", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true)]",
             GetToolAttributeLine(generated, "WebhooksController_SendTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Webhooks_Replace\", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Webhooks_Replace\", Title = \"Replace\", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]",
             GetToolAttributeLine(generated, "WebhooksController_ReplaceTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Webhooks_Preview\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = true)]",
+            "[McpServerTool(Name = \"Webhooks_Preview\", Title = \"Preview\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = true)]",
             GetToolAttributeLine(generated, "WebhooksController_PreviewTool"));
     }
 
@@ -184,7 +184,7 @@ namespace TestApi
         var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
 
         Assert.Equal(
-            "[McpServerTool(Name = \"Counters_Next\", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Counters_Next\", Title = \"Next\", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]",
             GetToolAttributeLine(generated, "CountersController_NextTool"));
     }
 
@@ -228,13 +228,13 @@ namespace TestApi
         var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
 
         Assert.Equal(
-            "[McpServerTool(Name = \"Mirrors_GetAll\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = true)]",
+            "[McpServerTool(Name = \"Mirrors_GetAll\", Title = \"Get all\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = true)]",
             GetToolAttributeLine(generated, "MirrorsController_GetAllTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Mirrors_Sync\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]",
+            "[McpServerTool(Name = \"Mirrors_Sync\", Title = \"Sync\", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]",
             GetToolAttributeLine(generated, "MirrorsController_SyncTool"));
         Assert.Equal(
-            "[McpServerTool(Name = \"Archives_Push\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
+            "[McpServerTool(Name = \"Archives_Push\", Title = \"Push\", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]",
             GetToolAttributeLine(generated, "ArchivesController_PushTool"));
     }
 

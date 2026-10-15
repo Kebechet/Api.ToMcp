@@ -6,6 +6,15 @@ namespace Api.ToMcp.Abstractions;
 public sealed class McpExposeAttribute : Attribute
 {
     public string? ToolName { get; set; }
+
+    /// <summary>
+    /// The tool's human-readable <c>title</c>, which clients show in place of the tool name: in a connector directory
+    /// listing and when asking the user to approve a call. Left unset, it is derived from the action part of the tool
+    /// name, so <c>LogWorkout</c> becomes "Log workout". Read from the action only: one title cannot name every action
+    /// of a controller.
+    /// </summary>
+    public string? Title { get; set; }
+
     public string? Description { get; set; }
 
     /// <summary>
