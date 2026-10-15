@@ -14,7 +14,7 @@ namespace Api.ToMcp.Generated
     [McpServerToolType]
     public static class ProductsController_GetTool
     {
-        [McpServerTool(Name = "Products_Get", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+        [McpServerTool(Name = "Products_Get", Title = "Get", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
         [Description("Gets a product.")]
         public static async Task<CallToolResult> InvokeAsync(
             IMcpHttpInvoker invoker,
@@ -46,7 +46,7 @@ namespace Api.ToMcp.Generated
     [McpServerToolType]
     public static class ProductsController_UpdateTool
     {
-        [McpServerTool(Name = "Products_Update", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]
+        [McpServerTool(Name = "Products_Update", Title = "Update", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]
         [Description("Invokes ProductsController.Update")]
         public static async Task<CallToolResult> InvokeAsync(
             IMcpHttpInvoker invoker,

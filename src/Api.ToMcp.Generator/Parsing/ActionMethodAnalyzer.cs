@@ -13,6 +13,10 @@ namespace Api.ToMcp.Generator.Parsing
     {
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
+        private const string ToolNamePropertyName = "ToolName";
+        private const string TitlePropertyName = "Title";
+        private const string DescriptionPropertyName = "Description";
+        private const string AsyncSuffix = "Async";
         private const string ReadOnlyHintPropertyName = "ReadOnly";
         private const string DestructiveHintPropertyName = "Destructive";
         private const string IdempotentHintPropertyName = "Idempotent";
@@ -63,6 +67,7 @@ namespace Api.ToMcp.Generator.Parsing
 
                 var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
+                string? customTitle = null;
                 string? customDescription = null;
                 // An action that names a scope, McpScope.None included, overrides the controller's; None then means
                 // the HTTP method's scope, so inheriting the controller's Read cannot open a POST to a read-only grant.
@@ -76,10 +81,21 @@ namespace Api.ToMcp.Generator.Parsing
                 {
                     foreach (var namedArg in mcpExposeAttr.NamedArguments)
                     {
-                        if (namedArg.Key == "ToolName" && namedArg.Value.Value is string tn)
+                        if (namedArg.Key == ToolNamePropertyName && namedArg.Value.Value is string tn)
                             customToolName = tn;
-                        if (namedArg.Key == "Description" && namedArg.Value.Value is string desc)
+                        if (namedArg.Key == DescriptionPropertyName && namedArg.Value.Value is string desc)
                             customDescription = desc;
+                    }
+                }
+
+                // Like scope and hints, the title follows the nearest action-level [McpExpose], an overridden base
+                // action's included; a controller's is never read, because one title cannot name all its actions.
+                if (actionMcpExposeAttr != null)
+                {
+                    foreach (var namedArg in actionMcpExposeAttr.NamedArguments)
+                    {
+                        if (namedArg.Key == TitlePropertyName && namedArg.Value.Value is string title && !string.IsNullOrWhiteSpace(title))
+                            customTitle = title;
                     }
                 }
 
@@ -95,6 +111,7 @@ namespace Api.ToMcp.Generator.Parsing
                     HasMcpIgnoreAttribute = ControllerScanner.HasAttribute(method, McpIgnoreAttributeFullName),
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
+                    Title = customTitle ?? ToolTitleBuilder.Build(customToolName, TrimSuffix(method.Name, AsyncSuffix)),
                     CustomDescription = customDescription,
                     RequiredScope = requiredScope,
                     Annotations = GetToolAnnotations(httpInfo.Value.Method, requiredScope, actionMcpExposeAttr, controllerMcpExposeAttr),
@@ -356,7 +373,7 @@ namespace Api.ToMcp.Generator.Parsing
             var explicitActionName = actionNameAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
 
             return string.IsNullOrEmpty(explicitActionName)
-                ? TrimSuffix(method.Name, "Async")
+                ? TrimSuffix(method.Name, AsyncSuffix)
                 : explicitActionName!;
         }
 

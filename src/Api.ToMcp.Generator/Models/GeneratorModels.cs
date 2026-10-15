@@ -49,6 +49,13 @@ namespace Api.ToMcp.Generator.Models
         public bool HasMcpIgnoreAttribute { get; set; }
         public string? XmlDocSummary { get; set; }
         public string? CustomToolName { get; set; }
+
+        /// <summary>
+        /// The tool's human-readable title: the action's own <c>[McpExpose(Title)]</c>, else derived from its name. Empty
+        /// only for a model built outside the analyzer, which then emits no title.
+        /// </summary>
+        public string Title { get; set; } = "";
+
         public string? CustomDescription { get; set; }
         public McpScopeModel RequiredScope { get; set; } = McpScopeModel.Read;
         public ToolAnnotationsModel Annotations { get; set; } = new ToolAnnotationsModel();
