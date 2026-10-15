@@ -22,16 +22,13 @@
     <DebugType>embedded</DebugType>
     <PackageIcon>icon.png</PackageIcon>
     <PackageTags>mcp;model-context-protocol;source-generator;aspnetcore;api;claude;ai</PackageTags>
-    <Version>2.1.0</Version>
+    <Version>2.2.0</Version>
     <PackageReleaseNotes>
 Added:
-- Output schemas and structured content: a generated tool advertises its action's success response type as its outputSchema and returns a successful call's body as structuredContent. Off via "structuredOutput": false in generator.json.
-- Tool annotations: every generated tool states readOnlyHint, destructiveHint, idempotentHint and openWorldHint explicitly, derived from its scope and HTTP method (read-only for a read scope, but never for PUT, PATCH or DELETE; destructive for PUT, PATCH, DELETE or a delete scope; idempotent when read-only or PUT/DELETE; never open-world). [McpExpose(ReadOnly/Destructive/Idempotent/OpenWorld = ...)] overrides any of them on an action or a whole controller.
+- Tool titles: every generated tool has a human-readable title, sent as annotations.title, which clients show in place of the tool name (a connector directory listing, the prompt to approve a call). It is derived from the action name, so LogWorkout becomes "Log workout", or from the action part of a custom ToolName. [McpExpose(Title = "...")] on an action sets it explicitly.
 
 Changed:
-- Clients now see each tool's real hints instead of the spec defaults for an omitted hint (destructive, open-world), so a read-only tool may run without the confirmation a client used to ask for. Review the derived values of any POST that is not purely additive, and of any endpoint that reaches outside systems.
-- A generated tool with an output schema now returns Task&lt;object&gt; from InvokeAsync (the response body as a JsonElement on success, the CallToolResult on error) instead of Task&lt;CallToolResult&gt;. Only code that calls generated tools directly is affected; MCP clients get the same text content plus structuredContent.
-- An empty success (a 204) of a tool with an output schema now comes back as structuredContent null and the text "null", instead of an empty text.
+- Clients that show titles now list each generated tool by its title instead of its name. The tool names themselves are unchanged.
     </PackageReleaseNotes>
   </PropertyGroup>
 
