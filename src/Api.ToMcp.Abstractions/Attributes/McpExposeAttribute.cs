@@ -10,8 +10,8 @@ public sealed class McpExposeAttribute : Attribute
     /// <summary>
     /// The tool's human-readable <c>title</c>, which clients show in place of the tool name: in a connector directory
     /// listing and when asking the user to approve a call. Left unset, it is derived from the action part of the tool
-    /// name, so <c>LogWorkout</c> becomes "Log workout". Read from the action only: one title cannot name every action
-    /// of a controller.
+    /// name, so <c>LogWorkout</c> becomes "Log workout". Read from the action, or the base action it overrides; never from
+    /// a controller, because one title cannot name every action of it.
     /// </summary>
     public string? Title { get; set; }
 

@@ -83,10 +83,19 @@ namespace Api.ToMcp.Generator.Parsing
                     {
                         if (namedArg.Key == ToolNamePropertyName && namedArg.Value.Value is string tn)
                             customToolName = tn;
-                        if (namedArg.Key == TitlePropertyName && namedArg.Value.Value is string title && !string.IsNullOrWhiteSpace(title))
-                            customTitle = title;
                         if (namedArg.Key == DescriptionPropertyName && namedArg.Value.Value is string desc)
                             customDescription = desc;
+                    }
+                }
+
+                // Like scope and hints, the title follows the nearest action-level [McpExpose], an overridden base
+                // action's included; a controller's is never read, because one title cannot name all its actions.
+                if (actionMcpExposeAttr != null)
+                {
+                    foreach (var namedArg in actionMcpExposeAttr.NamedArguments)
+                    {
+                        if (namedArg.Key == TitlePropertyName && namedArg.Value.Value is string title && !string.IsNullOrWhiteSpace(title))
+                            customTitle = title;
                     }
                 }
 

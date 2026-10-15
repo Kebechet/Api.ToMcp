@@ -193,7 +193,7 @@ Every generated tool has a `title`, sent as `annotations.title`. Clients show it
 
 The title is derived from the action name, split into words and read as a sentence: `LogWorkout` becomes "Log workout", `GetXRepMax` becomes "Get X rep max", and the `Async` suffix is dropped. With a custom `ToolName`, the title follows that name instead, because it is what the client lists: its part after the last underscore when that part is PascalCase (`Reports_GetSummary` reads "Get summary"), and the whole name otherwise (`get_report_summary` reads "Get report summary").
 
-Set `Title` where the derived one reads badly. It is read from the action only: one title cannot name every action of a controller.
+Set `Title` where the derived one reads badly. It is read from the action, or the base action it overrides, and never from a controller: one title cannot name every action of it.
 
 ```csharp
 [McpExpose(Title = "Delete a city's forecasts")]

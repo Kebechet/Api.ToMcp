@@ -69,6 +69,45 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_ToolTitle_SetOnABaseAction_NamesItsOverride()
+    {
+        // [McpExpose] is inherited, and the override's tool is the base action's under another controller; deriving a title
+        // instead would drop the one its author chose. An override's own [McpExpose] replaces the base's as a whole.
+        const string controller = @"
+using Api.ToMcp.Abstractions;
+
+namespace TestApi
+{
+    public abstract class ExternalControllerBase : ControllerBase
+    {
+        [McpExpose(Title = ""Sync with the source"")]
+        [HttpPost(""sync"")]
+        public virtual Task<string> Sync(string target) => Task.FromResult(string.Empty);
+
+        [McpExpose(Title = ""Push to the source"")]
+        [HttpPost(""push"")]
+        public virtual Task<string> Push(string target) => Task.FromResult(string.Empty);
+    }
+
+    [Route(""api/[controller]"")]
+    public class MirrorsController : ExternalControllerBase
+    {
+        [HttpPost(""sync"")]
+        public override Task<string> Sync(string target) => Task.FromResult(string.Empty);
+
+        [McpExpose(Destructive = true)]
+        [HttpPost(""push"")]
+        public override Task<string> Push(string target) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("Title = \"Sync with the source\", ", GetToolAttributeLine(generated, "MirrorsController_SyncTool"));
+        Assert.Contains("Title = \"Push\", ", GetToolAttributeLine(generated, "MirrorsController_PushTool"));
+    }
+
+    [Fact]
     public void Generator_ToolTitle_FollowsACustomToolName()
     {
         // A custom name is what the client lists, so a title derived from the method name would describe a tool the user
