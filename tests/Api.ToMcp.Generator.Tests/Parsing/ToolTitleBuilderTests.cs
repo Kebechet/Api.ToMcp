@@ -14,6 +14,12 @@ public class ToolTitleBuilderTests
     [InlineData("GetTop10Users", "Get top 10 users")]
     [InlineData("get_report_summary", "Get report summary")]
     [InlineData("list-open-orders", "List open orders")]
+    [InlineData("GetMétéo", "Get météo")]
+    [InlineData("ÜberSicht", "Über sicht")]
+    [InlineData("GetΑθήνα", "Get αθήνα")]
+    [InlineData("Get用户", "Get 用户")]
+    [InlineData("用户List", "用户 list")]
+    [InlineData("GetÉtat", "Get état")]
     public void ToSentence_Identifier_ReadsAsASentence(string identifier, string expectedTitle)
     {
         Assert.Equal(expectedTitle, ToolTitleBuilder.ToSentence(identifier));
