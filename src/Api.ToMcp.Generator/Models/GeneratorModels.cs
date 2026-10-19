@@ -94,6 +94,14 @@ namespace Api.ToMcp.Generator.Models
         public bool HasDefaultValue { get; set; }
         public object? DefaultValue { get; set; }
         public ParameterSourceModel Source { get; set; }
+
+        /// <summary>
+        /// Whether MVC reads the parameter's type from one string, through a type converter or a static <c>TryParse</c>,
+        /// as it does a primitive or a strongly-typed id. Only such a parameter binds from the query string without
+        /// <c>[FromQuery]</c>; any other is complex, bound property by property.
+        /// </summary>
+        public bool IsSimpleType { get; set; }
+
         public ImmutableArray<PropertyInfoModel> Properties { get; set; } = ImmutableArray<PropertyInfoModel>.Empty;
         public string? Description { get; set; }
 

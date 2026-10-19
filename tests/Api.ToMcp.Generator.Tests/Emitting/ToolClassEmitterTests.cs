@@ -199,46 +199,6 @@ public class ToolClassEmitterTests
 
     #endregion
 
-    #region IsComplexType Tests
-
-    [Theory]
-    [InlineData("string", false)]
-    [InlineData("int", false)]
-    [InlineData("System.Guid", false)]
-    [InlineData("int?", false)]
-    [InlineData("DateOnly", false)]
-    [InlineData("System.DateOnly", false)]
-    [InlineData("TimeOnly", false)]
-    [InlineData("System.TimeOnly", false)]
-    [InlineData("sbyte", false)]
-    [InlineData("System.SByte", false)]
-    [InlineData("ushort", false)]
-    [InlineData("System.UInt16", false)]
-    [InlineData("uint", false)]
-    [InlineData("System.UInt32", false)]
-    [InlineData("ulong", false)]
-    [InlineData("System.UInt64", false)]
-    [InlineData("nint", false)]
-    [InlineData("System.IntPtr", false)]
-    [InlineData("nuint", false)]
-    [InlineData("System.UIntPtr", false)]
-    [InlineData("Half", false)]
-    [InlineData("System.Half", false)]
-    [InlineData("Int128", false)]
-    [InlineData("System.Int128", false)]
-    [InlineData("UInt128", false)]
-    [InlineData("System.UInt128", false)]
-    [InlineData("CreateProductRequest", true)]
-    [InlineData("List<string>", true)]
-    [InlineData("MyNamespace.MyModel", true)]
-    public void IsComplexType_IdentifiesComplexTypesCorrectly(string typeName, bool expected)
-    {
-        var result = ToolClassEmitter.IsComplexType(typeName);
-        Assert.Equal(expected, result);
-    }
-
-    #endregion
-
     #region Emit Integration Tests
 
     [Fact]
@@ -307,6 +267,7 @@ public class ToolClassEmitterTests
                 Name = "category",
                 Type = "string",
                 Source = ParameterSourceModel.Auto,
+                IsSimpleType = true,
                 IsNullable = true,
                 HasDefaultValue = true,
                 DefaultValue = null

@@ -138,7 +138,7 @@ namespace Api.ToMcp.Generator.Emitting
                     // Check complex types (FromRoute or Body) for matching property
                     var complexParam = parameters.FirstOrDefault(p =>
                         (p.Source == ParameterSourceModel.Route || p.Source == ParameterSourceModel.Body) &&
-                        IsComplexType(p.Type) &&
+                        !p.IsSimpleType &&
                         p.Properties.Any(prop => string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase)));
 
                     if (complexParam != null)
@@ -177,13 +177,15 @@ namespace Api.ToMcp.Generator.Emitting
             }
             sb.AppendLine($"            var route = $\"{convertedRoute}\";");
 
-            // Build query string
+            // Build query string. MVC binds a simple type that names no route value from the query string on every
+            // HTTP method: [ApiController] infers [FromQuery] for it, and in a controller without [ApiController] the
+            // query string is one of the value providers. A complex one is the body of a POST, PUT or PATCH, and a GET or
+            // DELETE sends none.
             var queryParams = parameters.Where(p =>
                 p.Source == ParameterSourceModel.Query ||
                 (p.Source == ParameterSourceModel.Auto &&
                  !RouteContainsParameter(route, p.Name) &&
-                 action.HttpMethod == HttpMethodNames.Get &&
-                 !IsComplexType(p.Type))).ToList();
+                 p.IsSimpleType)).ToList();
 
             if (queryParams.Any())
             {
@@ -456,39 +458,6 @@ namespace Api.ToMcp.Generator.Emitting
                 "TimeOnly", "System.TimeOnly"
             };
             return valueTypes.Any(t => typeName == t || typeName.EndsWith("." + t));
-        }
-
-        internal static bool IsComplexType(string typeName)
-        {
-            var primitives = new[]
-            {
-                "string", "String", "System.String",
-                "int", "Int32", "System.Int32",
-                "long", "Int64", "System.Int64",
-                "short", "Int16", "System.Int16",
-                "byte", "Byte", "System.Byte",
-                "sbyte", "SByte", "System.SByte",
-                "ushort", "UInt16", "System.UInt16",
-                "uint", "UInt32", "System.UInt32",
-                "ulong", "UInt64", "System.UInt64",
-                "nint", "IntPtr", "System.IntPtr",
-                "nuint", "UIntPtr", "System.UIntPtr",
-                "bool", "Boolean", "System.Boolean",
-                "double", "Double", "System.Double",
-                "float", "Single", "System.Single",
-                "decimal", "Decimal", "System.Decimal",
-                "Half", "System.Half",
-                "Int128", "System.Int128",
-                "UInt128", "System.UInt128",
-                "char", "Char", "System.Char",
-                "DateTime", "System.DateTime",
-                "DateTimeOffset", "System.DateTimeOffset",
-                "TimeSpan", "System.TimeSpan",
-                "Guid", "System.Guid",
-                "DateOnly", "System.DateOnly",
-                "TimeOnly", "System.TimeOnly"
-            };
-            return !primitives.Any(t => typeName == t || typeName.EndsWith("." + t) || typeName.EndsWith("?"));
         }
     }
 }

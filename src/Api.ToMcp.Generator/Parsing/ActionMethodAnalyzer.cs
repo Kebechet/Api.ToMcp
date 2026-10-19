@@ -190,6 +190,7 @@ namespace Api.ToMcp.Generator.Parsing
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
                     Source = source,
+                    IsSimpleType = SimpleTypeClassifier.IsSimpleType(param.Type),
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
                     QueryName = GetFromQueryName(param)
@@ -270,20 +271,9 @@ namespace Api.ToMcp.Generator.Parsing
             if (type.SpecialType != SpecialType.None)
                 return false;
 
-            var fullName = type.ToDisplayString();
-
-            // Common primitive types
-            if (fullName.StartsWith("System."))
-            {
-                var primitives = new[]
-                {
-                    "System.String", "System.Int32", "System.Int64", "System.Boolean",
-                    "System.Double", "System.Decimal", "System.DateTime", "System.DateTimeOffset",
-                    "System.Guid", "System.TimeSpan"
-                };
-                if (primitives.Any(p => fullName.StartsWith(p)))
-                    return false;
-            }
+            // A strongly-typed id or an int? is a struct too, but MVC binds it from the route or query, never the body.
+            if (SimpleTypeClassifier.IsSimpleType(type))
+                return false;
 
             return type.TypeKind == TypeKind.Class || type.TypeKind == TypeKind.Struct;
         }
