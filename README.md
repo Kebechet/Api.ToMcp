@@ -17,7 +17,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 
 > **For APIs you own the source of.** Api.ToMcp is a source generator — it runs inside your API project's compilation, which is what lets it read your XML doc comments for tool descriptions, fail at build time instead of runtime, and route tool calls through your real middleware pipeline (auth, validation, filters). If you only have an OpenAPI spec — a third-party or legacy API you can't recompile — this package is not the right fit; use an OpenAPI-to-MCP proxy instead.
 
-> **Controllers only.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`). Minimal API endpoints (`app.MapGet(...)`, `app.MapPost(...)`, etc.) are **not** discovered. See [Limitations](#limitations).
+> **Controllers only.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`), and finds their actions the way MVC does; see [Controllers and Actions](#controllers-and-actions). Minimal API endpoints (`app.MapGet(...)`, `app.MapPost(...)`, etc.) are **not** discovered. See [Limitations](#limitations).
 
 ## Features
 
@@ -116,6 +116,30 @@ public class ProductsController : ControllerBase
 }
 ```
 
+## Controllers and Actions
+
+The generator finds controllers and actions the way MVC does, so every tool calls an endpoint your app serves:
+
+- **Controllers.** A public, top-level class that inherits from `ControllerBase`, or is annotated with `[ApiController]` and ends in "Controller" or carries `[Controller]`. Abstract, generic, static, nested and non-public classes are not controllers, and neither is one marked `[NonController]`, on itself or a base class.
+- **Actions.** A public instance method of a controller with `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]`. Static and generic methods are not actions, and neither is one marked `[NonAction]`, on itself or the base action it overrides.
+- **Inherited actions.** A controller has the actions it inherits from its base classes as well as its own. Each concrete controller gets its own tool for an inherited action, named after that controller, with `[controller]` in the route filled with its name; an abstract base class gets none. An overridden action gets one tool, from the most derived override.
+- **Inherited attributes.** What MVC inherits is read from the base classes and from the action an override replaces: `[Route]`, `[ApiController]`, `[NonController]`, `[NonAction]`, the `[Http*]` attributes, `[ActionName]`, `[Produces]` and `[ProducesResponseType]`, as well as `[McpIgnore]` on a controller. An override without an `[Http*]` attribute of its own is routed as the action it replaces.
+
+An action inherited from a generic base class takes the controller's type arguments, so its parameters and output schema are typed:
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public abstract class CrudController<T> : ControllerBase
+{
+    [HttpGet]
+    public ActionResult<List<T>> GetAll() => ...;
+}
+
+public class ProductsController : CrudController<Product> { }   // Products_GetAll: GET /api/products, a List<Product>
+public class OrdersController : CrudController<Order> { }       // Orders_GetAll: GET /api/orders, a List<Order>
+```
+
 ## Configuration
 
 ### Selection Modes
@@ -129,13 +153,15 @@ public class ProductsController : ControllerBase
 
 | Option | Description |
 |--------|-------------|
-| `toolNameFormat` | Format string for tool names. Supports `{Controller}` and `{Action}` placeholders |
+| `toolNameFormat` | Format string for tool names. Supports `{Controller}` and `{Action}` placeholders. `{Controller}` is the controller that serves the action, also for an action it inherits |
 | `removeControllerSuffix` | When `true`, strips "Controller" from the controller name |
 
 ### Include/Exclude Patterns
 
 - `"ProductsController"` - Include/exclude entire controller
 - `"ProductsController.GetById"` - Include/exclude specific action
+
+An inherited action is named by the controller that serves it, as MVC names it: `ProductsController.GetAll` for the `GetAll` that `ProductsController` inherits from `CrudController<T>`. The base class's name selects nothing, since it serves no endpoint of its own.
 
 ### Structured Output
 
@@ -209,6 +235,8 @@ Forces an endpoint to be excluded from MCP exposure.
 [McpIgnore]
 public Task<ActionResult> Delete(Guid id) { ... }
 ```
+
+On a controller, it excludes all of its actions, those it inherits included. It is inherited: on a base class, it excludes every controller that derives from it. It wins over `[McpExpose]`.
 
 ## Tool Descriptions
 
@@ -445,8 +473,8 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 **No tools are generated.**
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
-- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`.
-- Ensure the endpoint lives on a `ControllerBase`-derived class (or one with `[ApiController]`); minimal APIs are not supported.
+- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, where `Controller` is the controller that serves the action, not a base class it inherits the action from.
+- Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). Minimal APIs are not supported.
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).

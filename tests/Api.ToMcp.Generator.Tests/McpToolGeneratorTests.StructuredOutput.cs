@@ -119,9 +119,9 @@ namespace TestApi
     }
 
     [Fact]
-    public void Generator_AdvertisesNoOutputSchema_ForAResponseTypeBuiltFromATypeParameter()
+    public void Generator_AdvertisesTheTypeArgument_ForAResponseTypeBuiltFromABaseControllersTypeParameter()
     {
-        // A generic base controller is scanned as a controller of its own; its T means nothing in the generated tool.
+        // MVC serves a generic base controller's actions only under the concrete controllers, where T has a value.
         const string source = StructuredOutputUsings + StructuredOutputModels + @"
 namespace TestApi
 {
@@ -149,9 +149,14 @@ namespace TestApi
 
         var generated = RunGenerator(source, AllExceptExcludedConfig);
 
-        Assert.DoesNotContain("UseStructuredContent", GetToolClass(generated, "CrudController_GetListTool"));
-        Assert.DoesNotContain("UseStructuredContent", GetToolClass(generated, "CrudController_GetArrayTool"));
-        Assert.DoesNotContain("UseStructuredContent", GetToolClass(generated, "CrudController_GetNestedTool"));
+        Assert.Contains(
+            "OutputSchemaType = typeof(global::System.Collections.Generic.List<global::TestApi.Product>)",
+            GetToolClass(generated, "ProductsController_GetListTool"));
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product[])", GetToolClass(generated, "ProductsController_GetArrayTool"));
+        Assert.Contains(
+            "OutputSchemaType = typeof(global::System.Collections.Generic.Dictionary<string, global::System.Collections.Generic.List<global::TestApi.Product>>)",
+            GetToolClass(generated, "ProductsController_GetNestedTool"));
+        Assert.DoesNotContain("class CrudController_", generated);
     }
 
     [Fact]

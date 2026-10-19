@@ -13,6 +13,8 @@ namespace Api.ToMcp.Generator.Parsing
     {
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
+        private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
+        internal const string RouteAttributeName = "RouteAttribute";
         private const string ToolNamePropertyName = "ToolName";
         private const string TitlePropertyName = "Title";
         private const string DescriptionPropertyName = "Description";
@@ -22,13 +24,16 @@ namespace Api.ToMcp.Generator.Parsing
         private const string IdempotentHintPropertyName = "Idempotent";
         private const string OpenWorldHintPropertyName = "OpenWorld";
 
-        private static readonly HashSet<string> HttpMethodAttributes = new HashSet<string>
+        /// <summary>
+        /// The HTTP method each of MVC's <c>[Http*]</c> attributes routes, by the attribute's simple name.
+        /// </summary>
+        private static readonly Dictionary<string, string> HttpMethodAttributes = new Dictionary<string, string>
         {
-            "HttpGetAttribute",
-            "HttpPostAttribute",
-            "HttpPutAttribute",
-            "HttpDeleteAttribute",
-            "HttpPatchAttribute"
+            ["HttpGetAttribute"] = HttpMethodNames.Get,
+            ["HttpPostAttribute"] = HttpMethodNames.Post,
+            ["HttpPutAttribute"] = HttpMethodNames.Put,
+            ["HttpDeleteAttribute"] = HttpMethodNames.Delete,
+            ["HttpPatchAttribute"] = HttpMethodNames.Patch
         };
 
         public static ImmutableArray<ActionInfoModel> GetActions(
@@ -41,17 +46,11 @@ namespace Api.ToMcp.Generator.Parsing
             var controllerMcpExposeAttr = FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute);
             var controllerScope = GetDeclaredScope(controllerMcpExposeAttr);
 
-            foreach (var member in controller.GetMembers())
+            foreach (var method in GetPublicMethods(controller))
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (!(member is IMethodSymbol method))
-                    continue;
-
-                if (method.MethodKind != MethodKind.Ordinary)
-                    continue;
-
-                if (method.DeclaredAccessibility != Accessibility.Public)
+                if (!IsAction(method))
                     continue;
 
                 var httpInfo = GetHttpMethodInfo(method);
@@ -125,22 +124,82 @@ namespace Api.ToMcp.Generator.Parsing
             return builder.ToImmutable();
         }
 
+        /// <summary>
+        /// The public methods MVC lists for a controller, as reflection's <c>GetMethods()</c> lists them: the class's own,
+        /// then those of each base class up to the framework's <c>ControllerBase</c>, whose own are never actions. A
+        /// method an override replaces is listed once, as the most derived override; one hidden with <c>new</c> is
+        /// listed beside the method that hides it, as reflection lists it.
+        /// </summary>
+        private static IEnumerable<IMethodSymbol> GetPublicMethods(INamedTypeSymbol controller)
+        {
+            var overriddenMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+
+            for (var type = controller; type != null && !IsFrameworkBaseType(type); type = type.BaseType)
+            {
+                foreach (var method in type.GetMembers().OfType<IMethodSymbol>())
+                {
+                    if (overriddenMethods.Contains(method))
+                        continue;
+
+                    for (var overriddenMethod = method.OverriddenMethod; overriddenMethod != null; overriddenMethod = overriddenMethod.OverriddenMethod)
+                        overriddenMethods.Add(overriddenMethod);
+
+                    if (method.DeclaredAccessibility == Accessibility.Public)
+                        yield return method;
+                }
+            }
+        }
+
+        private static bool IsFrameworkBaseType(INamedTypeSymbol type)
+        {
+            return type.SpecialType == SpecialType.System_Object ||
+                type.ToDisplayString() is KnownTypeNames.ControllerBase or KnownTypeNames.Controller;
+        }
+
+        /// <summary>
+        /// MVC's rule for which public methods of a controller are actions: an ordinary instance method without type
+        /// parameters and without <c>[NonAction]</c>, which an override inherits from the method it replaces.
+        /// </summary>
+        private static bool IsAction(IMethodSymbol method)
+        {
+            return method.MethodKind == MethodKind.Ordinary &&
+                !method.IsStatic &&
+                !method.IsAbstract &&
+                !method.IsGenericMethod &&
+                FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.ToDisplayString() == NonActionAttributeFullName) is null;
+        }
+
+        /// <summary>
+        /// The HTTP method and template of the nearest <c>[Http*]</c>: MVC inherits it, so an override that declares none
+        /// is routed as the action it replaces.
+        /// </summary>
         private static (string Method, string? Template)? GetHttpMethodInfo(IMethodSymbol method)
+        {
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                var httpMethodInfo = GetDeclaredHttpMethodInfo(current);
+                if (httpMethodInfo != null)
+                    return httpMethodInfo;
+            }
+
+            return null;
+        }
+
+        private static (string Method, string? Template)? GetDeclaredHttpMethodInfo(IMethodSymbol method)
         {
             // A method-level [Route("...")] supplies the template when the HTTP verb
             // attribute carries none (e.g. [HttpGet] + [Route("search")]).
             var routeAttrTemplate = method.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.Name == "RouteAttribute" &&
+                .FirstOrDefault(attr => attr.AttributeClass?.Name == RouteAttributeName &&
                                         attr.ConstructorArguments.Length > 0)
                 ?.ConstructorArguments[0].Value?.ToString();
 
             foreach (var attr in method.GetAttributes())
             {
                 var attrName = attr.AttributeClass?.Name;
-                if (attrName == null || !HttpMethodAttributes.Contains(attrName))
+                if (attrName == null || !HttpMethodAttributes.TryGetValue(attrName, out var httpMethod))
                     continue;
 
-                var httpMethod = attrName.Replace("Attribute", "").Replace("Http", "").ToUpperInvariant();
                 var template = attr.ConstructorArguments.Length > 0
                     ? attr.ConstructorArguments[0].Value?.ToString()
                     : null;
