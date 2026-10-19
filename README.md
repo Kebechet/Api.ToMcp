@@ -478,18 +478,23 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 A tool takes the action's parameters as its arguments and sends each one where MVC binds it from:
 
 - `[FromRoute]`, `[FromQuery]` and `[FromBody]` decide for themselves. `[FromQuery(Name = "q")]` is sent as `q`, and a `[FromQuery]` object as one key per property (`filter.City=...`).
-- A parameter without a binding attribute follows the `[ApiController]` inference. Named in the route template, it fills the route. Otherwise a **simple** type goes to the query string on every HTTP method, and a **complex** type is the JSON body of a POST, PUT or PATCH. A GET or DELETE sends no body, so a filter object read from the query string needs `[FromQuery]`.
-- A simple type is one MVC reads from a single string: `string`, the numeric types, `bool`, `Guid`, the date and time types, enums, `Uri`, `Version`, their nullable forms, and any type with a `[TypeConverter]` that converts from string or a public static `bool TryParse(string, out T)` or `TryParse(string, IFormatProvider, out T)`. A strongly-typed id is one, and is sent as one value:
+- A parameter without a binding attribute goes where MVC infers it from. Named in the route template, it fills the route. Otherwise a **simple** type goes to the query string on every HTTP method, and a **complex** type is the JSON body of a POST, PUT or PATCH.
+- On a GET or DELETE, which send no body, a complex type depends on `[ApiController]`, on the controller, a base class or the assembly. With it, MVC reads the parameter from the body, so the tool cannot fill it: a filter object read from the query string needs `[FromQuery]`. Without it, MVC binds the parameter property by property from the query string, and the tool expands it there as it does a `[FromQuery]` object.
+- A controller without `[ApiController]` does not read the body unless told to, so its POST, PUT and PATCH actions need `[FromBody]` on a complex parameter; the tool sends it as the body either way.
+- A simple type is one MVC reads from a single string: `string`, the numeric types, `bool`, `Guid`, the date and time types, enums, `Uri`, `Version`, their nullable forms, and any type with a `[TypeConverter]` that converts from string or a `bool TryParse(string, out T)` or `TryParse(string, IFormatProvider, out T)` that MVC finds: public and static on the type or a base class, an explicit `IParsable<T>` implementation, or a static method with a body that exactly one of its interfaces offers. A strongly-typed id is one, and is sent as one value:
 
   ```csharp
   [TypeConverter(typeof(OrderIdConverter))]
-  public readonly record struct OrderId(Guid Value);
+  public readonly record struct OrderId(Guid Value)
+  {
+      public override string ToString() => Value.ToString();   // the text OrderIdConverter reads back
+  }
 
   [HttpGet("orders")]
   public Task<ActionResult<Order>> Find(OrderId orderId) { ... }   // sent as ?orderId=0189dfd3-...
   ```
 
-Route and query values are written with the invariant culture, and a type with a `[TypeConverter]` through that converter. A type MVC reads through `TryParse` is written with its `ToString()`, the invariant-culture one when it is `IFormattable`, so that has to return the text `TryParse` reads; a record's generated `ToString()` (`Sku { Code = AB-12 }`) does not.
+Route and query values are written with the invariant culture. A type with a `[TypeConverter]` is written by the converter's `ConvertTo`, and a converter that implements only `ConvertFrom` leaves that to the type's `ToString()`. A type MVC reads through `TryParse` is written with its `ToString()`, the invariant-culture one when it is `IFormattable`. Either way the text has to be what the converter or `TryParse` reads back. A record's generated `ToString()` (`OrderId { Value = 0189dfd3-... }`) is not, and MVC answers 400, so give such a type a converter that also converts to string, or a `ToString()` that returns the parseable form.
 
 The generator finds the converter in the type's `[TypeConverter]` at compile time. One registered at runtime with `TypeDescriptor.AddAttributes` is invisible to it, so mark such a parameter `[FromQuery]`.
 
