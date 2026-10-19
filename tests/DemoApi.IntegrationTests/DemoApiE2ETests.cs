@@ -405,6 +405,24 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_CallsATool_ThatTheControllerInheritsFromAGenericBase()
+    {
+        // CategoriesController declares no action: it serves the GetAll of ListControllerBase<Category> at its own route,
+        // with Category for T. The abstract base serves nothing. https://github.com/Kebechet/Api.ToMcp/issues/28
+        await using var client = await ConnectMcpClientAsync();
+        var tools = await client.ListToolsAsync();
+
+        Assert.DoesNotContain(tools, x => x.Name.StartsWith("ListControllerBase", StringComparison.Ordinal));
+        var categorySchema = GetOutputSchema(tools, "Categories_GetAll").GetProperty("items");
+        Assert.Equal("Name of the category, as products name it.", GetDescription(categorySchema.GetProperty("properties"), "name"));
+
+        var result = await CallToolRawAsync(client, "Categories_GetAll", new JsonObject());
+
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        Assert.Equal(["Electronics", "Kitchen"], result["structuredContent"]!.AsArray().Select(x => x!["name"]!.GetValue<string>()));
+    }
+
+    [Fact]
     public async Task McpProtocol_ListsAndCallsAHandWrittenTool_WithItsAnnotationsAndInjectedService()
     {
         // ServerTools has no endpoint behind it; AddMcpTools must register it exactly as the SDK's assembly scan
