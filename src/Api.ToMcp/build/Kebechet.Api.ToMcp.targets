@@ -25,13 +25,17 @@
     "removeControllerSuffix": true
   }
 }]]></_McpStarterConfig>
+      <_McpStarterConfigFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(ApiToMcpConfigPath)'))</_McpStarterConfigFullPath>
     </PropertyGroup>
 
     <WriteLinesToFile File="$(ApiToMcpConfigPath)"
                       Lines="$(_McpStarterConfig)"
                       Overwrite="true" />
 
-    <Message Text="Api.ToMcp: Created starter config at Mcp/generator.json" Importance="high" />
+    <!-- A warning rather than a message: the starter config selects no action, so the app's MCP server lists no tools
+         until its include is filled, and a message is missing from IDE error lists and most CI log views.
+         See https://github.com/Kebechet/Api.ToMcp/issues/17 -->
+    <Warning Text="Api.ToMcp created a starter config at $(_McpStarterConfigFullPath), as none existed there. It is in SelectedOnly mode with an empty include list, so no MCP tools are generated until you list controllers or actions in its include. If your config is at another path, such as a differently cased folder, set ApiToMcpConfigPath to it and delete this file." />
 
   </Target>
 
