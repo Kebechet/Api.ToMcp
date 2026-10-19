@@ -123,7 +123,7 @@ The generator finds controllers and actions the way MVC does, so every tool call
 - **Controllers.** A public, top-level class that inherits from `ControllerBase`, or is annotated with `[ApiController]` and ends in "Controller" or carries `[Controller]`. Abstract, generic, static, nested and non-public classes are not controllers, and neither is one marked `[NonController]`, on itself or a base class.
 - **Actions.** A public instance method of a controller with `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]`. Static and generic methods are not actions, and neither is one marked `[NonAction]`, on itself or the base action it overrides.
 - **Inherited actions.** A controller has the actions it inherits from its base classes as well as its own. Each concrete controller gets its own tool for an inherited action, named after that controller, with `[controller]` in the route filled with its name; an abstract base class gets none. An overridden action gets one tool, from the most derived override.
-- **Inherited attributes.** What MVC inherits is read from the base classes and from the action an override replaces: `[Route]`, `[ApiController]`, `[NonController]`, `[NonAction]`, the `[Http*]` attributes, `[ActionName]`, `[Produces]` and `[ProducesResponseType]`, as well as `[McpIgnore]` on a controller. An override without an `[Http*]` attribute of its own is routed as the action it replaces.
+- **Inherited attributes.** What MVC inherits is read from the base classes and from the action an override replaces: `[Route]`, `[ApiController]`, `[NonController]`, `[NonAction]`, the `[Http*]` attributes, `[ActionName]`, `[Produces]` and `[ProducesResponseType]`, as well as [`[McpExpose]`](#mcpexpose) and [`[McpIgnore]`](#mcpignore). An override without an `[Http*]` attribute of its own is routed as the action it replaces.
 
 An action inherited from a generic base class takes the controller's type arguments, so its parameters and output schema are typed:
 
@@ -179,6 +179,21 @@ Forces an endpoint to be exposed as an MCP tool, regardless of configuration mod
 [McpExpose(ToolName = "GetProduct", Title = "Get a product", Description = "Retrieves a product by ID")]
 public Task<Product> GetById(Guid id) { ... }
 ```
+
+On a controller, it exposes all of its actions, those it inherits included. It is inherited, as reflection reads it: on a base class, it exposes every controller derived from it, and on an action, every override of it. The nearest attribute counts - the action's own, else the one on the action it overrides; the controller's own, else its nearest base class's - and it replaces the base's as a whole. An override with `[McpExpose(Destructive = true)]` therefore drops the base action's `ToolName`, `Title`, `Description` and `Scope`, while an override without an `[McpExpose]` of its own keeps all of them.
+
+```csharp
+[McpExpose]
+public abstract class AdminControllerBase : ControllerBase { }
+
+public class UsersController : AdminControllerBase   // exposed in SelectedOnly mode, every action of it
+{
+    [HttpGet]
+    public Task<ActionResult<List<UserDto>>> GetAll() { ... }
+}
+```
+
+> **A `ToolName` on a base action names the tool of every controller that inherits the action.** The MCP SDK registers only the first tool of a name and silently drops the others, so when several controllers inherit it, give each one's tool a name of its own by overriding the action with its own `[McpExpose(ToolName = ...)]`, or leave `ToolName` off the base action.
 
 `Scope` overrides the scope derived from the HTTP method (see [Scope-Based Access Control](#scope-based-access-control)). Use it when the verb says something other than what the endpoint does - a search that takes its filter as a POST body and changes nothing would otherwise require `Write`:
 
@@ -236,7 +251,7 @@ Forces an endpoint to be excluded from MCP exposure.
 public Task<ActionResult> Delete(Guid id) { ... }
 ```
 
-On a controller, it excludes all of its actions, those it inherits included. It is inherited: on a base class, it excludes every controller that derives from it. It wins over `[McpExpose]`.
+On a controller, it excludes all of its actions, those it inherits included. It is inherited: on a base class, it excludes every controller that derives from it, and on an action, every override of it. It wins over `[McpExpose]`.
 
 ## Tool Descriptions
 

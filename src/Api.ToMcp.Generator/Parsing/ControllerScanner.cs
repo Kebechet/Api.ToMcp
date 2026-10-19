@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Immutable;
-using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -36,8 +35,9 @@ namespace Api.ToMcp.Generator.Parsing
                 return null;
 
             var routePrefix = GetRoutePrefix(namedType);
-            var hasMcpExpose = HasAttribute(namedType, McpExposeAttributeFullName);
-            // [McpIgnore] is inherited: a base class's covers this controller, the actions it inherits from that base included.
+            // [McpExpose] and [McpIgnore] are inherited: a base class's covers this controller, the actions it inherits from
+            // that base included.
+            var hasMcpExpose = HasNearestAttribute(namedType, McpExposeAttributeFullName);
             var hasMcpIgnore = HasNearestAttribute(namedType, McpIgnoreAttributeFullName);
 
             var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, context.SemanticModel.Compilation, ct);
@@ -91,18 +91,6 @@ namespace Api.ToMcp.Generator.Parsing
                 current = current.BaseType;
             }
             return false;
-        }
-
-        internal static bool HasAttribute(ISymbol symbol, string attributeFullName)
-        {
-            return symbol.GetAttributes()
-                .Any(attr => attr.AttributeClass?.ToDisplayString() == attributeFullName);
-        }
-
-        internal static AttributeData? GetAttribute(ISymbol symbol, string attributeFullName)
-        {
-            return symbol.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.ToDisplayString() == attributeFullName);
         }
 
         /// <summary>

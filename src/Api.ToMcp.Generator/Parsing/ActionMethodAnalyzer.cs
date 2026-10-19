@@ -64,7 +64,6 @@ namespace Api.ToMcp.Generator.Parsing
                 var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, GetRouteActionName(method));
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
 
-                var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customTitle = null;
                 string? customDescription = null;
@@ -76,23 +75,17 @@ namespace Api.ToMcp.Generator.Parsing
                     ? GetRequiredScope(httpInfo.Value.Method)
                     : declaredScope.Value;
 
-                if (mcpExposeAttr != null)
+                // Like scope and hints, exposure, tool name, description and title follow the nearest action-level
+                // [McpExpose], an overridden base action's included; a controller's title is never read, because one
+                // title cannot name all its actions.
+                if (actionMcpExposeAttr != null)
                 {
-                    foreach (var namedArg in mcpExposeAttr.NamedArguments)
+                    foreach (var namedArg in actionMcpExposeAttr.NamedArguments)
                     {
                         if (namedArg.Key == ToolNamePropertyName && namedArg.Value.Value is string tn)
                             customToolName = tn;
                         if (namedArg.Key == DescriptionPropertyName && namedArg.Value.Value is string desc)
                             customDescription = desc;
-                    }
-                }
-
-                // Like scope and hints, the title follows the nearest action-level [McpExpose], an overridden base
-                // action's included; a controller's is never read, because one title cannot name all its actions.
-                if (actionMcpExposeAttr != null)
-                {
-                    foreach (var namedArg in actionMcpExposeAttr.NamedArguments)
-                    {
                         if (namedArg.Key == TitlePropertyName && namedArg.Value.Value is string title && !string.IsNullOrWhiteSpace(title))
                             customTitle = title;
                     }
@@ -106,8 +99,8 @@ namespace Api.ToMcp.Generator.Parsing
                     RouteTemplate = fullRoute,
                     Parameters = parameters,
                     ReturnType = returnType,
-                    HasMcpExposeAttribute = mcpExposeAttr != null,
-                    HasMcpIgnoreAttribute = ControllerScanner.HasAttribute(method, McpIgnoreAttributeFullName),
+                    HasMcpExposeAttribute = actionMcpExposeAttr != null,
+                    HasMcpIgnoreAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpIgnoreAttribute) != null,
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
                     Title = customTitle ?? ToolTitleBuilder.Build(customToolName, TrimSuffix(method.Name, AsyncSuffix)),
@@ -630,6 +623,11 @@ namespace Api.ToMcp.Generator.Parsing
         private static bool IsMcpExposeAttribute(AttributeData attribute)
         {
             return attribute.AttributeClass?.ToDisplayString() == McpExposeAttributeFullName;
+        }
+
+        private static bool IsMcpIgnoreAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass?.ToDisplayString() == McpIgnoreAttributeFullName;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)
