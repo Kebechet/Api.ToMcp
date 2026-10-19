@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Reflection;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Server;
@@ -43,7 +44,7 @@ internal sealed class XmlDocPropertyDescriber
     /// </summary>
     public JsonNode DescribeProperty(AIJsonSchemaCreateContext context, JsonNode schema)
     {
-        if (context.PropertyInfo is null || schema is not JsonObject schemaObject)
+        if (context.PropertyInfo is null || !CanCarryDescription(schema))
         {
             return schema;
         }
@@ -54,12 +55,26 @@ internal sealed class XmlDocPropertyDescriber
         }
 
         var summary = _summaryReader.GetSummary(member);
-        if (summary is not null)
+        if (summary is null)
         {
-            schemaObject[DescriptionKeyword] = summary;
+            return schema;
         }
 
-        return schema;
+        var schemaObject = schema as JsonObject ?? new JsonObject();
+        schemaObject[DescriptionKeyword] = summary;
+
+        return schemaObject;
+    }
+
+    /// <summary>
+    /// An object schema, or the boolean schema <c>true</c> the exporter gives a property any JSON value fits
+    /// (<c>object</c>, <c>JsonElement</c>, <c>JsonNode</c>). <c>true</c> has no keywords to hold a description, so a
+    /// described one becomes <c>{}</c>, which accepts the same values. A <c>false</c> schema accepts nothing, which
+    /// <c>{}</c> would not keep, so it is left alone.
+    /// </summary>
+    private static bool CanCarryDescription(JsonNode schema)
+    {
+        return schema is JsonObject || schema.GetValueKind() == JsonValueKind.True;
     }
 
     /// <summary>

@@ -81,6 +81,20 @@ public class McpOutputSchemaBuilderTests
         Assert.Equal("Display name of the gadget.", properties.GetProperty("name").GetProperty("description").GetString());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Build_AppliesXmlDocDescriptions_ToAPropertyThatAcceptsAnyValue(bool isNullable)
+    {
+        var describer = new XmlDocPropertyDescriber(new XmlDocSummaryReader());
+
+        var schema = Build(typeof(Reading), isNullable, inferenceOptions: describer);
+
+        var properties = (isNullable ? schema.GetProperty("anyOf")[0] : schema).GetProperty("properties");
+        Assert.Equal("""{"description":"Payload as the sensor sent it."}""", properties.GetProperty("payload").GetRawText());
+        Assert.Equal("""{"description":"Calibration data in the shape the sensor uses."}""", properties.GetProperty("calibration").GetRawText());
+    }
+
     [Fact]
     public void Build_DoesNotRequireAProperty_MvcOmitsWhenNull()
     {
@@ -301,6 +315,15 @@ public class McpOutputSchemaBuilderTests
     {
         Small,
         Large
+    }
+
+    public sealed class Reading
+    {
+        /// <summary>Payload as the sensor sent it.</summary>
+        public JsonElement Payload { get; set; }
+
+        /// <summary>Calibration data in the shape the sensor uses.</summary>
+        public object? Calibration { get; set; }
     }
 
     public sealed class Schedule

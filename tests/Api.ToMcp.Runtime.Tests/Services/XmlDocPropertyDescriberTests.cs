@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Api.ToMcp.Runtime.Services;
 using ModelContextProtocol.Server;
 using Xunit;
@@ -21,6 +22,27 @@ public class XmlDocPropertyDescriberTests
     public void DescribeProperty_LetsAnExplicitDescriptionAttributeWin()
     {
         Assert.Equal("Attribute wins.", GetDescription("properties", "order", "properties", "priority"));
+        Assert.Equal("Attribute wins over any value.", GetDescription("properties", "order", "properties", "tag"));
+    }
+
+    [Theory]
+    [InlineData("filter", "Free-form filter; any JSON the endpoint understands.")]
+    [InlineData("optionalFilter", "Filter the caller may leave out.")]
+    [InlineData("payload", "Value stored with the order as sent.")]
+    [InlineData("metadata", "Extra data kept with the order.")]
+    [InlineData("settings", "Settings as a JSON tree.")]
+    public void DescribeProperty_DescribesAPropertyWhoseSchemaAcceptsAnyValue(string propertyName, string summary)
+    {
+        // The exporter gives these types the boolean schema true, which cannot hold a description.
+        var schema = GetSchema("properties", "order", "properties", propertyName);
+
+        Assert.Equal($$"""{"description":"{{summary}}"}""", schema.GetRawText());
+    }
+
+    [Fact]
+    public void DescribeProperty_LeavesAnUndocumentedPropertyThatAcceptsAnyValue_AsTheBooleanSchema()
+    {
+        Assert.Equal(JsonValueKind.True, GetSchema("properties", "order", "properties", "undocumentedPayload").ValueKind);
     }
 
     [Fact]
@@ -65,15 +87,20 @@ public class XmlDocPropertyDescriberTests
 
     private static string? GetDescription(params string[] path)
     {
+        return GetSchema(path).TryGetProperty("description", out var description)
+            ? description.GetString()
+            : null;
+    }
+
+    private static JsonElement GetSchema(params string[] path)
+    {
         var node = InputSchema;
         foreach (var segment in path)
         {
             node = node.GetProperty(segment);
         }
 
-        return node.TryGetProperty("description", out var description)
-            ? description.GetString()
-            : null;
+        return node;
     }
 
     [Description("Creates an order.")]
@@ -106,6 +133,27 @@ public class XmlDocPropertyDescriberTests
 
         /// <summary>Promotion applied to the order.</summary>
         public Coupon? Coupon { get; set; }
+
+        /// <summary>Free-form filter; any JSON the endpoint understands.</summary>
+        public JsonElement Filter { get; set; }
+
+        /// <summary>Filter the caller may leave out.</summary>
+        public JsonElement? OptionalFilter { get; set; }
+
+        /// <summary>Value stored with the order as sent.</summary>
+        public object Payload { get; set; } = new();
+
+        /// <summary>Extra data kept with the order.</summary>
+        public object? Metadata { get; set; }
+
+        /// <summary>Settings as a JSON tree.</summary>
+        public JsonNode? Settings { get; set; }
+
+        public object? UndocumentedPayload { get; set; }
+
+        /// <summary>XML summary that must lose to the attribute.</summary>
+        [Description("Attribute wins over any value.")]
+        public object? Tag { get; set; }
     }
 
     [Description("A postal address.")]
