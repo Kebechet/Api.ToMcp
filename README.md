@@ -417,11 +417,11 @@ Every generated tool depends on `IMcpHttpInvoker`, the contract that actually pe
 ```csharp
 public interface IMcpHttpInvoker
 {
-    Task<string> GetAsync(string route, CancellationToken ct = default);
-    Task<string> PostAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> PutAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> PatchAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> DeleteAsync(string route, CancellationToken ct = default);
+    Task<CallToolResult> GetAsync(string route, CancellationToken ct = default);
+    Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default);
 
     // Called by each generated tool before the HTTP call.
     // Validates scope only when a scope mapper is configured (see Scope-Based Access Control).
