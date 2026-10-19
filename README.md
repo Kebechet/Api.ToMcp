@@ -275,11 +275,11 @@ A generated tool advertises its action's success response type as the tool's `ou
 The type is decided the way ApiExplorer, and so Swagger, decides it:
 
 - The return type without `Task<T>` / `ValueTask<T>` and `ActionResult<T>`: `ActionResult<Product>`, `Task<Product>` and `Product` all mean `Product`.
-- A 2xx `[ProducesResponseType]` replaces the return type, which is how an `IActionResult` action names one: `[ProducesResponseType(typeof(Product), 200)]` or `[ProducesResponseType<Product>(200)]`. One without a type means the return type for 200 and 201, and no body for any other status, such as 204. Error statuses do not count.
+- A 2xx `[ProducesResponseType]` replaces the return type, which is how an `IActionResult` or `IResult` action names one: `[ProducesResponseType(typeof(Product), 200)]` or `[ProducesResponseType<Product>(200)]`. One without a type means the return type for 200 and 201, and no body for any other status, such as 204. Error statuses do not count.
 - A 2xx `[ProducesResponseType]` on the controller applies to every action and adds to its return type, or stands in for a return type that names no body (`IActionResult`, `ActionResult`, `IResult`); the action's own declaration of the same status replaces it. Both are inherited, from base controllers and from the action an override replaces.
 - When the success responses declare different types, the tool gets no schema.
 
-A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult` or `ActionResult`, `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type other than JSON, even next to JSON (`[Produces("application/json", "text/csv")]`), or a type the generated code cannot reference, such as a private nested class.
+A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult`, `ActionResult` or `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type other than JSON, even next to JSON (`[Produces("application/json", "text/csv")]`), or a type the generated code cannot reference, such as a private nested class.
 
 A content type counts as JSON when its subtype is `json` or ends in `+json` (`application/json`, `text/json`, `application/problem+json`), so `application/x-ndjson`, whose body is many JSON values, does not.
 
@@ -295,7 +295,7 @@ MVC answers an action that returns `null` with `204 No Content`, and `NoContent(
 - an `ObjectResult` helper given such a value (`Ok(product)`, `CreatedAtAction(..., product)`), whose status, when the action sets it (`StatusCode(201, product)`), is a constant other than 204 or 205, which never carry a body; or
 - an error (`NotFound()`, `BadRequest(...)`, `Problem()`, `StatusCode(404)`, ...).
 
-Anything else makes the schema allow null: `NoContent()`, `Ok()`, `return null`, a maybe-null value, a task returned from another method, a helper method, a redirect, an action without nullable annotations, and a `[ProducesResponseType(204)]` declared next to the typed success. So does a value from code compiled without nullable annotations, such as an older library's `Find()`: the compiler treats it as not-null without knowing, so it proves nothing, even when held in a local and checked for null first. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
+Anything else makes the schema allow null: `NoContent()`, `Ok()`, `return null`, a maybe-null value, a task returned from another method, a helper method, a redirect, any `IResult` (`Results.NoContent()`, but also `Results.Ok(product)`), an action without nullable annotations, and a `[ProducesResponseType(204)]` declared next to the typed success. So does a value from code compiled without nullable annotations, such as an older library's `Find()`: the compiler treats it as not-null without knowing, so it proves nothing, even when held in a local and checked for null first. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
 
 ```csharp
 [HttpGet("{id:guid}")]

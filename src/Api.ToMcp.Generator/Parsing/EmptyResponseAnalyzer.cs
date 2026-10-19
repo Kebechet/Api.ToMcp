@@ -23,10 +23,17 @@ namespace Api.ToMcp.Generator.Parsing
         private const string StatusCodeParameterName = "statusCode";
         private const string StatusCodePropertyName = "StatusCode";
 
+        /// <summary>
+        /// Results that write the response themselves: unlike a returned value, one that is not null proves nothing
+        /// about the body.
+        /// <c>IResult</c> is one: an action returning it takes its output type from <c>[ProducesResponseType]</c>, and
+        /// <c>Results.NoContent()</c> still answers 204.
+        /// </summary>
         private static readonly string[] ActionResultTypes =
         {
             KnownTypeNames.IActionResult,
-            KnownTypeNames.IConvertToActionResult
+            KnownTypeNames.IConvertToActionResult,
+            KnownTypeNames.IResult
         };
 
         /// <summary>

@@ -72,6 +72,10 @@ public partial class McpToolGeneratorTests
     [InlineData("public Product Get() => LegacyRepository.Find();")]
     [InlineData("public Task<Product> Get() => LegacyRepository.FindAsync();")]
     [InlineData("public Task<ActionResult<Product>> Get() => Load(); private Task<ActionResult<Product>> Load() => Task.FromResult<ActionResult<Product>>(NoContent());")]
+    [InlineData("[ProducesResponseType<Product>(StatusCodes.Status200OK)] public IResult Get() => Results.NoContent();")]
+    [InlineData("[ProducesResponseType<Product>(StatusCodes.Status200OK)] public Task<IResult> Get() => Task.FromResult(Results.NoContent());")]
+    [InlineData("[ProducesResponseType<Product>(StatusCodes.Status200OK)] public IResult Get() => TypedResults.NoContent();")]
+    [InlineData("[ProducesResponseType<Product>(StatusCodes.Status200OK)] public IResult Get() => Results.Ok(new Product());")]
     public void Generator_MakesTheOutputSchemaNullable_WhenASuccessCanComeWithoutABody(string action)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
