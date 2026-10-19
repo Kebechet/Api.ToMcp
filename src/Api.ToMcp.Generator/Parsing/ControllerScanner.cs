@@ -25,7 +25,7 @@ namespace Api.ToMcp.Generator.Parsing
             if (!(symbol is INamedTypeSymbol namedType))
                 return null;
 
-            if (!IsController(namedType, context.SemanticModel.Compilation))
+            if (!IsFirstDeclaration(namedType, classDecl) || !IsController(namedType, context.SemanticModel.Compilation))
                 return null;
 
             var routePrefix = GetRoutePrefix(namedType);
@@ -73,6 +73,19 @@ namespace Api.ToMcp.Generator.Parsing
                 return true;
 
             return HasNearestAttribute(type, ApiControllerAttributeFullName);
+        }
+
+        /// <summary>
+        /// Whether the declaration is the type's first. Each part of a partial class is a declaration of its own that
+        /// reaches the scanner, while the type's symbol holds the members of all of them, so only one of them may stand
+        /// for the controller; the others would repeat every tool.
+        /// </summary>
+        private static bool IsFirstDeclaration(INamedTypeSymbol type, ClassDeclarationSyntax declaration)
+        {
+            var references = type.DeclaringSyntaxReferences;
+
+            return references.Length == 0 ||
+                (references[0].SyntaxTree == declaration.SyntaxTree && references[0].Span == declaration.Span);
         }
 
         private static bool InheritsFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)

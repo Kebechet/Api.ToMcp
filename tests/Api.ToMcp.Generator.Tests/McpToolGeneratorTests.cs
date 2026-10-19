@@ -585,12 +585,12 @@ namespace TestApi
             .ToList();
     }
 
-    private static CSharpCompilation CreateCompilation(string source)
+    private static CSharpCompilation CreateCompilation(params string[] sources)
     {
         // DocumentationMode.Parse makes XML doc comments available via GetDocumentationCommentXml,
         // mirroring a consumer build with <GenerateDocumentationFile>true</GenerateDocumentationFile>.
         var parseOptions = new CSharpParseOptions(documentationMode: DocumentationMode.Parse);
-        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+        var syntaxTrees = sources.Select(x => CSharpSyntaxTree.ParseText(x, parseOptions));
 
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)
@@ -599,7 +599,7 @@ namespace TestApi
 
         return CSharpCompilation.Create(
             "TestAssembly",
-            new[] { syntaxTree },
+            syntaxTrees,
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
     }
