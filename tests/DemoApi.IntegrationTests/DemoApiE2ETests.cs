@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
+using Api.ToMcp.Tests.Shared;
 using DemoApi.Models;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -545,52 +546,5 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         private readonly string _baseUrl;
         public FixedBaseUrlProvider(string baseUrl) => _baseUrl = baseUrl;
         public string GetBaseUrl() => _baseUrl;
-    }
-
-    private sealed class ListLoggerProvider : ILoggerProvider
-    {
-        private readonly List<(LogLevel Level, string Message)> _logs;
-
-        public ListLoggerProvider(List<(LogLevel Level, string Message)> logs)
-        {
-            _logs = logs;
-        }
-
-        public ILogger CreateLogger(string categoryName)
-        {
-            return new ListLogger(_logs);
-        }
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class ListLogger : ILogger
-    {
-        private readonly List<(LogLevel Level, string Message)> _logs;
-
-        public ListLogger(List<(LogLevel Level, string Message)> logs)
-        {
-            _logs = logs;
-        }
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
-        {
-            return null;
-        }
-
-        public bool IsEnabled(LogLevel logLevel)
-        {
-            return true;
-        }
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            lock (_logs)
-            {
-                _logs.Add((logLevel, formatter(state, exception)));
-            }
-        }
     }
 }
