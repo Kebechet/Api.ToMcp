@@ -36,10 +36,10 @@ namespace Api.ToMcp.Generator.Parsing
         private const string StatusCodePropertyName = "StatusCode";
         private const string TypePropertyName = "Type";
 
-        /// <summary>
-        /// Found in every JSON media type: <c>application/json</c>, <c>text/json</c>, <c>application/problem+json</c>.
-        /// </summary>
-        private const string JsonMediaTypeToken = "json";
+        private const string JsonSubtype = "json";
+        private const string JsonStructuredSuffix = "+json";
+        private const char MediaTypeSubtypeSeparator = '/';
+        private const char MediaTypeParameterSeparator = ';';
 
         /// <summary>
         /// Types whose body is not the JSON of a describable type: results that write their own body, streams, raw JSON
@@ -283,7 +283,24 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static bool CanBeJson(IReadOnlyList<string> contentTypes)
         {
-            return contentTypes.All(x => x.IndexOf(JsonMediaTypeToken, StringComparison.OrdinalIgnoreCase) >= 0);
+            return contentTypes.All(IsJsonMediaType);
+        }
+
+        /// <summary>
+        /// A <c>json</c> subtype or a <c>+json</c> suffix, whatever the parameters: <c>application/json</c>,
+        /// <c>text/json</c>, <c>application/problem+json</c>. Not <c>application/x-ndjson</c> or
+        /// <c>application/json-seq</c>, whose body is many JSON values rather than one.
+        /// </summary>
+        private static bool IsJsonMediaType(string contentType)
+        {
+            var mediaType = contentType.Split(MediaTypeParameterSeparator)[0].Trim();
+            var subtypeStart = mediaType.IndexOf(MediaTypeSubtypeSeparator);
+            if (subtypeStart < 0)
+                return false;
+
+            var subtype = mediaType.Substring(subtypeStart + 1);
+            return string.Equals(subtype, JsonSubtype, StringComparison.OrdinalIgnoreCase) ||
+                subtype.EndsWith(JsonStructuredSuffix, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool CanDescribe(ITypeSymbol type, Compilation compilation)
