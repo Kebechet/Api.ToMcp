@@ -63,6 +63,19 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public void AddMcpTools_GivesASchemaOfAnyValue_OnlyToAResponseTypeThatCanContainItself_WhenMvcIgnoresCycles()
+    {
+        var tools = BuildTools(services =>
+        {
+            services.Configure<JsonOptions>(options => options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles);
+            services.AddMcpTools(ToolAssembly);
+        });
+
+        Assert.Equal("{}", GetOutputSchema(tools, "generated_recursive").GetRawText());
+        Assert.Equal("object", GetOutputSchema(tools, "generated_strict").GetProperty("type").GetString());
+    }
+
+    [Fact]
     public void AddMcpTools_DescribesAGeneratedToolsOutput_FromXmlDocs()
     {
         var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
@@ -199,6 +212,28 @@ public class McpExtensionsTests
 
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
         Assert.Contains("ReferenceHandler.Preserve", warning.Message);
+        Assert.Contains("\"structuredOutput\": false", warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_Warns_WhenMvcIgnoresCycles_InAResponseTypeThatCanContainItself()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.Configure<JsonOptions>(options => options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles);
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("ReferenceHandler.IgnoreCycles", warning.Message);
+        Assert.Contains("StructuredNode", warning.Message);
+        Assert.DoesNotContain("StructuredResponse", warning.Message);
         Assert.Contains("\"structuredOutput\": false", warning.Message);
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -45,10 +46,19 @@ internal sealed class McpOutputSchemaBuilder
     /// </summary>
     private readonly bool _preservesReferences;
 
+    /// <summary>
+    /// Whether MVC writes <c>null</c> where an object would contain itself, which a schema can describe only for a
+    /// type that cannot.
+    /// </summary>
+    private readonly bool _ignoresCycles;
+
+    private readonly ConcurrentDictionary<Type, bool> _typesWithIgnoredCycles = new();
+
     public McpOutputSchemaBuilder(IOptions<JsonOptions> jsonOptions)
     {
         _serializerOptions = CopyOptions(jsonOptions.Value.JsonSerializerOptions);
-        _preservesReferences = _serializerOptions.ReferenceHandler is { } referenceHandler && referenceHandler != ReferenceHandler.IgnoreCycles;
+        _ignoresCycles = _serializerOptions.ReferenceHandler == ReferenceHandler.IgnoreCycles;
+        _preservesReferences = _serializerOptions.ReferenceHandler is not null && !_ignoresCycles;
     }
 
     /// <summary>
@@ -57,16 +67,29 @@ internal sealed class McpOutputSchemaBuilder
     public bool HasBuiltAnyValueSchema { get; private set; }
 
     /// <summary>
+    /// The types given a schema that accepts any value because MVC ignores cycles and they can contain themselves, for
+    /// the startup warning.
+    /// </summary>
+    public IReadOnlyCollection<Type> TypesWithIgnoredCycles => [.. _typesWithIgnoredCycles.Keys];
+
+    /// <summary>
     /// The schema of <paramref name="type"/> as MVC writes it. A strict schema promises a value; a nullable one is
     /// <c>{"anyOf": [value, {"type": "null"}]}</c>, which also makes the SDK wrap it as <c>{"result": ...}</c> for
     /// clients on a protocol older than 2026-07-28, whose structured content has to be an object. When MVC preserves
-    /// references, a schema that accepts any value, so the tools still build.
+    /// references, or ignores cycles in a type that can contain itself, a schema that accepts any value, so the tools
+    /// still build.
     /// </summary>
     public JsonElement Build(Type type, bool isNullable, AIJsonSchemaCreateOptions? inferenceOptions)
     {
         if (_preservesReferences)
         {
             HasBuiltAnyValueSchema = true;
+            return AnyValueSchema;
+        }
+
+        if (_ignoresCycles && CanContainItself(type))
+        {
+            _typesWithIgnoredCycles.TryAdd(type, true);
             return AnyValueSchema;
         }
 
@@ -90,6 +113,71 @@ internal sealed class McpOutputSchemaBuilder
         options.TypeInfoResolver ??= new DefaultJsonTypeInfoResolver();
 
         return options;
+    }
+
+    /// <summary>
+    /// Whether a value of <paramref name="type"/> can hold an object or collection that is also one holding it, which
+    /// <c>IgnoreCycles</c> writes as <c>null</c>. Read from the types MVC writes: declared types, and the derived types
+    /// of polymorphic ones. Two of them can be the same object when one is assignable to the other; a subclass that
+    /// adds an interface is not considered, or every DTO with an <c>IReadOnlyList&lt;T&gt;</c> would count.
+    /// </summary>
+    private bool CanContainItself(Type type)
+    {
+        return GetReachableTypes([type])
+            .Where(IsTracked)
+            .Any(holder => GetReachableTypes(GetWrittenTypes(holder)).Any(x => IsTracked(x) && (x.IsAssignableFrom(holder) || holder.IsAssignableFrom(x))));
+    }
+
+    private HashSet<Type> GetReachableTypes(IEnumerable<Type> types)
+    {
+        var reachable = new HashSet<Type>();
+        var pending = new Stack<Type>(types.Select(UnwrapNullable));
+        while (pending.TryPop(out var type))
+        {
+            if (!reachable.Add(type))
+            {
+                continue;
+            }
+
+            foreach (var writtenType in GetWrittenTypes(type))
+            {
+                pending.Push(writtenType);
+            }
+        }
+
+        return reachable;
+    }
+
+    /// <summary>
+    /// The types of the values MVC writes inside a value of <paramref name="type"/>: its properties, its items, and
+    /// those of its derived types when it is polymorphic.
+    /// </summary>
+    private IEnumerable<Type> GetWrittenTypes(Type type)
+    {
+        var typeInfo = _serializerOptions.GetTypeInfo(UnwrapNullable(type));
+        var writtenTypes = typeInfo.Kind switch
+        {
+            JsonTypeInfoKind.Object => typeInfo.Properties.Where(x => x.Get is not null).Select(x => x.PropertyType),
+            JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary => [typeInfo.ElementType!],
+            _ => []
+        };
+        var derivedTypes = typeInfo.PolymorphismOptions?.DerivedTypes.Select(x => x.DerivedType) ?? [];
+
+        return writtenTypes.Concat(derivedTypes.SelectMany(GetWrittenTypes)).Select(UnwrapNullable);
+    }
+
+    /// <summary>
+    /// Whether MVC tracks the value's identity to find cycles: objects and collections, but not strings, value types or
+    /// values a custom converter writes, nor <c>object</c>, whose schema accepts any value already.
+    /// </summary>
+    private bool IsTracked(Type type)
+    {
+        return !type.IsValueType && _serializerOptions.GetTypeInfo(type).Kind != JsonTypeInfoKind.None;
+    }
+
+    private static Type UnwrapNullable(Type type)
+    {
+        return Nullable.GetUnderlyingType(type) ?? type;
     }
 
     /// <summary>

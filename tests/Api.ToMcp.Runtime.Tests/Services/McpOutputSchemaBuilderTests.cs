@@ -162,6 +162,46 @@ public class McpOutputSchemaBuilderTests
         Assert.Equal("{}", schema.GetRawText());
     }
 
+    [Theory]
+    [InlineData(typeof(CycleOrder))]
+    [InlineData(typeof(CycleCustomer))]
+    [InlineData(typeof(List<CycleOrder>))]
+    [InlineData(typeof(TreeNode))]
+    [InlineData(typeof(Employee))]
+    [InlineData(typeof(Box))]
+    [InlineData(typeof(Entry))]
+    public void Build_AcceptsAnyValue_WhenMvcIgnoresCycles_InATypeThatCanContainItself(Type type)
+    {
+        // MVC writes null where an object would contain itself, and no schema of the type can say where.
+        Assert.Equal("{}", Build(type, jsonOptions: IgnoringCycles()).GetRawText());
+        Assert.Equal("{}", Build(type, isNullable: true, jsonOptions: IgnoringCycles()).GetRawText());
+    }
+
+    [Theory]
+    [InlineData(typeof(Gadget), "object")]
+    [InlineData(typeof(List<Gadget>), "array")]
+    [InlineData(typeof(Dictionary<string, Gadget>), "object")]
+    [InlineData(typeof(GadgetPair), "object")]
+    [InlineData(typeof(OrderEnvelope), "object")]
+    [InlineData(typeof(Schedule), "object")]
+    [InlineData(typeof(Holder), "object")]
+    public void Build_KeepsTheTypedSchema_WhenMvcIgnoresCycles_ButTheTypeCannotContainItself(Type type, string expectedType)
+    {
+        Assert.Equal(expectedType, Build(type, jsonOptions: IgnoringCycles()).GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void IgnoredCycles_WriteNull_WhereTheTypedSchemaPromisesAnObject()
+    {
+        // Why a type that can contain itself gets no typed schema: the order inside its own customer's orders is null.
+        var order = new CycleOrder { Id = 1, Customer = new CycleCustomer { Name = "Ada" } };
+        order.Customer.Orders.Add(order);
+
+        var body = JsonSerializer.Serialize(order, IgnoringCycles().JsonSerializerOptions);
+
+        Assert.Equal("{\"id\":1,\"customer\":{\"name\":\"Ada\",\"orders\":[null]}}", body);
+    }
+
     [Fact]
     public void Build_LeavesTheMvcJsonOptionsWritable()
     {
@@ -177,6 +217,14 @@ public class McpOutputSchemaBuilderTests
         var builder = new McpOutputSchemaBuilder(Microsoft.Extensions.Options.Options.Create(jsonOptions ?? new JsonOptions()));
 
         return builder.Build(type, isNullable, inferenceOptions?.SchemaCreateOptions);
+    }
+
+    private static JsonOptions IgnoringCycles()
+    {
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+
+        return jsonOptions;
     }
 
     private static List<string> GetRequired(JsonElement schema)
@@ -278,5 +326,72 @@ public class McpOutputSchemaBuilderTests
         public string Name { get; set; } = "";
 
         public List<TreeNode> Children { get; set; } = [];
+    }
+
+    public sealed class CycleOrder
+    {
+        public int Id { get; set; }
+
+        public CycleCustomer Customer { get; set; } = null!;
+    }
+
+    public sealed class CycleCustomer
+    {
+        public string Name { get; set; } = "";
+
+        public List<CycleOrder> Orders { get; set; } = [];
+    }
+
+    public class PersonBase
+    {
+        public string Name { get; set; } = "";
+    }
+
+    public sealed class Employee : PersonBase
+    {
+        public PersonBase Manager { get; set; } = null!;
+    }
+
+    public interface IContent
+    {
+        string Label { get; }
+    }
+
+    public sealed class Box : IContent
+    {
+        public string Label { get; set; } = "";
+
+        public IContent Inside { get; set; } = null!;
+    }
+
+    [JsonDerivedType(typeof(Folder), "folder")]
+    [JsonDerivedType(typeof(FileEntry), "file")]
+    public abstract class Entry
+    {
+        public string Name { get; set; } = "";
+    }
+
+    public sealed class Folder : Entry
+    {
+        public List<Entry> Entries { get; set; } = [];
+    }
+
+    public sealed class FileEntry : Entry
+    {
+        public long Size { get; set; }
+    }
+
+    public sealed class GadgetPair
+    {
+        public Gadget Left { get; set; } = new();
+
+        public Gadget Right { get; set; } = new();
+    }
+
+    public sealed class Holder
+    {
+        public string Name { get; set; } = "";
+
+        public object Anything { get; set; } = new();
     }
 }
