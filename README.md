@@ -68,6 +68,8 @@ Add it to your `.csproj`:
 </ItemGroup>
 ```
 
+If the project has no config when it builds, the build creates a starter `Mcp/generator.json` and warns that it did. That starter config is in `SelectedOnly` mode with an empty `include`, so no tools are generated until you list controllers or actions in it, and every compile warns with `MCP006` until then. See [Config file location](#config-file-location).
+
 ### 3. Wire up in Program.cs
 
 ```csharp
@@ -136,6 +138,17 @@ public class ProductsController : ControllerBase
 
 - `"ProductsController"` - Include/exclude entire controller
 - `"ProductsController.GetById"` - Include/exclude specific action
+
+Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`; see [Troubleshooting](#troubleshooting).
+
+### Config file location
+
+| MSBuild property | Default | Description |
+|------------------|---------|-------------|
+| `ApiToMcpConfigPath` | `Mcp\generator.json` in the project directory | The config the build adds to `AdditionalFiles`, and creates when it does not exist. |
+| `ApiToMcpAutoCreateConfig` | `true` | `false` stops the build from creating a starter config when there is none. |
+
+The path is matched exactly, so on Linux and other case-sensitive file systems a config in a folder named `mcp/` or `MCP/` is not found at the default `Mcp/generator.json`: set `ApiToMcpConfigPath` to it.
 
 ### Structured Output
 
@@ -444,9 +457,15 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 ## Troubleshooting
 
 **No tools are generated.**
+- Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. It points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
-- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`.
+- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case.
 - Ensure the endpoint lives on a `ControllerBase`-derived class (or one with `[ApiController]`); minimal APIs are not supported.
+- With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
+
+**Build warning `Api.ToMcp created a starter config at ...`.**
+- No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning comes only from the build that writes the file. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build.
+- If your config is somewhere else, such as a `mcp/` folder on a case-sensitive file system, set `ApiToMcpConfigPath` to it and delete the created file. See [Config file location](#config-file-location).
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).
