@@ -13,6 +13,12 @@ namespace Api.ToMcp.Generator.Parsing
         private const string UnknownModeFallback = "SelectedOnly mode applies";
         private const string UnreadableFileReason = "the file could not be read";
 
+        /// <summary>
+        /// Starts what System.Text.Json appends to a <see cref="JsonException"/>'s message: the JSON path and a line and
+        /// byte position counted from zero, which would contradict the diagnostic's location, counted from one.
+        /// </summary>
+        private const string JsonExceptionPathMarker = " Path: ";
+
         private static readonly JsonSerializerOptions Options = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -60,12 +66,19 @@ namespace Api.ToMcp.Generator.Parsing
             catch (JsonException ex)
             {
                 // Both count from zero, as LinePosition does.
-                return CreateDefaultConfig(ex.Message, new LinePosition((int)(ex.LineNumber ?? 0), (int)(ex.BytePositionInLine ?? 0)));
+                return CreateDefaultConfig(GetReason(ex), new LinePosition((int)(ex.LineNumber ?? 0), (int)(ex.BytePositionInLine ?? 0)));
             }
             catch (Exception ex)
             {
                 return CreateDefaultConfig(ex.Message, default);
             }
+        }
+
+        private static string GetReason(JsonException exception)
+        {
+            var pathStart = exception.Message.LastIndexOf(JsonExceptionPathMarker, StringComparison.Ordinal);
+
+            return pathStart < 0 ? exception.Message : exception.Message.Substring(0, pathStart);
         }
 
         private static GeneratorConfigModel CreateDefaultConfig(string reason, LinePosition position)

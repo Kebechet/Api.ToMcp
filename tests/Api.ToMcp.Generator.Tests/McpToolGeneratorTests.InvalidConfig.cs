@@ -40,9 +40,15 @@ public partial class McpToolGeneratorTests
         // The default config selects nothing, but MCP006 would blame an include list the file does have.
         var diagnostic = Assert.Single(GetGeneratorDiagnostics(Usings + ProductsController, config));
 
+        var message = diagnostic.GetMessage();
+
         Assert.Equal(InvalidConfigId, diagnostic.Id);
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
-        Assert.StartsWith(DefaultConfigFallbackMessage, diagnostic.GetMessage());
+        Assert.StartsWith(DefaultConfigFallbackMessage, message);
+        Assert.False(string.IsNullOrWhiteSpace(message.Substring(DefaultConfigFallbackMessage.Length)), "The message gives no reason.");
+        // The parser's position counts from zero; the diagnostic's location already gives it, counting from one.
+        Assert.DoesNotContain("LineNumber", message);
+        Assert.DoesNotContain("BytePositionInLine", message);
         Assert.Equal("Mcp/generator.json", diagnostic.Location.GetLineSpan().Path);
         Assert.Equal(expectedLine, diagnostic.Location.GetLineSpan().StartLinePosition.Line);
     }
