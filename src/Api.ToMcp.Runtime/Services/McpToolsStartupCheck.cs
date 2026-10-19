@@ -56,7 +56,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
         if (typesWithIgnoredCycles.Count > 0)
         {
             _logger.LogWarning(
-                "The app's MVC JSON options ignore cycles (ReferenceHandler.IgnoreCycles), so MVC writes null where an object would contain itself, which no JSON Schema of the type can foresee. Generated tools returning {TypeNames}, which can contain themselves, advertise an output schema that accepts any value. Set \"structuredOutput\": false in generator.json to advertise none.",
+                "The app's MVC JSON options ignore cycles (ReferenceHandler.IgnoreCycles), so MVC writes null where an object would contain itself, which no JSON Schema of the type can foresee. Generated tools returning {TypeNames}, in which an object can contain itself, advertise an output schema that accepts any value. Set \"structuredOutput\": false in generator.json to advertise none.",
                 string.Join(", ", typesWithIgnoredCycles.Select(GetDisplayName).Order(StringComparer.Ordinal)));
         }
 
@@ -89,7 +89,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
     }
 
     /// <summary>
-    /// The name as C# writes it, such as <c>List&lt;Order&gt;</c> rather than <c>List`1</c>.
+    /// The name with its type arguments, such as <c>List&lt;Order&gt;</c> rather than <c>List`1</c>.
     /// </summary>
     private static string GetDisplayName(Type type)
     {

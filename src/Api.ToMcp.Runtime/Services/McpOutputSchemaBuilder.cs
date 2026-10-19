@@ -67,8 +67,8 @@ internal sealed class McpOutputSchemaBuilder
     public bool HasBuiltAnyValueSchema { get; private set; }
 
     /// <summary>
-    /// The types given a schema that accepts any value because MVC ignores cycles and they can contain themselves, for
-    /// the startup warning.
+    /// The types given a schema that accepts any value because MVC ignores cycles and an object in them can contain
+    /// itself, for the startup warning.
     /// </summary>
     public IReadOnlyCollection<Type> TypesWithIgnoredCycles => [.. _typesWithIgnoredCycles.Keys];
 
@@ -76,8 +76,8 @@ internal sealed class McpOutputSchemaBuilder
     /// The schema of <paramref name="type"/> as MVC writes it. A strict schema promises a value; a nullable one is
     /// <c>{"anyOf": [value, {"type": "null"}]}</c>, which also makes the SDK wrap it as <c>{"result": ...}</c> for
     /// clients on a protocol older than 2026-07-28, whose structured content has to be an object. When MVC preserves
-    /// references, or ignores cycles in a type that can contain itself, a schema that accepts any value, so the tools
-    /// still build.
+    /// references, or ignores cycles in a type in which an object can contain itself, a schema that accepts any value,
+    /// so the tools still build.
     /// </summary>
     public JsonElement Build(Type type, bool isNullable, AIJsonSchemaCreateOptions? inferenceOptions)
     {
