@@ -3,8 +3,10 @@ using Microsoft.Extensions.Logging;
 namespace Api.ToMcp.Tests.Shared;
 
 /// <summary>
-/// Collects every log entry into a list the test reads. Linked into each test project that needs it rather than copied.
-/// Adds under a lock on the list, since a running host logs from several threads.
+/// Collects every log entry the logging filters let through into a list the test reads. Linked into each test project
+/// that needs it rather than copied.
+/// Adds under a lock on the list, since a running host logs from several threads; a test that reads while the host is
+/// still logging has to take the same lock.
 /// </summary>
 internal sealed class ListLoggerProvider : ILoggerProvider
 {

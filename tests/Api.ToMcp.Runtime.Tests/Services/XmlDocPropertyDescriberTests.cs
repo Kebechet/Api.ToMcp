@@ -48,7 +48,8 @@ public class XmlDocPropertyDescriberTests
     public void DescribeProperty_LeavesParameterNodesAndUndocumentedPropertiesAlone()
     {
         Assert.Equal("Order to create.", GetDescription("properties", "order"));
-        // Shares its name with the documented OrderRequest.Customer, whose summary a parameter node must not take.
+        // Named like the documented OrderRequest.Customer: a tool parameter described from a same-named property, as a
+        // ParameterDescriptionProvider could do, would take that property's summary.
         Assert.Null(GetDescription("properties", "customer"));
         Assert.Null(GetDescription("properties", "order", "properties", "undocumented"));
         Assert.False(InputSchema.GetProperty("properties").TryGetProperty("cancellationToken", out _));
