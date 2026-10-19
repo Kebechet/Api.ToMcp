@@ -139,7 +139,7 @@ public class ProductsController : ControllerBase
 - `"ProductsController"` - Include/exclude entire controller
 - `"ProductsController.GetById"` - Include/exclude specific action
 
-Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`; see [Troubleshooting](#troubleshooting).
+Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`, and one the generator cannot use as written, such as malformed JSON or an unknown `mode`, with `MCP001`; see [Troubleshooting](#troubleshooting). The file may contain comments, but not trailing commas.
 
 ### Config file location
 
@@ -457,11 +457,15 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 ## Troubleshooting
 
 **No tools are generated.**
-- Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. It points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
+- Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. A `generator.json` the generator cannot use as written gets `MCP001` instead (see below). `MCP006` points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
 - In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case.
 - Ensure the endpoint lives on a `ControllerBase`-derived class (or one with `[ApiController]`); minimal APIs are not supported.
 - With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
+
+**Build warning `MCP001`: `generator.json cannot be used as written`.**
+- The file is not valid JSON (a missing bracket, a trailing comma), has a value of the wrong type (a string where `include` expects a list), names a `mode` other than `SelectedOnly` or `AllExceptExcluded`, or could not be read. The warning quotes the parser's error and points at the line it stopped on, when the parser names one.
+- The generator falls back as the warning says: to the default config, `SelectedOnly` mode with an empty `include`, so only `[McpExpose]` actions become tools; or, for an unknown `mode`, to `SelectedOnly` mode with the file's lists. `MCP006` is not reported as well, as its advice would describe the fallback rather than your file.
 
 **Build warning `Api.ToMcp created a starter config at ...`.**
 - No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning comes only from the build that writes the file. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build.
