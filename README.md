@@ -68,7 +68,7 @@ Add it to your `.csproj`:
 </ItemGroup>
 ```
 
-If the project has no config when it builds, the build creates a starter `Mcp/generator.json` and warns that it did. That starter config is in `SelectedOnly` mode with an empty `include`, so no tools are generated until you list controllers or actions in it, and every compile warns with `MCP006` until then. See [Config file location](#config-file-location).
+If the project has no config when it builds, the build creates a starter `Mcp/generator.json` and warns that it did (`MCP100`). That starter config is in `SelectedOnly` mode with an empty `include`, so no tools are generated until you list controllers or actions in it, and every compile warns with `MCP006` until then. See [Config file location](#config-file-location).
 
 ### 3. Wire up in Program.cs
 
@@ -148,7 +148,7 @@ Entries are case-sensitive, and the `Controller` suffix may be left out (`"Produ
 | `ApiToMcpConfigPath` | `Mcp\generator.json` in the project directory | The config the build adds to `AdditionalFiles`, and creates when it does not exist. |
 | `ApiToMcpAutoCreateConfig` | `true` | `false` stops the build from creating a starter config when there is none. |
 
-The path is matched exactly, so on Linux and other case-sensitive file systems a config in a folder named `mcp/` or `MCP/` is not found at the default `Mcp/generator.json`: set `ApiToMcpConfigPath` to it.
+On Linux and other case-sensitive file systems the path is matched exactly, so a config in `mcp/` is not at the default `Mcp/generator.json`. When the build finds no config at `ApiToMcpConfigPath` but one whose folder or file name differs from it only in letter case, it uses that file instead of writing a starter config and warns with `MCP101`: set `ApiToMcpConfigPath` to it, or rename it to match.
 
 ### Structured Output
 
@@ -456,6 +456,17 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ## Troubleshooting
 
+The build reports these warnings:
+
+| Code | From | When |
+|------|------|------|
+| `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, or an unreadable file |
+| `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
+| `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
+| `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
+
+Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning while `TreatWarningsAsErrors` or `-warnaserror` turns warnings into errors, list it in `<WarningsNotAsErrors>`.
+
 **No tools are generated.**
 - Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. A `generator.json` the generator cannot use as written gets `MCP001` instead (see below). `MCP006` points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
@@ -467,9 +478,13 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - The file is not valid JSON (a missing bracket, a trailing comma), has a value of the wrong type (a string where `include` expects a list), names a `mode` other than `SelectedOnly` or `AllExceptExcluded`, or could not be read. The warning quotes the parser's error and points at the line it stopped on, when the parser names one.
 - The generator falls back as the warning says: to the default config, `SelectedOnly` mode with an empty `include`, so only `[McpExpose]` actions become tools; or, for an unknown `mode`, to `SelectedOnly` mode with the file's lists. `MCP006` is not reported as well, as its advice would describe the fallback rather than your file.
 
-**Build warning `Api.ToMcp created a starter config at ...`.**
-- No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning comes only from the build that writes the file. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build.
-- If your config is somewhere else, such as a `mcp/` folder on a case-sensitive file system, set `ApiToMcpConfigPath` to it and delete the created file. See [Config file location](#config-file-location).
+**Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**
+- No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning comes only from the build that writes the file. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.
+- If your config is somewhere else, set `ApiToMcpConfigPath` to it and delete the created file. See [Config file location](#config-file-location).
+
+**Build warning `MCP101`: `Api.ToMcp found no config at ... but found ...`.**
+- On a case-sensitive file system, the config is at a path that differs from `ApiToMcpConfigPath` only in the letter case of its folder or file name, such as `mcp/generator.json` for the default `Mcp/generator.json`. The build uses that file and writes no starter config, so it generates the same tools as on Windows or macOS.
+- Set `ApiToMcpConfigPath` to that file, or rename it to match, and the warning goes away.
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).
