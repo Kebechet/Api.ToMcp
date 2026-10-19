@@ -20,6 +20,7 @@ namespace Api.ToMcp.Generator.Parsing
         private const string TypeConverter = "System.ComponentModel.TypeConverter";
         private const string ReferenceConverter = "System.ComponentModel.ReferenceConverter";
         private const string FormatProvider = "System.IFormatProvider";
+        private const string ParsableInterface = "System.IParsable";
         private const string Uri = "System.Uri";
         private const string CultureInfo = "System.Globalization.CultureInfo";
 
@@ -39,7 +40,7 @@ namespace Api.ToMcp.Generator.Parsing
             return type.TypeKind == TypeKind.Enum ||
                 type.SpecialType is SpecialType.System_String or SpecialType.System_Enum ||
                 HasConverterFromString(type) ||
-                DeclaresTryParse(type);
+                HasTryParse(type);
         }
 
         /// <summary>
@@ -98,35 +99,71 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether the type declares a public static <c>bool TryParse(string, out T)</c> or
-        /// <c>bool TryParse(string, IFormatProvider, out T)</c>, the two signatures MVC binds through.
+        /// Whether MVC finds a <c>TryParse</c> to read the type with (<c>ParameterBindingMethodCache.FindTryParseMethod</c>):
+        /// an explicit <c>IParsable&lt;T&gt;.TryParse</c> the type declares, else a public static
+        /// <c>bool TryParse(string, IFormatProvider, out T)</c> or <c>bool TryParse(string, out T)</c> that the type or a
+        /// base class declares, or that exactly one of its interfaces implements with a body.
         /// </summary>
-        private static bool DeclaresTryParse(ITypeSymbol type)
+        private static bool HasTryParse(ITypeSymbol type)
         {
-            return type
-                .GetMembers(TryParseMethodName)
-                .OfType<IMethodSymbol>()
-                .Any(x => x.IsStatic &&
-                    x.DeclaredAccessibility == Accessibility.Public &&
-                    x.ReturnType.SpecialType == SpecialType.System_Boolean &&
-                    IsTryParseSignature(x.Parameters, type));
+            return DeclaresExplicitParsableTryParse(type) ||
+                HasTryParse(type, hasFormatProvider: true) ||
+                HasTryParse(type, hasFormatProvider: false);
         }
 
-        private static bool IsTryParseSignature(ImmutableArray<IParameterSymbol> parameters, ITypeSymbol type)
+        /// <summary>
+        /// MVC looks the explicit implementation up by the name the compiler gives it, which holds the type's full name.
+        /// A generic type's never matches, as the compiler names it after the type parameters.
+        /// </summary>
+        private static bool DeclaresExplicitParsableTryParse(ITypeSymbol type)
         {
-            if (parameters.Length is not (2 or 3))
+            var typeName = type.WithNullableAnnotation(NullableAnnotation.None).ToDisplayString();
+
+            return type
+                .GetMembers($"{ParsableInterface}<{typeName}>.{TryParseMethodName}")
+                .Any(x => x.IsStatic);
+        }
+
+        private static bool HasTryParse(ITypeSymbol type, bool hasFormatProvider)
+        {
+            bool IsTryParse(IMethodSymbol method)
+            {
+                return method.IsStatic &&
+                    !method.IsAbstract &&
+                    method.DeclaredAccessibility == Accessibility.Public &&
+                    method.ReturnType.SpecialType == SpecialType.System_Boolean &&
+                    IsTryParseSignature(method.Parameters, type, hasFormatProvider);
+            }
+
+            if (GetSelfAndBaseTypes(type).Any(x => GetTryParseMethods(x).Any(IsTryParse)))
+            {
+                return true;
+            }
+
+            // When two interfaces offer one, MVC takes neither.
+            return type.AllInterfaces.Count(x => GetTryParseMethods(x).Any(IsTryParse)) == 1;
+        }
+
+        private static IEnumerable<IMethodSymbol> GetTryParseMethods(ITypeSymbol type)
+        {
+            return type.GetMembers(TryParseMethodName).OfType<IMethodSymbol>();
+        }
+
+        private static bool IsTryParseSignature(ImmutableArray<IParameterSymbol> parameters, ITypeSymbol type, bool hasFormatProvider)
+        {
+            if (parameters.Length != (hasFormatProvider ? 3 : 2))
             {
                 return false;
             }
 
             var text = parameters[0];
             var result = parameters[parameters.Length - 1];
-            var hasFormatProviderOrNone = parameters.Length == 2 ||
+            var isFormatProviderOrNone = !hasFormatProvider ||
                 (parameters[1].RefKind == RefKind.None && parameters[1].Type.WithNullableAnnotation(NullableAnnotation.None).ToDisplayString() == FormatProvider);
 
             return text.RefKind == RefKind.None &&
                 text.Type.SpecialType == SpecialType.System_String &&
-                hasFormatProviderOrNone &&
+                isFormatProviderOrNone &&
                 result.RefKind == RefKind.Out &&
                 SymbolEqualityComparer.Default.Equals(result.Type, type);
         }

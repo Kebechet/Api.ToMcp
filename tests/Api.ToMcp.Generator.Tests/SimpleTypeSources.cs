@@ -82,6 +82,75 @@ namespace TestApi
         }
     }
 
+    // MVC finds an explicit IParsable<T>.TryParse by the name the compiler gives it.
+    public readonly record struct TicketId(int Value) : IParsable<TicketId>
+    {
+        static TicketId IParsable<TicketId>.Parse(string s, IFormatProvider? provider) => new(int.Parse(s, provider));
+
+        static bool IParsable<TicketId>.TryParse(string? s, IFormatProvider? provider, out TicketId result)
+        {
+            var isParsed = int.TryParse(s, NumberStyles.Integer, provider, out var value);
+            result = new TicketId(value);
+            return isParsed;
+        }
+    }
+
+    // ISpanParsable<T> extends IParsable<T>, whose TryParse is the one MVC looks for.
+    public readonly record struct ShelfCode(string Value) : ISpanParsable<ShelfCode>
+    {
+        static ShelfCode IParsable<ShelfCode>.Parse(string s, IFormatProvider? provider) => new(s);
+
+        static bool IParsable<ShelfCode>.TryParse(string? s, IFormatProvider? provider, out ShelfCode result)
+        {
+            result = new ShelfCode(s ?? """");
+            return s is not null;
+        }
+
+        static ShelfCode ISpanParsable<ShelfCode>.Parse(ReadOnlySpan<char> s, IFormatProvider? provider) => new(s.ToString());
+
+        static bool ISpanParsable<ShelfCode>.TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out ShelfCode result)
+        {
+            result = new ShelfCode(s.ToString());
+            return true;
+        }
+    }
+
+    // A public static TryParse a base record declares for every id derived from it.
+    public abstract record IntId<TSelf>(int Value) where TSelf : IntId<TSelf>
+    {
+        public static bool TryParse(string? text, out TSelf? id)
+        {
+            id = null;
+            return false;
+        }
+    }
+
+    public sealed record SeatId(int Value) : IntId<SeatId>(Value);
+
+    // A static TryParse with a body, which an interface gives every id implementing it.
+    public interface INumberedId<TSelf> where TSelf : INumberedId<TSelf>
+    {
+        static virtual bool TryParse(string? text, out TSelf? id)
+        {
+            id = default;
+            return false;
+        }
+    }
+
+    public interface ICodedId<TSelf> where TSelf : ICodedId<TSelf>
+    {
+        static virtual bool TryParse(string? text, out TSelf? id)
+        {
+            id = default;
+            return false;
+        }
+    }
+
+    public readonly record struct GateId(int Value) : INumberedId<GateId>;
+
+    // Two interfaces offer a TryParse, and MVC takes neither.
+    public readonly record struct DockId(int Value) : INumberedId<DockId>, ICodedId<DockId>;
+
     public enum OrderStatus
     {
         Open,
