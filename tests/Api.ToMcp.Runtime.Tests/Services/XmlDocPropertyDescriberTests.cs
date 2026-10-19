@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Api.ToMcp.Runtime.Services;
 using ModelContextProtocol.Server;
 using Xunit;
@@ -31,6 +32,8 @@ public class XmlDocPropertyDescriberTests
     [InlineData("payload", "Value stored with the order as sent.")]
     [InlineData("metadata", "Extra data kept with the order.")]
     [InlineData("settings", "Settings as a JSON tree.")]
+    [InlineData("snapshot", "Order as the shop exported it.")]
+    [InlineData("total", "Total as the till printed it.")]
     public void DescribeProperty_DescribesAPropertyWhoseSchemaAcceptsAnyValue(string propertyName, string summary)
     {
         // The exporter gives these types the boolean schema true, which cannot hold a description.
@@ -149,11 +152,35 @@ public class XmlDocPropertyDescriberTests
         /// <summary>Settings as a JSON tree.</summary>
         public JsonNode? Settings { get; set; }
 
+        /// <summary>Order as the shop exported it.</summary>
+        public JsonDocument? Snapshot { get; set; }
+
+        /// <summary>Total as the till printed it.</summary>
+        public Money Total { get; set; }
+
         public object? UndocumentedPayload { get; set; }
 
         /// <summary>XML summary that must lose to the attribute.</summary>
         [Description("Attribute wins over any value.")]
         public object? Tag { get; set; }
+    }
+
+    /// <summary>Written by its own converter, whose output the schema exporter cannot know.</summary>
+    [JsonConverter(typeof(MoneyConverter))]
+    public readonly record struct Money(decimal Amount, string Currency);
+
+    public sealed class MoneyConverter : JsonConverter<Money>
+    {
+        public override Money Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            var parts = reader.GetString()!.Split(' ');
+            return new Money(decimal.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture), parts[1]);
+        }
+
+        public override void Write(Utf8JsonWriter writer, Money value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue($"{value.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture)} {value.Currency}");
+        }
     }
 
     [Description("A postal address.")]
