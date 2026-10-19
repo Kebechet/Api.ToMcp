@@ -24,7 +24,8 @@ namespace Api.ToMcp.Generator.Parsing
         private const string StatusCodePropertyName = "StatusCode";
 
         /// <summary>
-        /// Results that write the response themselves, so returning one that is not null proves no body.
+        /// Results that write the response themselves: unlike a returned value, one that is not null proves nothing
+        /// about the body.
         /// <c>IResult</c> is one: an action returning it takes its output type from <c>[ProducesResponseType]</c>, and
         /// <c>Results.NoContent()</c> still answers 204.
         /// </summary>
