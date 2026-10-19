@@ -237,7 +237,7 @@ Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a gene
 
 ### Request fields: DTO properties, nested objects, array items
 
-The two rules above run at compile time. The fields *inside* an argument's type - a request DTO's properties, nested objects, array items - get their JSON schema at runtime from the MCP SDK, which reflects over the type and reads only `[Description]`. Api.ToMcp fills that gap: every such property without a `[Description]` gets its XML `<summary>` as its schema `description`, read from the `<AssemblyName>.xml` file next to the assembly that declares the property.
+The two rules above run at compile time. The fields *inside* an argument's type - a request DTO's properties, nested objects, array items - get their JSON schema at runtime from the MCP SDK, which reflects over the type and reads only `[Description]`. Api.ToMcp fills that gap: every such property without a `[Description]` gets its XML `<summary>` as its schema `description`, read from the `<AssemblyName>.xml` file next to the assembly that declares the property. That includes a property typed `object`, `JsonElement` or `JsonNode`, whose schema is the bare `true` (any value) and has no room for a description: a documented one gets `{"description": "..."}` instead, which accepts the same values.
 
 ```csharp
 public class CreateWeatherForecastRequest
