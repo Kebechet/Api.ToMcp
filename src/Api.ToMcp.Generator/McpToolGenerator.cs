@@ -17,13 +17,11 @@ namespace Api.ToMcp.Generator
     {
         private const string McpRouteSegment = "/mcp";
 
-        private const string ControllerSuffix = "Controller";
-
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
             // Step 1: Read generator.json configuration
             var configProvider = context.AdditionalTextsProvider
-                .Where(file => file.Path.EndsWith("generator.json", StringComparison.OrdinalIgnoreCase))
+                .Where(file => file.Path.EndsWith(ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase))
                 .Select((file, ct) =>
                 {
                     var config = ConfigParser.Parse(file.GetText(ct)?.ToString());
@@ -127,8 +125,8 @@ namespace Api.ToMcp.Generator
 
             // Apply config-based selection
             var controllerBaseName = controller.Name;
-            if (controllerBaseName.EndsWith(ControllerSuffix))
-                controllerBaseName = controllerBaseName.Substring(0, controllerBaseName.Length - ControllerSuffix.Length);
+            if (controllerBaseName.EndsWith(ConventionNames.ControllerSuffix))
+                controllerBaseName = controllerBaseName.Substring(0, controllerBaseName.Length - ConventionNames.ControllerSuffix.Length);
 
             var fullName = $"{controller.Name}.{action.Name}";
             var fullNameWithoutSuffix = $"{controllerBaseName}.{action.Name}";
