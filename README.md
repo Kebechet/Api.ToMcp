@@ -293,7 +293,7 @@ MVC answers an action that returns `null` with `204 No Content`, and `NoContent(
 - an `ObjectResult` helper given such a value (`Ok(product)`, `CreatedAtAction(..., product)`), whose status, when the action sets it (`StatusCode(201, product)`), is a constant other than 204 or 205, which never carry a body; or
 - an error (`NotFound()`, `BadRequest(...)`, `Problem()`, `StatusCode(404)`, ...).
 
-Anything else makes the schema allow null: `NoContent()`, `Ok()`, `return null`, a maybe-null value, a task returned from another method, a helper method, a redirect, an action without nullable annotations, and a `[ProducesResponseType(204)]` declared next to the typed success. So does a value from code compiled without nullable annotations, such as an older library's `Find()`: the compiler treats it as not-null without knowing, so it proves nothing, even when held in a local and checked for null first. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
+Anything else makes the schema allow null: `NoContent()`, `Ok()`, `return null`, a maybe-null value, a task returned from another method, a helper method, a redirect, any `IResult` (`Results.NoContent()`, but also `Results.Ok(product)`), an action without nullable annotations, and a `[ProducesResponseType(204)]` declared next to the typed success. So does a value from code compiled without nullable annotations, such as an older library's `Find()`: the compiler treats it as not-null without knowing, so it proves nothing, even when held in a local and checked for null first. Allowing null when the action never sends it only costs precision; the other way round, the call would fail.
 
 ```csharp
 [HttpGet("{id:guid}")]
