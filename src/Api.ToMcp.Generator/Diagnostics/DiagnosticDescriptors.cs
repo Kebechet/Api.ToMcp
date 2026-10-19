@@ -43,5 +43,19 @@ namespace Api.ToMcp.Generator.Diagnostics
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Info,
             isEnabledByDefault: true);
+
+        /// <summary>
+        /// The MCP SDK registers tools by name with <c>TryAdd</c>, so of several tools with one name it keeps one and drops
+        /// the others without an error. A <c>ToolName</c> on a base action names the tool of every controller that inherits
+        /// it, and overloads share the name their method name derives.
+        /// </summary>
+        public static readonly DiagnosticDescriptor DuplicateToolName = new DiagnosticDescriptor(
+            id: "MCP007",
+            title: "Duplicate tool name",
+            messageFormat: "Tool name '{0}' is given to {1} tools: {2}. The MCP SDK keeps only one tool per name and drops the others without an error.",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Give each tool a name of its own with [McpExpose(ToolName = ...)], on an override of an inherited action where the name comes from its base action.");
     }
 }

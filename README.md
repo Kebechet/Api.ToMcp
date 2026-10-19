@@ -193,7 +193,7 @@ public class UsersController : AdminControllerBase   // exposed in SelectedOnly 
 }
 ```
 
-> **A `ToolName` on a base action names the tool of every controller that inherits the action.** The MCP SDK registers only the first tool of a name and silently drops the others, so when several controllers inherit it, give each one's tool a name of its own by overriding the action with its own `[McpExpose(ToolName = ...)]`, or leave `ToolName` off the base action.
+> **A `ToolName` on a base action names the tool of every controller that inherits the action.** The MCP SDK keeps only one tool per name and drops the others without an error, so the build warns with [`MCP007`](#troubleshooting). When several controllers inherit the action, give each one's tool a name of its own by overriding the action with its own `[McpExpose(ToolName = ...)]`, or leave `ToolName` off the base action.
 
 `Scope` overrides the scope derived from the HTTP method (see [Scope-Based Access Control](#scope-based-access-control)). Use it when the verb says something other than what the endpoint does - a search that takes its filter as a POST body and changes nothing would otherwise require `Write`:
 
@@ -490,6 +490,10 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
 - In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, where `Controller` is the controller that serves the action, not a base class it inherits the action from.
 - Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). Minimal APIs are not supported.
+
+**Build warning `MCP007: Tool name '...' is given to N tools`.**
+- Several generated tools have the same name, and the MCP SDK keeps only one of them, dropping the others without an error. The warning names every action that produces the name and points at its declaration. The generator still generates them all, so a name a client already calls does not change under it.
+- The usual causes: a `ToolName` on a base action that several controllers inherit, two actions with the same `ToolName`, overloads (both get `{Controller}_{Action}`), or a `toolNameFormat` without `{Controller}`. Give each tool its own name with `[McpExpose(ToolName = ...)]`, on an override for an inherited action, or exclude the ones you do not need.
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).

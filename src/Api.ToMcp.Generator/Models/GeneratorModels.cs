@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using Microsoft.CodeAnalysis;
 
 namespace Api.ToMcp.Generator.Models
 {
@@ -70,6 +71,12 @@ namespace Api.ToMcp.Generator.Models
         /// otherwise: a schema that allows null is never wrong, one that does not breaks the call that sends none.
         /// </summary>
         public bool IsOutputNullable { get; set; } = true;
+
+        /// <summary>
+        /// Where the action is declared in source, which an inherited action shares with every controller that inherits
+        /// it, or null for an action declared in a referenced assembly.
+        /// </summary>
+        public Location? Location { get; set; }
 
         public string ToolClassName => $"{ControllerName}_{Name}Tool";
     }

@@ -325,7 +325,7 @@ namespace Api.ToMcp.Generator.Emitting
             return sb.ToString();
         }
 
-        private static string FormatToolName(ActionInfoModel action, NamingConfigModel naming)
+        internal static string FormatToolName(ActionInfoModel action, NamingConfigModel naming)
         {
             var customName = action.CustomToolName;
             if (!string.IsNullOrEmpty(customName))

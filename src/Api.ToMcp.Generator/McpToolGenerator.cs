@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Api.ToMcp.Generator.Diagnostics;
 using Api.ToMcp.Generator.Emitting;
 using Api.ToMcp.Generator.Models;
 using Api.ToMcp.Generator.Parsing;
@@ -31,13 +32,15 @@ namespace Api.ToMcp.Generator
                 .Select((info, _) => info!);
 
             // Step 3: Combine config with controllers
-            var combined = controllerProvider.Collect().Combine(configProvider);
+            var combined = controllerProvider.Collect().Combine(configProvider).Combine(context.CompilationProvider);
 
             // Step 4: Generate source
             context.RegisterSourceOutput(combined, (ctx, source) =>
             {
-                var (controllers, config) = source;
+                var ((controllers, config), compilation) = source;
                 var selectedActions = SelectActions(controllers, config);
+
+                ReportDuplicateToolNames(ctx, selectedActions, config, compilation);
 
                 // Track seen tool class names to handle overloads
                 var seenToolClassNames = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -66,6 +69,43 @@ namespace Api.ToMcp.Generator
                 ctx.AddSource("McpToolsRegistration.g.cs",
                     ToolClassEmitter.EmitRegistration(selectedActions, seenToolClassNames));
             });
+        }
+
+        /// <summary>
+        /// Warns about every tool name that several generated tools share, at the actions that produce it: the MCP SDK
+        /// keeps one of them and drops the others without an error. The tools are still generated, as renaming one would
+        /// change a name a client may already call.
+        /// </summary>
+        private static void ReportDuplicateToolNames(
+            SourceProductionContext ctx,
+            ImmutableArray<ActionInfoModel> actions,
+            GeneratorConfigModel config,
+            Compilation compilation)
+        {
+            // The SDK looks tools up with the default string comparer, which is ordinal.
+            var duplicates = actions
+                .GroupBy(x => ToolClassEmitter.FormatToolName(x, config.Naming), StringComparer.Ordinal)
+                .Where(x => x.Count() > 1);
+
+            foreach (var duplicate in duplicates)
+            {
+                // A diagnostic may only point into the compilation it is reported for.
+                var locations = duplicate
+                    .Select(x => x.Location)
+                    .OfType<Location>()
+                    .Where(x => x.SourceTree != null && compilation.ContainsSyntaxTree(x.SourceTree))
+                    .Distinct()
+                    .ToList();
+                var producers = string.Join(", ", duplicate.Select(x => $"{x.ControllerName}.{x.Name} ({x.HttpMethod} {x.RouteTemplate})"));
+
+                ctx.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.DuplicateToolName,
+                    locations.FirstOrDefault() ?? Location.None,
+                    locations.Skip(1),
+                    duplicate.Key,
+                    duplicate.Count(),
+                    producers));
+            }
         }
 
         private static ImmutableArray<ActionInfoModel> SelectActions(

@@ -110,7 +110,8 @@ namespace Api.ToMcp.Generator.Parsing
                     OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType),
                     IsOutputNullable = responseType.SuccessType is null ||
                         responseType.HasBodylessSuccess ||
-                        EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct)
+                        EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct),
+                    Location = method.Locations.FirstOrDefault(x => x.IsInSource)
                 });
             }
 
