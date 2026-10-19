@@ -68,7 +68,8 @@ internal sealed class XmlDocPropertyDescriber
 
     /// <summary>
     /// An object schema, or the boolean schema <c>true</c> the exporter gives a property any JSON value fits
-    /// (<c>object</c>, <c>JsonElement</c>, <c>JsonNode</c>). <c>true</c> has no keywords to hold a description, so a
+    /// (<c>object</c>, <c>JsonElement</c>, <c>JsonNode</c>, <c>JsonDocument</c>, <c>dynamic</c>, a type with its own
+    /// <c>[JsonConverter]</c>). <c>true</c> has no keywords to hold a description, so a
     /// described one becomes <c>{}</c>, which accepts the same values. A <c>false</c> schema accepts nothing, which
     /// <c>{}</c> would not keep, so it is left alone.
     /// </summary>
