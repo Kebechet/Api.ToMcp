@@ -113,9 +113,9 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The template of the nearest <c>[Route]</c>: it is inherited, so a controller without one of its own is routed by
-        /// its base class's. MVC also keeps a base class's beside the controller's own, as it allows several, so the
-        /// nearest is always a route MVC serves.
+        /// The template of the nearest <c>[Route]</c>: MVC takes a controller's route attributes from the nearest class
+        /// that declares any, so a controller without one of its own is routed by its base class's, and one with its own
+        /// replaces the base's.
         /// </summary>
         private static string? GetRoutePrefix(INamedTypeSymbol controller)
         {

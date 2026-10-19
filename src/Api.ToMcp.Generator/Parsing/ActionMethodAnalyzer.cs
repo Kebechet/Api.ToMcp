@@ -15,6 +15,7 @@ namespace Api.ToMcp.Generator.Parsing
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
         private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
         internal const string RouteAttributeName = "RouteAttribute";
+        private const string RouteTemplateProviderFullName = "Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider";
         private const string ToolNamePropertyName = "ToolName";
         private const string TitlePropertyName = "Title";
         private const string DescriptionPropertyName = "Description";
@@ -164,19 +165,40 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The HTTP method and template of the nearest <c>[Http*]</c>: MVC inherits it, so an override that declares none
-        /// is routed as the action it replaces.
+        /// The HTTP method and template of the action's route attributes, taken as MVC takes them, as a whole: from the
+        /// action if it declares any (<c>[Route]</c>, an <c>[Http*]</c> or another route template provider), else from the
+        /// method it overrides as first declared, skipping the overrides in between, as reflection's
+        /// <c>GetBaseDefinition()</c> does. Null when those attributes name no HTTP method the generator calls, such as a
+        /// <c>[Route]</c> alone, which MVC serves for every method.
         /// </summary>
         private static (string Method, string? Template)? GetHttpMethodInfo(IMethodSymbol method)
         {
-            for (var current = method; current != null; current = current.OverriddenMethod)
-            {
-                var httpMethodInfo = GetDeclaredHttpMethodInfo(current);
-                if (httpMethodInfo != null)
-                    return httpMethodInfo;
-            }
+            var routedMethod = method.GetAttributes().Any(IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
 
-            return null;
+            return GetDeclaredHttpMethodInfo(routedMethod);
+        }
+
+        private static IMethodSymbol GetBaseDefinition(IMethodSymbol method)
+        {
+            var definition = method;
+            while (definition.OverriddenMethod != null)
+                definition = definition.OverriddenMethod;
+
+            return definition;
+        }
+
+        /// <summary>
+        /// An attribute MVC reads an action's route from: one implementing <c>IRouteTemplateProvider</c>, which also covers
+        /// <c>[HttpHead]</c>, <c>[AcceptVerbs]</c> and custom ones, or one the generator knows by name, as it does elsewhere.
+        /// </summary>
+        private static bool IsRouteTemplateProvider(AttributeData attribute)
+        {
+            var attributeClass = attribute.AttributeClass;
+
+            return attributeClass != null &&
+                (attributeClass.Name == RouteAttributeName ||
+                    HttpMethodAttributes.ContainsKey(attributeClass.Name) ||
+                    attributeClass.AllInterfaces.Any(x => x.ToDisplayString() == RouteTemplateProviderFullName));
         }
 
         private static (string Method, string? Template)? GetDeclaredHttpMethodInfo(IMethodSymbol method)

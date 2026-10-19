@@ -140,7 +140,9 @@ namespace TestApi
         Assert.Equal("var route = $\"/api/shop/{routeid}\";", GetRouteLine(generated, "ShopController_RemoveTool"));
 
         Assert.Equal(1, CountToolClasses(generated, "OutletController_GetTool"));
-        Assert.Equal("var route = $\"/api/outlet/item/{routeid}\";", GetRouteLine(generated, "OutletController_GetTool"));
+        // MVC reads the route of an override that declares none from the action as first declared, skipping the
+        // overrides in between (GetBaseDefinition): ShopController's "item/{id}" does not apply here.
+        Assert.Equal("var route = $\"/api/outlet/{routeid}\";", GetRouteLine(generated, "OutletController_GetTool"));
         Assert.Equal(1, CountToolClasses(generated, "OutletController_GetFeaturedTool"));
         Assert.Equal(1, CountToolClasses(generated, "OutletController_RemoveTool"));
 
@@ -150,6 +152,53 @@ namespace TestApi
         Assert.DoesNotContain("CatalogControllerBase_", generated);
         Assert.DoesNotContain("ListControllerBase_", generated);
         Assert.DoesNotMatch(@"Tool_\d", generated);
+    }
+
+    [Fact]
+    public void Generator_RoutesAnOverride_ByTheRouteAttributesItDeclares_AsAWhole()
+    {
+        // MVC takes [Route] and the [Http*] attributes together, from the override if it declares any of them, and only
+        // otherwise from the action it overrides.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class ReportsControllerBase : ControllerBase
+    {
+        [HttpGet(""daily"")]
+        public virtual ActionResult<Product> GetDaily() => new Product();
+
+        [HttpGet(""weekly"")]
+        public virtual ActionResult<Product> GetWeekly() => new Product();
+
+        [HttpGet(""yearly"")]
+        public virtual ActionResult<Product> GetYearly() => new Product();
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class AltsController : ReportsControllerBase
+    {
+        // Served at api/alts/alt for every HTTP method, so it names none for a tool to call, like a [Route] alone on an
+        // action that overrides nothing.
+        [Route(""alt"")]
+        public override ActionResult<Product> GetDaily() => new Product();
+
+        // Served for HEAD only, which the generator does not call.
+        [HttpHead(""weekly"")]
+        public override ActionResult<Product> GetWeekly() => new Product();
+
+        public override ActionResult<Product> GetYearly() => new Product();
+    }
+}
+";
+        AssertCompiles(source, AllExceptExcludedConfig);
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        Assert.DoesNotContain("AltsController_GetDailyTool", generated);
+        Assert.DoesNotContain("/api/alts/daily", generated);
+        Assert.DoesNotContain("AltsController_GetWeeklyTool", generated);
+        Assert.Equal("var route = $\"/api/alts/yearly\";", GetRouteLine(generated, "AltsController_GetYearlyTool"));
     }
 
     [Fact]
