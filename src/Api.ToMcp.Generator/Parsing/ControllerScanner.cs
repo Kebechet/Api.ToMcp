@@ -10,15 +10,9 @@ namespace Api.ToMcp.Generator.Parsing
     internal static class ControllerScanner
     {
         private const string ApiControllerAttributeFullName = "Microsoft.AspNetCore.Mvc.ApiControllerAttribute";
-        private const string ControllerAttributeFullName = "Microsoft.AspNetCore.Mvc.ControllerAttribute";
         private const string NonControllerAttributeFullName = "Microsoft.AspNetCore.Mvc.NonControllerAttribute";
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
-
-        /// <summary>
-        /// The suffix that makes a class a controller by name, as MVC's <c>ControllerFeatureProvider</c> reads it.
-        /// </summary>
-        private const string ControllerTypeSuffix = "Controller";
 
         public static ControllerInfoModel? TryGetControllerInfo(
             GeneratorSyntaxContext context,
@@ -55,11 +49,12 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Whether MVC serves the class as a controller, by the rules of its <c>ControllerFeatureProvider</c>: a public
-        /// top-level class, neither abstract nor static, without type parameters or <c>[NonController]</c>, that carries
-        /// <c>[Controller]</c> (as <c>ControllerBase</c> does) or ends in "Controller". Of those, the generator takes the
-        /// ones that derive from <c>ControllerBase</c> or carry <c>[ApiController]</c>. All three attributes are
-        /// inherited. An abstract base controller serves its actions only through the concrete controllers that derive
-        /// from it, which list them as their own.
+        /// top-level class, neither abstract nor static, without type parameters or <c>[NonController]</c>, whose name ends
+        /// in "Controller" or that carries <c>[Controller]</c>. Of those, the generator takes the ones that derive from
+        /// <c>ControllerBase</c> or carry <c>[ApiController]</c>, and these meet the name rule whatever their name:
+        /// <c>ControllerBase</c> carries <c>[Controller]</c>, and <c>[ApiController]</c> derives from it. The attributes
+        /// are inherited. An abstract base controller serves its actions only through the concrete controllers that
+        /// derive from it, which list them as their own.
         /// </summary>
         private static bool IsController(INamedTypeSymbol type, Compilation compilation)
         {
@@ -77,8 +72,7 @@ namespace Api.ToMcp.Generator.Parsing
             if (controllerBase != null && InheritsFrom(type, controllerBase))
                 return true;
 
-            return HasNearestAttribute(type, ApiControllerAttributeFullName) &&
-                (type.Name.EndsWith(ControllerTypeSuffix, StringComparison.OrdinalIgnoreCase) || HasNearestAttribute(type, ControllerAttributeFullName));
+            return HasNearestAttribute(type, ApiControllerAttributeFullName);
         }
 
         private static bool InheritsFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
@@ -94,11 +88,15 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether the class or one of its base classes carries the attribute, as reflection reads an inherited one.
+        /// Whether the class or one of its base classes carries the attribute or one derived from it, as reflection's
+        /// <c>IsDefined</c> finds an inherited attribute by its type.
         /// </summary>
         private static bool HasNearestAttribute(INamedTypeSymbol type, string attributeFullName)
         {
-            return ActionMethodAnalyzer.FindNearestAttribute(type, x => x.BaseType, x => x.AttributeClass?.ToDisplayString() == attributeFullName) != null;
+            return ActionMethodAnalyzer.FindNearestAttribute(
+                type,
+                x => x.BaseType,
+                x => x.AttributeClass != null && ResponseTypeResolver.IsOrImplements(x.AttributeClass, attributeFullName)) != null;
         }
 
         /// <summary>

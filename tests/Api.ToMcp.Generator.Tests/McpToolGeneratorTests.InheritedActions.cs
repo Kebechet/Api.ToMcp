@@ -239,8 +239,8 @@ namespace TestApi
     [Fact]
     public void Generator_SkipsClassesAndMethods_MvcDoesNotServe()
     {
-        // MVC takes only public top-level classes without type parameters that derive from ControllerBase, carry
-        // [Controller] or end in "Controller"; and only instance methods without type parameters.
+        // MVC takes only public top-level classes without type parameters, and only instance methods without type
+        // parameters.
         const string source = StructuredOutputUsings + StructuredOutputModels + @"
 namespace TestApi
 {
@@ -269,14 +269,6 @@ namespace TestApi
     {
         [HttpGet]
         public ActionResult<Product> Get() => new Product();
-    }
-
-    [ApiController]
-    [Route(""api/plain"")]
-    public class Plain
-    {
-        [HttpGet]
-        public Product Get() => new Product();
     }
 
     [ApiController]
@@ -313,7 +305,58 @@ namespace TestApi
         Assert.DoesNotContain("InternalController_", generated);
         Assert.DoesNotContain("NestedController_", generated);
         Assert.DoesNotContain("OpenController_", generated);
-        Assert.DoesNotContain("Plain_", generated);
+    }
+
+    [Fact]
+    public void Generator_TakesEveryClassWithApiController_WhateverItsName()
+    {
+        // MVC takes a class whose name does not end in "Controller" when it carries [Controller], and [ApiController]
+        // derives from it. Both are inherited, and MVC finds them by type, so an attribute derived from them counts too.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/plain"")]
+    public class Plain
+    {
+        [HttpGet]
+        public Product Get() => new Product();
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public abstract class ApiBase
+    {
+    }
+
+    public class Things : ApiBase
+    {
+        [HttpGet]
+        public Product Get() => new Product();
+    }
+
+    public sealed class PublicApiAttribute : ApiControllerAttribute
+    {
+    }
+
+    [PublicApi]
+    [Route(""api/gadgets"")]
+    public class Gadgets
+    {
+        [HttpGet]
+        public Product Get() => new Product();
+    }
+}
+";
+        AssertCompiles(source, AllExceptExcludedConfig);
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        Assert.Equal("var route = $\"/api/plain\";", GetRouteLine(generated, "Plain_GetTool"));
+        Assert.Contains("[McpServerTool(Name = \"Plain_Get\", ", GetToolClass(generated, "Plain_GetTool"));
+        Assert.Equal("var route = $\"/api/things\";", GetRouteLine(generated, "Things_GetTool"));
+        Assert.Equal("var route = $\"/api/gadgets\";", GetRouteLine(generated, "Gadgets_GetTool"));
+        Assert.DoesNotContain("ApiBase_", generated);
     }
 
     [Fact]
