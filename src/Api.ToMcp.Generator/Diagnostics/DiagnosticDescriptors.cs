@@ -43,5 +43,17 @@ namespace Api.ToMcp.Generator.Diagnostics
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Info,
             isEnabledByDefault: true);
+
+        /// <summary>
+        /// The config selects none of the actions it could expose, so the app's MCP server lists no tools. A warning
+        /// because nothing else says so: the app builds, starts and answers <c>tools/list</c> with an empty list.
+        /// </summary>
+        public static readonly DiagnosticDescriptor NoToolsGenerated = new DiagnosticDescriptor(
+            id: "MCP006",
+            title: "No MCP Tools Generated",
+            messageFormat: "No MCP tools are generated: {0} mode selects none of the project's HTTP actions. {1}.",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
     }
 }

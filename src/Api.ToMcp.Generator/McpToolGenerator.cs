@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Api.ToMcp.Generator.Diagnostics;
 using Api.ToMcp.Generator.Emitting;
 using Api.ToMcp.Generator.Models;
 using Api.ToMcp.Generator.Parsing;
@@ -13,12 +14,21 @@ namespace Api.ToMcp.Generator
     [Generator(LanguageNames.CSharp)]
     public sealed class McpToolGenerator : IIncrementalGenerator
     {
+        private const string McpRouteSegment = "/mcp";
+
+        private const string ControllerSuffix = "Controller";
+
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
             // Step 1: Read generator.json configuration
             var configProvider = context.AdditionalTextsProvider
                 .Where(file => file.Path.EndsWith("generator.json", StringComparison.OrdinalIgnoreCase))
-                .Select((file, ct) => ConfigParser.Parse(file.GetText(ct)?.ToString()))
+                .Select((file, ct) =>
+                {
+                    var config = ConfigParser.Parse(file.GetText(ct)?.ToString());
+                    config.FilePath = file.Path;
+                    return config;
+                })
                 .Collect()
                 .Select((configs, _) => configs.FirstOrDefault() ?? new GeneratorConfigModel());
 
@@ -38,6 +48,11 @@ namespace Api.ToMcp.Generator
             {
                 var (controllers, config) = source;
                 var selectedActions = SelectActions(controllers, config);
+
+                if (selectedActions.IsEmpty)
+                {
+                    ReportNoToolsGenerated(ctx, controllers, config);
+                }
 
                 // Track seen tool class names to handle overloads
                 var seenToolClassNames = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -93,13 +108,7 @@ namespace Api.ToMcp.Generator
             ActionInfoModel action,
             GeneratorConfigModel config)
         {
-            // Safety: Never expose MCP endpoints (loop prevention)
-            if (action.RouteTemplate.IndexOf("/mcp", StringComparison.OrdinalIgnoreCase) >= 0)
-                return false;
-
-            // Attribute overrides take highest precedence
-            // [McpIgnore] always excludes
-            if (action.HasMcpIgnoreAttribute || controller.HasMcpIgnoreAttribute)
+            if (!IsSelectable(controller, action))
                 return false;
 
             // [McpExpose] always includes
@@ -108,8 +117,8 @@ namespace Api.ToMcp.Generator
 
             // Apply config-based selection
             var controllerBaseName = controller.Name;
-            if (controllerBaseName.EndsWith("Controller"))
-                controllerBaseName = controllerBaseName.Substring(0, controllerBaseName.Length - "Controller".Length);
+            if (controllerBaseName.EndsWith(ControllerSuffix))
+                controllerBaseName = controllerBaseName.Substring(0, controllerBaseName.Length - ControllerSuffix.Length);
 
             var fullName = $"{controller.Name}.{action.Name}";
             var fullNameWithoutSuffix = $"{controllerBaseName}.{action.Name}";
@@ -131,6 +140,69 @@ namespace Api.ToMcp.Generator
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Whether the action can become a tool at all, by <c>[McpExpose]</c> or by the config.
+        /// </summary>
+        private static bool IsSelectable(ControllerInfoModel controller, ActionInfoModel action)
+        {
+            // Safety: Never expose MCP endpoints (loop prevention)
+            if (action.RouteTemplate.IndexOf(McpRouteSegment, StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
+            // Attribute overrides take highest precedence
+            // [McpIgnore] always excludes
+            return !action.HasMcpIgnoreAttribute && !controller.HasMcpIgnoreAttribute;
+        }
+
+        /// <summary>
+        /// Reports MCP006, unless no action could become a tool: a project without controllers, or one that keeps every
+        /// action from MCP by attribute or route, gets no tools by its own code rather than by a config mistake.
+        /// </summary>
+        private static void ReportNoToolsGenerated(
+            SourceProductionContext context,
+            ImmutableArray<ControllerInfoModel> controllers,
+            GeneratorConfigModel config)
+        {
+            var example = controllers
+                .SelectMany(controller => controller.Actions
+                    .Where(action => IsSelectable(controller, action))
+                    .Select(action => new { Controller = controller.Name, Action = $"{controller.Name}.{action.Name}" }))
+                .FirstOrDefault();
+
+            if (example == null)
+                return;
+
+            var location = config.FilePath == null
+                ? Location.None
+                : Location.Create(config.FilePath, default, default);
+
+            context.ReportDiagnostic(Diagnostic.Create(
+                DiagnosticDescriptors.NoToolsGenerated,
+                location,
+                config.Mode.ToString(),
+                GetNoToolsAdvice(config, example.Controller, example.Action)));
+        }
+
+        /// <summary>
+        /// What made the config select nothing and how to fix it, naming one of the project's own actions as the example.
+        /// </summary>
+        private static string GetNoToolsAdvice(GeneratorConfigModel config, string exampleController, string exampleAction)
+        {
+            var examples = $"controllers such as '{exampleController}' or actions such as '{exampleAction}'";
+
+            if (config.FilePath == null)
+                return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create Mcp/generator.json and list {examples} in its include";
+
+            if (config.Mode == SelectionModeModel.AllExceptExcluded)
+                return "The exclude list in generator.json leaves no action to expose: remove entries from it, or mark actions with [McpExpose]";
+
+            if (config.Include.IsEmpty)
+                return $"The include list in generator.json is empty: add {examples} to it, or mark actions with [McpExpose]";
+
+            var entries = string.Join(", ", config.Include.Select(entry => $"'{entry}'"));
+            return $"None of the include entries in generator.json ({entries}) selects an action: entries are case-sensitive controller names such as '{exampleController}' or action names such as '{exampleAction}'";
         }
     }
 }

@@ -13,6 +13,11 @@ namespace Api.ToMcp.Generator.Models
         public ImmutableArray<string> Exclude { get; set; } = ImmutableArray<string>.Empty;
         public NamingConfigModel Naming { get; set; } = new NamingConfigModel();
         public bool StructuredOutput { get; set; } = true;
+
+        /// <summary>
+        /// The generator.json this config was read from, or null for the default config of a project without one.
+        /// </summary>
+        public string? FilePath { get; set; }
     }
 
     internal enum SelectionModeModel
