@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using Api.ToMcp.Generator.Diagnostics;
 using Api.ToMcp.Generator.Emitting;
 using Api.ToMcp.Generator.Models;
@@ -49,7 +50,16 @@ namespace Api.ToMcp.Generator
                 var (controllers, config) = source;
                 var selectedActions = SelectActions(controllers, config);
 
-                if (selectedActions.IsEmpty)
+                // An invalid config gets MCP001 alone: MCP006 would advise on the fallback, not on what the file says.
+                if (config.Error != null)
+                {
+                    ctx.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.InvalidConfig,
+                        CreateConfigLocation(config, config.Error.Position),
+                        config.Error.Fallback,
+                        config.Error.Reason));
+                }
+                else if (selectedActions.IsEmpty)
                 {
                     ReportNoToolsGenerated(ctx, controllers, config);
                 }
@@ -174,15 +184,18 @@ namespace Api.ToMcp.Generator
             if (example == null)
                 return;
 
-            var location = config.FilePath == null
-                ? Location.None
-                : Location.Create(config.FilePath, default, default);
-
             context.ReportDiagnostic(Diagnostic.Create(
                 DiagnosticDescriptors.NoToolsGenerated,
-                location,
+                CreateConfigLocation(config, default),
                 config.Mode.ToString(),
                 GetNoToolsAdvice(config, example.Controller, example.Action)));
+        }
+
+        private static Location CreateConfigLocation(GeneratorConfigModel config, LinePosition position)
+        {
+            return config.FilePath == null
+                ? Location.None
+                : Location.Create(config.FilePath, default, new LinePositionSpan(position, position));
         }
 
         /// <summary>

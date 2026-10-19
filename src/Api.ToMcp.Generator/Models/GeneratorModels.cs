@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Api.ToMcp.Generator.Models
 {
@@ -18,6 +19,27 @@ namespace Api.ToMcp.Generator.Models
         /// The generator.json this config was read from, or null for the default config of a project without one.
         /// </summary>
         public string? FilePath { get; set; }
+
+        /// <summary>
+        /// Why the generator.json could not be used as written, or null when it could. The config then holds what the
+        /// generator falls back to.
+        /// </summary>
+        public ConfigErrorModel? Error { get; set; }
+    }
+
+    internal sealed class ConfigErrorModel
+    {
+        /// <summary>
+        /// What the generator uses instead, as a clause of MCP001's message.
+        /// </summary>
+        public string Fallback { get; set; } = "";
+
+        public string Reason { get; set; } = "";
+
+        /// <summary>
+        /// Where in the file the problem is, or its start when the parser does not say.
+        /// </summary>
+        public LinePosition Position { get; set; }
     }
 
     internal enum SelectionModeModel

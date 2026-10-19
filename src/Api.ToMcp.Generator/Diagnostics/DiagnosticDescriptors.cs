@@ -4,10 +4,14 @@ namespace Api.ToMcp.Generator.Diagnostics
 {
     internal static class DiagnosticDescriptors
     {
-        public static readonly DiagnosticDescriptor ConfigParseError = new DiagnosticDescriptor(
+        /// <summary>
+        /// The generator.json is malformed, has a value of the wrong type or an unknown mode, or could not be read. The
+        /// generator falls back as the message says, so the build still succeeds, possibly with no tools.
+        /// </summary>
+        public static readonly DiagnosticDescriptor InvalidConfig = new DiagnosticDescriptor(
             id: "MCP001",
-            title: "Configuration Parse Error",
-            messageFormat: "Failed to parse generator.json: {0}",
+            title: "Invalid Configuration",
+            messageFormat: "generator.json cannot be used as written, so {0}: {1}",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
