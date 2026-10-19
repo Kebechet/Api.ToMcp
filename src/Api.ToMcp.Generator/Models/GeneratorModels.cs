@@ -57,6 +57,14 @@ namespace Api.ToMcp.Generator.Models
         public string Title { get; set; } = "";
 
         public string? CustomDescription { get; set; }
+
+        /// <summary>
+        /// Whether MVC applies the <c>[ApiController]</c> conventions to the action's controller, and so infers the body
+        /// as the source of a complex parameter without a binding attribute. Without them it binds such a parameter
+        /// from the route, query and form values.
+        /// </summary>
+        public bool IsApiController { get; set; }
+
         public McpScopeModel RequiredScope { get; set; } = McpScopeModel.Read;
         public ToolAnnotationsModel Annotations { get; set; } = new ToolAnnotationsModel();
 

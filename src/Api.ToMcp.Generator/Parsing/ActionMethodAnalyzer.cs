@@ -13,6 +13,7 @@ namespace Api.ToMcp.Generator.Parsing
     {
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
+        private const string ApiBehaviorMetadataFullName = "Microsoft.AspNetCore.Mvc.Infrastructure.IApiBehaviorMetadata";
         private const string ToolNamePropertyName = "ToolName";
         private const string TitlePropertyName = "Title";
         private const string DescriptionPropertyName = "Description";
@@ -40,6 +41,7 @@ namespace Api.ToMcp.Generator.Parsing
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
             var controllerMcpExposeAttr = FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute);
             var controllerScope = GetDeclaredScope(controllerMcpExposeAttr);
+            var isApiController = IsApiController(controller);
 
             foreach (var member in controller.GetMembers())
             {
@@ -113,6 +115,7 @@ namespace Api.ToMcp.Generator.Parsing
                     CustomToolName = customToolName,
                     Title = customTitle ?? ToolTitleBuilder.Build(customToolName, TrimSuffix(method.Name, AsyncSuffix)),
                     CustomDescription = customDescription,
+                    IsApiController = isApiController,
                     RequiredScope = requiredScope,
                     Annotations = GetToolAnnotations(httpInfo.Value.Method, requiredScope, actionMcpExposeAttr, controllerMcpExposeAttr),
                     OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType),
@@ -561,6 +564,22 @@ namespace Api.ToMcp.Generator.Parsing
         private static bool IsMcpExposeAttribute(AttributeData attribute)
         {
             return attribute.AttributeClass?.ToDisplayString() == McpExposeAttributeFullName;
+        }
+
+        /// <summary>
+        /// Whether MVC applies the <c>[ApiController]</c> conventions to the controller: it does when an attribute
+        /// implementing <c>IApiBehaviorMetadata</c>, <c>[ApiController]</c> itself or one derived from it, is on the
+        /// controller, on a base class, as <c>[ApiController]</c> is inherited, or on the controller's assembly.
+        /// </summary>
+        private static bool IsApiController(INamedTypeSymbol controller)
+        {
+            return FindNearestAttribute(controller, x => x.BaseType, IsApiBehaviorAttribute) is not null ||
+                controller.ContainingAssembly.GetAttributes().Any(IsApiBehaviorAttribute);
+        }
+
+        private static bool IsApiBehaviorAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass?.AllInterfaces.Any(x => x.ToDisplayString() == ApiBehaviorMetadataFullName) == true;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)

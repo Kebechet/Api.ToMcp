@@ -179,13 +179,16 @@ namespace Api.ToMcp.Generator.Emitting
 
             // Build query string. MVC binds a simple type that names no route value from the query string on every
             // HTTP method: [ApiController] infers [FromQuery] for it, and in a controller without [ApiController] the
-            // query string is one of the value providers. A complex one is the body of a POST, PUT or PATCH, and a GET or
-            // DELETE sends none.
+            // query string is one of the value providers. A complex type [ApiController] binds from the body, which a GET
+            // or DELETE does not send. A controller without it binds one property by property from the value providers
+            // too, so on a GET or DELETE it is expanded into the query string, as [FromQuery] would be.
+            var isComplexTypeBoundFromQuery = !action.IsApiController &&
+                action.HttpMethod is HttpMethodNames.Get or HttpMethodNames.Delete;
             var queryParams = parameters.Where(p =>
                 p.Source == ParameterSourceModel.Query ||
                 (p.Source == ParameterSourceModel.Auto &&
                  !RouteContainsParameter(route, p.Name) &&
-                 p.IsSimpleType)).ToList();
+                 (p.IsSimpleType || isComplexTypeBoundFromQuery))).ToList();
 
             if (queryParams.Any())
             {

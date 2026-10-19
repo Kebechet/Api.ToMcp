@@ -5,14 +5,17 @@ using Xunit;
 namespace Api.ToMcp.Generator.Tests;
 
 /// <summary>
-/// Where a generated tool sends a parameter that names no binding source. <c>[ApiController]</c> binds a simple type,
-/// one MVC reads from a single string through a type converter or a static <c>TryParse</c>, from the route or the query
-/// string on every HTTP method, and a complex type from the body. A parameter sent anywhere else reaches the action as
-/// its default value, and the call runs anyway.
+/// Where a generated tool sends a parameter that names no binding source. MVC binds a simple type, one it reads from a
+/// single string through a type converter or a static <c>TryParse</c>, from the route or the query string on every HTTP
+/// method. A complex type it binds from the body in an <c>[ApiController]</c>, and property by property from the query
+/// string, among the other value providers, in a controller without one. A parameter sent anywhere else reaches the
+/// action as its default value, and the call runs anyway.
 /// </summary>
 public partial class McpToolGeneratorTests
 {
     private const string SimpleTypeToolClassName = "OrdersController_FindTool";
+    private const string ApiControllerDeclaration = "[ApiController] [Route(\"api/[controller]\")] public class OrdersController : ControllerBase";
+    private const string PlainControllerDeclaration = "[Route(\"api/[controller]\")] public class OrdersController : ControllerBase";
 
     [Theory]
     [InlineData("OrderId orderId")]
@@ -93,25 +96,58 @@ public partial class McpToolGeneratorTests
     }
 
     [Theory]
-    [InlineData("ProductFilter filter")]
-    [InlineData("ProductFilter? filter")]
-    [InlineData("ExpandableFilter filter")]
-    public void Generator_DoesNotExpandAParameterOfAComplexType_OnGet_IntoTheQueryString(string parameter)
+    [InlineData("HttpGet", "ProductFilter filter")]
+    [InlineData("HttpGet", "ProductFilter? filter")]
+    [InlineData("HttpGet", "ExpandableFilter filter")]
+    [InlineData("HttpDelete", "ProductFilter filter")]
+    [InlineData("HttpDelete", "ProductFilter? filter")]
+    public void Generator_DoesNotSendAParameterOfAComplexType_OnGetOrDelete_OfAnApiController(string httpAttribute, string parameter)
     {
-        // [ApiController] binds it from the body, which a GET does not carry; a filter read from the query string says [FromQuery].
-        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+        // [ApiController] binds it from the body, which the tool cannot send on GET or DELETE; MVC answers 415 either way.
+        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"search\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
 
         Assert.DoesNotContain("queryParts", tool);
     }
 
-    private static string GenerateCompilingSimpleTypeTool(string action)
+    [Theory]
+    [InlineData("HttpGet", "ProductFilter filter")]
+    [InlineData("HttpGet", "ProductFilter? filter")]
+    [InlineData("HttpGet", "ExpandableFilter filter")]
+    [InlineData("HttpDelete", "ProductFilter filter")]
+    [InlineData("HttpDelete", "ProductFilter? filter")]
+    public void Generator_ExpandsAParameterOfAComplexType_OnGetOrDelete_OfAControllerWithoutApiController_IntoTheQueryString(string httpAttribute, string parameter)
     {
-        var source = SimpleTypeSources.Usings + SimpleTypeSources.Types + $@"
+        // Without [ApiController] MVC binds it property by property from every value provider, the query string included.
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[{httpAttribute}(\"search\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        Assert.Contains("AddQueryValue(queryParts, \"filter\", filter);", tool);
+    }
+
+    [Theory]
+    [InlineData("", "[ApiController] public abstract class ApiControllerBase : ControllerBase { } [Route(\"api/[controller]\")] public class OrdersController : ApiControllerBase")]
+    [InlineData("[assembly: ApiController]", PlainControllerDeclaration)]
+    public void Generator_TreatsAControllerAsAnApiController_WhenABaseClassOrItsAssemblyHasTheAttribute(string assemblyAttributes, string controllerDeclaration)
+    {
+        // MVC reads [ApiController] from base classes, since it is inherited, and from the assembly.
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpGet(\"search\")] public Task<string> Find(ProductFilter filter) => Task.FromResult(string.Empty);",
+            controllerDeclaration,
+            assemblyAttributes);
+
+        Assert.DoesNotContain("queryParts", tool);
+    }
+
+    private static string GenerateCompilingSimpleTypeTool(
+        string action,
+        string controllerDeclaration = ApiControllerDeclaration,
+        string assemblyAttributes = "")
+    {
+        var source = SimpleTypeSources.Usings + assemblyAttributes + SimpleTypeSources.Types + $@"
 namespace TestApi
 {{
-    [ApiController]
-    [Route(""api/[controller]"")]
-    public class OrdersController : ControllerBase
+    {controllerDeclaration}
     {{
         {action}
     }}
