@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -196,6 +197,38 @@ public class McpRequestValueFormatterTests
         McpRequestValueFormatter.AddQueryValue(queryParts, "sku", new Sku("AB-12"));
 
         Assert.Equal(new[] { "sku=AB-12" }, queryParts);
+    }
+
+    public static TheoryData<object, string> IdsReadThroughATryParseTheyDoNotDeclarePublicly => new()
+    {
+        { new TicketId(5), "id=5" },
+        { new SeatId(7), "id=7" },
+        { new GateId(3), "id=3" },
+    };
+
+    [Theory]
+    [MemberData(nameof(IdsReadThroughATryParseTheyDoNotDeclarePublicly))]
+    public void AddQueryValue_SendsATypeMvcReadsThroughATryParseItDoesNotDeclarePublicly_AsOneValue(object id, string expectedQueryPart)
+    {
+        // MVC also finds an explicit IParsable<T>.TryParse, one a base class declares, and one with a body that a single
+        // interface offers; expanded into id.Value=5 instead, such an id binds nothing.
+        Assert.False(new EmptyModelMetadataProvider().GetMetadataForType(id.GetType()).IsComplexType);
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "id", id);
+
+        Assert.Equal(new[] { expectedQueryPart }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_ExpandsATypeWhoseTryParseTwoInterfacesOffer_AsMvcTakesNeither()
+    {
+        Assert.True(new EmptyModelMetadataProvider().GetMetadataForType(typeof(DockId)).IsComplexType);
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "id", new DockId(4));
+
+        Assert.Equal(new[] { "id.Value=4" }, queryParts);
     }
 
     [Fact]
@@ -401,4 +434,68 @@ public class McpRequestValueFormatterTests
             return Code;
         }
     }
+
+    private readonly record struct TicketId(int Value) : IParsable<TicketId>
+    {
+        static TicketId IParsable<TicketId>.Parse(string s, IFormatProvider? provider)
+        {
+            return new TicketId(int.Parse(s, provider));
+        }
+
+        static bool IParsable<TicketId>.TryParse(string? s, IFormatProvider? provider, out TicketId result)
+        {
+            var isParsed = int.TryParse(s, NumberStyles.Integer, provider, out var value);
+            result = new TicketId(value);
+            return isParsed;
+        }
+
+        public override string ToString()
+        {
+            return Value.ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
+    private abstract record IntId<TSelf>(int Value) where TSelf : IntId<TSelf>
+    {
+        public static bool TryParse(string? text, out TSelf? id)
+        {
+            id = null;
+            return false;
+        }
+
+        public sealed override string ToString()
+        {
+            return Value.ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
+    private sealed record SeatId(int Value) : IntId<SeatId>(Value);
+
+    private interface INumberedId<TSelf> where TSelf : INumberedId<TSelf>
+    {
+        static virtual bool TryParse(string? text, out TSelf? id)
+        {
+            id = default;
+            return false;
+        }
+    }
+
+    private interface ICodedId<TSelf> where TSelf : ICodedId<TSelf>
+    {
+        static virtual bool TryParse(string? text, out TSelf? id)
+        {
+            id = default;
+            return false;
+        }
+    }
+
+    private readonly record struct GateId(int Value) : INumberedId<GateId>
+    {
+        public override string ToString()
+        {
+            return Value.ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
+    private readonly record struct DockId(int Value) : INumberedId<DockId>, ICodedId<DockId>;
 }

@@ -23,6 +23,8 @@ public static class McpRequestValueFormatter
 
     private const string TryParseMethodName = "TryParse";
 
+    private static readonly string ParsableInterfaceName = $"{typeof(IParsable<>).Namespace}.{nameof(IParsable<int>)}";
+
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
 
@@ -169,23 +171,49 @@ public static class McpRequestValueFormatter
     {
         return type == typeof(byte[]) ||
             TypeDescriptor.GetConverter(type).CanConvertFrom(typeof(string)) ||
-            type
-                .GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .Any(x => x.Name == TryParseMethodName && IsTryParseSignature(x, type));
+            HasTryParse(type);
     }
 
-    private static bool IsTryParseSignature(MethodInfo method, Type type)
+    /// <summary>
+    /// Whether MVC finds a <c>TryParse</c> to read the type with (<c>ParameterBindingMethodCache.FindTryParseMethod</c>):
+    /// an explicit <c>IParsable&lt;T&gt;.TryParse</c> the type declares, else a public static
+    /// <c>bool TryParse(string, IFormatProvider, out T)</c> or <c>bool TryParse(string, out T)</c> that the type or a
+    /// base class declares, or that exactly one of its interfaces implements with a body.
+    /// </summary>
+    private static bool HasTryParse(Type type)
     {
-        var parameterTypes = method
-            .GetParameters()
-            .Select(x => x.ParameterType)
-            .ToList();
-        var resultType = type.MakeByRefType();
+        return DeclaresExplicitParsableTryParse(type) ||
+            HasTryParse(type, [typeof(string), typeof(IFormatProvider), type.MakeByRefType()]) ||
+            HasTryParse(type, [typeof(string), type.MakeByRefType()]);
+    }
 
-        return method.ReturnType == typeof(bool) &&
-            (
-                parameterTypes.SequenceEqual([typeof(string), resultType]) ||
-                parameterTypes.SequenceEqual([typeof(string), typeof(IFormatProvider), resultType])
-            );
+    /// <summary>
+    /// MVC looks the explicit implementation up by the name the compiler gives it, which holds the type's full name with
+    /// dots between nested types. A generic type's never matches, as the compiler names it after the type parameters.
+    /// </summary>
+    private static bool DeclaresExplicitParsableTryParse(Type type)
+    {
+        var explicitTryParseName = $"{ParsableInterfaceName}<{type.FullName?.Replace('+', '.')}>.{TryParseMethodName}";
+
+        return type.GetMethod(explicitTryParseName, BindingFlags.Static | BindingFlags.NonPublic) is not null;
+    }
+
+    private static bool HasTryParse(Type type, Type[] parameterTypes)
+    {
+        var declaredTryParse = type.GetMethod(TryParseMethodName, BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy, parameterTypes);
+        if (IsTryParse(declaredTryParse))
+        {
+            return true;
+        }
+
+        // When two interfaces offer one, MVC takes neither.
+        return type
+            .GetInterfaces()
+            .Count(x => IsTryParse(x.GetMethod(TryParseMethodName, BindingFlags.Public | BindingFlags.Static, parameterTypes))) == 1;
+    }
+
+    private static bool IsTryParse(MethodInfo? method)
+    {
+        return method is { IsAbstract: false } && method.ReturnType == typeof(bool);
     }
 }
