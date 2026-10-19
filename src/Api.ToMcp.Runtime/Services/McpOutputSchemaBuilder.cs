@@ -117,9 +117,10 @@ internal sealed class McpOutputSchemaBuilder
 
     /// <summary>
     /// Whether a value of <paramref name="type"/> can hold an object or collection that is also one holding it, which
-    /// <c>IgnoreCycles</c> writes as <c>null</c>. Read from the types MVC writes: declared types, and the derived types
-    /// of polymorphic ones. Two of them can be the same object when one is assignable to the other; a subclass that
-    /// adds an interface is not considered, or every DTO with an <c>IReadOnlyList&lt;T&gt;</c> would count.
+    /// <c>IgnoreCycles</c> writes as <c>null</c>. Read from the types MVC writes: declared types, and the
+    /// <c>[JsonDerivedType]</c> types a polymorphic one is written as, each holding only its own values. Two of them can
+    /// be the same object when one is assignable to the other; an unregistered subclass that adds an interface is not
+    /// considered, or every DTO with an <c>IReadOnlyList&lt;T&gt;</c> would count.
     /// </summary>
     private bool CanContainItself(Type type)
     {
@@ -128,6 +129,10 @@ internal sealed class McpOutputSchemaBuilder
             .Any(holder => GetReachableTypes(GetWrittenTypes(holder)).Any(x => IsTracked(x) && (x.IsAssignableFrom(holder) || holder.IsAssignableFrom(x))));
     }
 
+    /// <summary>
+    /// The types MVC can write a value as, from <paramref name="types"/> down: each type, the derived types it can be
+    /// written as, and the types of the values written inside them.
+    /// </summary>
     private HashSet<Type> GetReachableTypes(IEnumerable<Type> types)
     {
         var reachable = new HashSet<Type>();
@@ -139,9 +144,9 @@ internal sealed class McpOutputSchemaBuilder
                 continue;
             }
 
-            foreach (var writtenType in GetWrittenTypes(type))
+            foreach (var nextType in GetWrittenTypes(type).Concat(GetDerivedTypes(type)))
             {
-                pending.Push(writtenType);
+                pending.Push(nextType);
             }
         }
 
@@ -149,21 +154,24 @@ internal sealed class McpOutputSchemaBuilder
     }
 
     /// <summary>
-    /// The types of the values MVC writes inside a value of <paramref name="type"/>: its properties, its items, and
-    /// those of its derived types when it is polymorphic.
+    /// The types of the values MVC writes inside a value of <paramref name="type"/>: its properties and its items.
     /// </summary>
     private IEnumerable<Type> GetWrittenTypes(Type type)
     {
-        var typeInfo = _serializerOptions.GetTypeInfo(UnwrapNullable(type));
+        var typeInfo = _serializerOptions.GetTypeInfo(type);
         var writtenTypes = typeInfo.Kind switch
         {
             JsonTypeInfoKind.Object => typeInfo.Properties.Where(x => x.Get is not null).Select(x => x.PropertyType),
             JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary => [typeInfo.ElementType!],
             _ => []
         };
-        var derivedTypes = typeInfo.PolymorphismOptions?.DerivedTypes.Select(x => x.DerivedType) ?? [];
 
-        return writtenTypes.Concat(derivedTypes.SelectMany(GetWrittenTypes)).Select(UnwrapNullable);
+        return writtenTypes.Select(UnwrapNullable);
+    }
+
+    private IEnumerable<Type> GetDerivedTypes(Type type)
+    {
+        return _serializerOptions.GetTypeInfo(type).PolymorphismOptions?.DerivedTypes.Select(x => x.DerivedType) ?? [];
     }
 
     /// <summary>

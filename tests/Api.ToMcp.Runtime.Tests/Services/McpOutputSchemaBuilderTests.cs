@@ -170,6 +170,7 @@ public class McpOutputSchemaBuilderTests
     [InlineData(typeof(Employee))]
     [InlineData(typeof(Box))]
     [InlineData(typeof(Entry))]
+    [InlineData(typeof(Asset))]
     public void Build_AcceptsAnyValue_WhenMvcIgnoresCycles_InATypeThatCanContainItself(Type type)
     {
         // MVC writes null where an object would contain itself, and no schema of the type can say where.
@@ -188,6 +189,15 @@ public class McpOutputSchemaBuilderTests
     public void Build_KeepsTheTypedSchema_WhenMvcIgnoresCycles_ButTheTypeCannotContainItself(Type type, string expectedType)
     {
         Assert.Equal(expectedType, Build(type, jsonOptions: IgnoringCycles()).GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void Build_KeepsTheTypedSchema_WhenMvcIgnoresCycles_ForAPolymorphicTypeWhoseDerivedTypesOnlyHoldEachOther()
+    {
+        // A listing holds its seller, both written as a resource, but a listing is never its own seller.
+        var schema = Build(typeof(Resource), jsonOptions: IgnoringCycles());
+
+        Assert.NotEqual("{}", schema.GetRawText());
     }
 
     [Fact]
@@ -379,6 +389,37 @@ public class McpOutputSchemaBuilderTests
     public sealed class FileEntry : Entry
     {
         public long Size { get; set; }
+    }
+
+    public interface IContainer;
+
+    /// <summary>Only its derived type can hold itself, through an interface the base does not implement.</summary>
+    [JsonDerivedType(typeof(Crate), "crate")]
+    public abstract class Asset
+    {
+        public string Name { get; set; } = "";
+    }
+
+    public sealed class Crate : Asset, IContainer
+    {
+        public IContainer Parent { get; set; } = null!;
+    }
+
+    [JsonDerivedType(typeof(Listing), "listing")]
+    [JsonDerivedType(typeof(Seller), "seller")]
+    public abstract class Resource
+    {
+        public int Id { get; set; }
+    }
+
+    public sealed class Listing : Resource
+    {
+        public Seller Seller { get; set; } = null!;
+    }
+
+    public sealed class Seller : Resource
+    {
+        public string Name { get; set; } = "";
     }
 
     public sealed class GadgetPair
