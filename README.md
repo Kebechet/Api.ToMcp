@@ -469,9 +469,9 @@ The default host already puts `TraceId`, `SpanId` and `ParentId` on the scope of
 }
 ```
 
-Keep `FormatterName`: without it, `FormatterOptions:IncludeScopes` has no effect. `builder.Logging.AddSimpleConsole(o => o.IncludeScopes = true)` does what the `Console` part does, in code, and `"FormatterName": "json"` writes the scopes as `TraceId`, `SpanId` and `RequestId` fields instead.
+Keep `FormatterName`: without it, `FormatterOptions:IncludeScopes` has no effect. `builder.Logging.AddSimpleConsole(o => o.IncludeScopes = true)` does what the `Console` part does, in code, and `"FormatterName": "json"` writes `TraceId`, `SpanId` and `RequestId` as fields of the entries in each log entry's `Scopes` array instead.
 
-A failed call of the demo's `Products_GetById`, abridged (the `ConnectionId` scope is left out):
+A failed call of the demo's `Products_GetById`, abridged: the `ConnectionId` scope and some entries are left out.
 
 ```
 info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
@@ -500,6 +500,8 @@ To find the internal request of a tool call:
 2. Take the `TraceId` of that entry.
 3. Search for it. The entries whose `RequestPath` is your API route, under a `RequestId` other than the MCP request's, are the internal request, your controller's own log entries included.
 
+Code that wants the trace ID itself, to put it in its own messages or responses, reads `Activity.Current?.TraceId` from `System.Diagnostics`; it is the same in the MCP request and the internal one.
+
 Match on `TraceId`, not on `ParentId`: without a tracing listener, .NET's `HttpClient` still starts an `Activity` of its own for the outgoing request, so the internal request's `ParentId` is that activity (`3cbedd64401d9593` above), not the `SpanId` of the MCP request.
 
 `POST /mcp` finishes with `200` even when the tool failed, because the failure is `isError: true` inside the JSON-RPC result. Look for `IsError = True` and the invoker's `MCP HTTP call failed with status ...` warning instead. When the API answers with a ProblemDetails body, as `[ApiController]` does for `NotFound()` or `Problem()`, its `traceId` is the internal request's `00-<trace ID>-<span ID>-<flags>`, and it reaches the MCP client in the error text: a user who reports a failed call can hand you the trace ID.
@@ -526,11 +528,11 @@ POST mcp/                              server   the MCP request
       └─ GET api/Products/{id:guid}    server   the internal request to the controller
 ```
 
-`Experimental.ModelContextProtocol` is the MCP SDK's `ActivitySource`, and its name says the SDK may still change it. When the request's `params._meta` carries a `traceparent`, the `tools/call` span continues that trace context instead, and is only linked to the `POST mcp/` span. A client that sends it in the same trace as its `traceparent` header still gets all four spans in one trace. A client that sends only `_meta.traceparent` gets the tool call and the internal request in its own trace and `POST mcp/` in another, joined by that link; the tool call's log entries follow the `tools/call` span, so their `TraceId` still matches the internal request's.
+`Experimental.ModelContextProtocol` is the MCP SDK's `ActivitySource`, and its name says the SDK may still change it. With that `AddSource`, when the request's `params._meta` carries a `traceparent`, the `tools/call` span continues that trace context instead, and is only linked to the `POST mcp/` span. A client that sends it in the same trace as its `traceparent` header still gets all four spans in one trace. A client that sends only `_meta.traceparent` gets the tool call and the internal request in its own trace and `POST mcp/` in another, joined by that link; the tool call's log entries follow the `tools/call` span, so their `TraceId` still matches the internal request's.
 
 ### When the link breaks
 
-With `HttpServerTransportOptions.PerSessionExecutionContext = true` and `SessionMode = HttpServerSessionMode.Stateful` (the MCP SDK marks the option obsolete, and the default stateless mode ignores it), every tool call runs in the context of the session's `initialize` request. The internal request then joins the trace of that `initialize` request, the invoker's log entries carry its `RequestId`, and the call's own `Authorization` header is not forwarded. Leave it at its default, `false`.
+With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The internal request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. No `Authorization` header is forwarded at all, because that request's `HttpContext` is gone by then, so scope checks fail too. Leave the option at its default, `false`.
 
 ## Limitations
 
