@@ -171,6 +171,9 @@ public class McpOutputSchemaBuilderTests
     [InlineData(typeof(Box))]
     [InlineData(typeof(Entry))]
     [InlineData(typeof(Asset))]
+    [InlineData(typeof(Knot))]
+    [InlineData(typeof(Envelope))]
+    [InlineData(typeof(Dictionary<string, CycleOrder>))]
     public void Build_AcceptsAnyValue_WhenMvcIgnoresCycles_InATypeThatCanContainItself(Type type)
     {
         // MVC writes null where an object would contain itself, and no schema of the type can say where.
@@ -186,6 +189,7 @@ public class McpOutputSchemaBuilderTests
     [InlineData(typeof(OrderEnvelope), "object")]
     [InlineData(typeof(Schedule), "object")]
     [InlineData(typeof(Holder), "object")]
+    [InlineData(typeof(Author), "object")]
     public void Build_KeepsTheTypedSchema_WhenMvcIgnoresCycles_ButTheTypeCannotContainItself(Type type, string expectedType)
     {
         Assert.Equal(expectedType, Build(type, jsonOptions: IgnoringCycles()).GetProperty("type").GetString());
@@ -420,6 +424,44 @@ public class McpOutputSchemaBuilderTests
     public sealed class Seller : Resource
     {
         public string Name { get; set; } = "";
+    }
+
+    /// <summary>Contains itself only through a nullable struct.</summary>
+    public sealed class Knot
+    {
+        public Loop? Loop { get; set; }
+    }
+
+    public struct Loop
+    {
+        public Knot Inner { get; set; }
+    }
+
+    /// <summary>Reaches a type that can contain itself only through a nullable struct.</summary>
+    public sealed class Envelope
+    {
+        public Slot? Slot { get; set; }
+    }
+
+    public struct Slot
+    {
+        public TreeNode Node { get; set; }
+    }
+
+    /// <summary>The way an EF Core entity usually avoids a cycle: its back reference is never written.</summary>
+    public sealed class Author
+    {
+        public string Name { get; set; } = "";
+
+        public List<Book> Books { get; set; } = [];
+    }
+
+    public sealed class Book
+    {
+        public string Title { get; set; } = "";
+
+        [JsonIgnore]
+        public Author Author { get; set; } = null!;
     }
 
     public sealed class GadgetPair
