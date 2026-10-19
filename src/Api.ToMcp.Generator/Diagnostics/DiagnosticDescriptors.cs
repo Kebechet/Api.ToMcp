@@ -50,7 +50,7 @@ namespace Api.ToMcp.Generator.Diagnostics
 
         /// <summary>
         /// The config selects none of the actions it could expose, so the app's MCP server lists no tools. A warning
-        /// because nothing else says so: the app builds, starts and answers <c>tools/list</c> with an empty list.
+        /// because nothing else says so: the app builds and starts as usual.
         /// </summary>
         public static readonly DiagnosticDescriptor NoToolsGenerated = new DiagnosticDescriptor(
             id: "MCP006",
