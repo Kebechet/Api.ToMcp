@@ -107,6 +107,7 @@ namespace TestApi
     [InlineData("[Produces(\"application/notjson\")] public ActionResult<Product> Get() => new Product();")]
     [InlineData("[Produces(\"application/xml; profile=json\")] public ActionResult<Product> Get() => new Product();")]
     [InlineData("[ProducesResponseType(typeof(Product), 200, \"application/x-ndjson\")] public IActionResult Get() => Ok();")]
+    [InlineData("[ProducesResponseType<Product>(200, \"application/x-ndjson\")] public IActionResult Get() => Ok();")]
     [InlineData("[ProducesResponseType(StatusCodes.Status204NoContent)] public ActionResult<Product> Get() => Ok(new Product());")]
     [InlineData("[ProducesResponseType(typeof(Hidden), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
     [InlineData("[ProducesResponseType(typeof(List<Hidden>), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
@@ -203,10 +204,12 @@ namespace TestApi
         AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
     }
 
-    [Fact]
-    public void Generator_AdvertisesNoOutputSchema_WhenTheControllerProducesANonJsonContentType()
+    [Theory]
+    [InlineData("text/csv")]
+    [InlineData("application/x-ndjson")]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheControllerProducesANonJsonContentType(string contentType)
     {
-        var source = StructuredOutputSource("public ActionResult<Product> Get() => new Product();", controllerAttributes: "[Produces(\"text/csv\")]");
+        var source = StructuredOutputSource("public ActionResult<Product> Get() => new Product();", controllerAttributes: $"[Produces(\"{contentType}\")]");
 
         var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
 
