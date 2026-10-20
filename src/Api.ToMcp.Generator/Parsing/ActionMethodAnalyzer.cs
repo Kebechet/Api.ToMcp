@@ -278,7 +278,8 @@ namespace Api.ToMcp.Generator.Parsing
 
             foreach (var param in method.Parameters)
             {
-                var declaredSource = GetDeclaredParameterSource(param);
+                var bindingParameters = GetBindingParameters(param);
+                var declaredSource = bindingParameters.Select(GetDeclaredParameterSource).FirstOrDefault(x => x != null);
 
                 // Skip service-injected parameters
                 if (declaredSource == ParameterSourceModel.Services)
@@ -309,11 +310,26 @@ namespace Api.ToMcp.Generator.Parsing
                     IsSimpleType = isSimpleType,
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
-                    QueryName = GetFromQueryName(param)
+                    QueryName = bindingParameters.Select(GetFromQueryName).FirstOrDefault(x => x != null)
                 });
             }
 
             return builder.ToImmutable();
+        }
+
+        /// <summary>
+        /// The parameter, then the one at its position in each method the action overrides, nearest first. MVC reads a
+        /// parameter's binding source and the name it binds under from its model metadata, which inherits the binding
+        /// attributes of those parameters, so an override without <c>[FromQuery]</c> binds as its base action declares,
+        /// even under another parameter name.
+        /// </summary>
+        private static List<IParameterSymbol> GetBindingParameters(IParameterSymbol parameter)
+        {
+            var parameters = new List<IParameterSymbol> { parameter };
+            for (var method = (parameter.ContainingSymbol as IMethodSymbol)?.OverriddenMethod; method != null; method = method.OverriddenMethod)
+                parameters.Add(method.Parameters[parameter.Ordinal]);
+
+            return parameters;
         }
 
         private static string? GetFromQueryName(IParameterSymbol param)
