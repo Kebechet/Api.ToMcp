@@ -64,6 +64,7 @@ public static class McpRequestValueFormatter
     ];
 
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
+    private static readonly ConcurrentDictionary<Type, bool> HasModelBinderByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
     private static readonly ConcurrentDictionary<Type, IReadOnlyDictionary<string, ParameterInfo>> ConstructorParametersByType = new();
 
@@ -99,8 +100,9 @@ public static class McpRequestValueFormatter
     /// converter or a <c>TryParse</c>, a strongly-typed id among them) is sent whole, a collection repeats the key
     /// once per item, and any other object (a <c>[FromQuery]</c> filter) adds each property under the <c>name.Property</c> and
     /// <c>name.Items[0].Property</c> keys the binder expects - sending the object's <c>ToString()</c> instead
-    /// binds nothing and the endpoint silently runs with an empty filter. A value MVC binds from a source of its own,
-    /// such as a <c>CancellationToken</c> or an <c>IFormFile</c>, is not sent at all.
+    /// binds nothing and the endpoint silently runs with an empty filter. A value of a type with a model binder of its
+    /// own (<c>[ModelBinder(typeof(...))]</c>) is sent whole as well, as that binder reads its key, and a value MVC binds
+    /// from a source of its own, such as a <c>CancellationToken</c> or an <c>IFormFile</c>, not at all.
     /// </summary>
     public static void AddQueryValue(List<string> queryParts, string name, object? value)
     {
@@ -114,7 +116,7 @@ public static class McpRequestValueFormatter
             return;
         }
 
-        if (IsScalar(value.GetType()))
+        if (IsScalar(value.GetType()) || HasModelBinder(value.GetType()))
         {
             AddWholeValue(queryParts, key, value);
             return;
@@ -138,7 +140,7 @@ public static class McpRequestValueFormatter
                     continue;
                 }
 
-                if (IsScalar(item.GetType()))
+                if (IsScalar(item.GetType()) || HasModelBinder(item.GetType()))
                 {
                     AddValue(queryParts, key, item, depth + 1);
                     continue;
@@ -186,7 +188,14 @@ public static class McpRequestValueFormatter
             }
 
             var key = $"{prefix}.{GetBinderModelName(attributes, property)}";
-            AddValue(queryParts, key, property.GetValue(value), depth);
+            var propertyValue = property.GetValue(value);
+            if (propertyValue is not null && attributes.OfType<IBinderTypeProviderMetadata>().Any(x => x.BinderType is not null))
+            {
+                AddWholeValue(queryParts, key, propertyValue);
+                continue;
+            }
+
+            AddValue(queryParts, key, propertyValue, depth);
         }
     }
 
@@ -207,7 +216,7 @@ public static class McpRequestValueFormatter
     /// Whether MVC can read the property from the query string: not when its type is bound from a source of its own,
     /// when <c>[BindNever]</c> on it or on its type excludes it, or when a binding attribute names a source the query
     /// string never fills, <c>[FromHeader]</c>, <c>[FromForm]</c>, <c>[FromServices]</c>, <c>[FromKeyedServices]</c> or
-    /// <c>[FromBody]</c>.
+    /// <c>[FromBody]</c>. A property with a model binder of its own reads its key from the query string as well.
     /// </summary>
     private static bool IsBoundFromTheQuery(Type type, Type propertyType, object[] attributes)
     {
@@ -221,6 +230,11 @@ public static class McpRequestValueFormatter
         if (bindingBehavior?.Behavior == BindingBehavior.Never || attributes.OfType<FromKeyedServicesAttribute>().Any())
         {
             return false;
+        }
+
+        if (attributes.OfType<IBinderTypeProviderMetadata>().Any(x => x.BinderType is not null))
+        {
+            return true;
         }
 
         var bindingSource = attributes.OfType<IBindingSourceMetadata>().Select(x => x.BindingSource).FirstOrDefault(x => x is not null);
@@ -243,6 +257,18 @@ public static class McpRequestValueFormatter
     private static bool IsNotBoundFromTheQuery(Type type)
     {
         return TypesNotBoundFromTheQuery.Any(x => x.IsAssignableFrom(type));
+    }
+
+    /// <summary>
+    /// Whether the type names a model binder of its own, <c>[ModelBinder(typeof(...))]</c>, which MVC hands the value
+    /// under the type's key, as one string, rather than binding the type's properties. A nullable <c>T?</c> does not
+    /// carry the attributes of <c>T</c>, so MVC binds it from no form of query value; one is sent whole all the same.
+    /// </summary>
+    private static bool HasModelBinder(Type type)
+    {
+        return HasModelBinderByType.GetOrAdd(
+            type,
+            x => x.GetCustomAttributes(inherit: true).OfType<IBinderTypeProviderMetadata>().Any(attribute => attribute.BinderType is not null));
     }
 
     private static IReadOnlyDictionary<string, ParameterInfo> GetConstructorParameters(Type type)

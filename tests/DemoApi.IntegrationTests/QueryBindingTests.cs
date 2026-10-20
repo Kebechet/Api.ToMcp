@@ -3,6 +3,7 @@ using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,39 @@ namespace DemoApi.IntegrationTests;
 /// </summary>
 public class QueryBindingTests
 {
+    private static readonly Guid FirstId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+    private static readonly Guid SecondId = Guid.Parse("66666666-7777-8888-9999-000000000000");
+
+    [Fact]
+    public async Task APropertyOfATypeWithAModelBinder_ReachesTheBinder()
+    {
+        var bound = await PostAsync("order", "f", new QueryOrderFilter { Id = new QueryOrderId(FirstId), City = "Q" });
+
+        Assert.Equal(FirstId, bound.GetProperty("id").GetGuid());
+        Assert.Equal("Q", bound.GetProperty("city").GetString());
+    }
+
+    [Fact]
+    public async Task AParameterOfATypeWithAModelBinder_ReachesTheBinder()
+    {
+        var bound = await PostAsync("id", "id", new QueryOrderId(FirstId));
+
+        Assert.Equal(FirstId, bound.GetProperty("id").GetGuid());
+    }
+
+    [Fact]
+    public async Task ValuesOfATypeWithAModelBinder_InANestedObjectAndACollection_ReachTheBinder()
+    {
+        var bound = await PostAsync("nested", "o", new QueryOrderOuter
+        {
+            Inner = new QueryOrderFilter { Id = new QueryOrderId(SecondId) },
+            Ids = [new QueryOrderId(FirstId), new QueryOrderId(SecondId)]
+        });
+
+        Assert.Equal(SecondId, bound.GetProperty("inner").GetGuid());
+        Assert.Equal([FirstId, SecondId], bound.GetProperty("ids").EnumerateArray().Select(x => x.GetGuid()));
+    }
+
     [Fact]
     public async Task AnObjectWithACancellationToken_SendsOnlyWhatTheQueryBinds()
     {
@@ -52,8 +86,51 @@ public class QueryBindingTests
 [Route("api/query-binding")]
 public sealed class QueryBindingController : ControllerBase
 {
+    [HttpPost("order")]
+    public IActionResult Order(QueryOrderFilter f) => Ok(new { id = f.Id.Value, f.City });
+
+    [HttpPost("id")]
+    public IActionResult Id(QueryOrderId id) => Ok(new { id = id.Value });
+
+    [HttpPost("nested")]
+    public IActionResult Nested([FromQuery] QueryOrderOuter o) => Ok(new { inner = o.Inner?.Id.Value, ids = o.Ids.Select(x => x.Value) });
+
     [HttpPost("ct")]
     public IActionResult Cancellation(QueryCancellationFilter f) => Ok(new { f.City, query = Request.QueryString.Value });
+}
+
+[ModelBinder(typeof(QueryOrderIdBinder))]
+public readonly record struct QueryOrderId(Guid Value)
+{
+    public override string ToString() => Value.ToString();
+}
+
+public sealed class QueryOrderIdBinder : IModelBinder
+{
+    public Task BindModelAsync(ModelBindingContext bindingContext)
+    {
+        var value = bindingContext.ValueProvider.GetValue(bindingContext.ModelName);
+        if (value != ValueProviderResult.None && Guid.TryParse(value.FirstValue, out var id))
+        {
+            bindingContext.Result = ModelBindingResult.Success(new QueryOrderId(id));
+        }
+
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class QueryOrderFilter
+{
+    public QueryOrderId Id { get; set; }
+
+    public string? City { get; set; }
+}
+
+public sealed class QueryOrderOuter
+{
+    public QueryOrderFilter? Inner { get; set; }
+
+    public List<QueryOrderId> Ids { get; set; } = [];
 }
 
 public sealed class QueryCancellationFilter

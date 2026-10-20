@@ -405,6 +405,41 @@ public class McpRequestValueFormatterTests
         Assert.Equal(new[] { "f.City=Brno" }, queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_SendsAValueOfATypeWithAModelBinder_AsOneValueUnderItsOwnKey()
+    {
+        // The binder reads f.Id; one key per property of the id leaves it at its default.
+        var id = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new BoundFilter { Id = new BoundId(id), Code = new CodedId(7), City = "Q" });
+
+        Assert.Equal(new[] { $"f.Id={id}", "f.Code=C-7", "f.City=Q" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsAValueOfATypeWithAModelBinder_AsOneValue_AsAParameterInANestedObjectAndInACollection()
+    {
+        var first = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var second = Guid.Parse("66666666-7777-8888-9999-000000000000");
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "id", new BoundId(first));
+        McpRequestValueFormatter.AddQueryValue(queryParts, "o", new BoundOuter { Inner = new BoundFilter { Id = new BoundId(second) }, Ids = [new BoundId(first), new BoundId(second)] });
+
+        Assert.Equal(new[] { $"id={first}", $"o.Inner.Id={second}", $"o.Ids={first}", $"o.Ids={second}" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsAPropertyWithAModelBinderOfItsOwn_AsOneValue()
+    {
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new PropertyBinderFilter { Range = new BoundRange(3, 5) });
+
+        Assert.Equal(new[] { "f.Range=3-5" }, queryParts);
+    }
+
     private sealed class SourcedFilter
     {
         public string? City { get; set; }
@@ -472,6 +507,67 @@ public class McpRequestValueFormatterTests
         public void CopyTo(Stream target) => throw new InvalidOperationException();
         public Task CopyToAsync(Stream target, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
         public Stream OpenReadStream() => throw new InvalidOperationException();
+    }
+
+    private sealed class NoOpBinder : IModelBinder
+    {
+        public Task BindModelAsync(ModelBindingContext bindingContext) => Task.CompletedTask;
+    }
+
+    [ModelBinder(typeof(NoOpBinder))]
+    private readonly record struct BoundId(Guid Value)
+    {
+        public override string ToString()
+        {
+            return Value.ToString();
+        }
+    }
+
+    [ModelBinder(typeof(NoOpBinder))]
+    [TypeConverter(typeof(CodedIdConverter))]
+    private readonly record struct CodedId(int Value);
+
+    /// <summary>
+    /// Converts only to string, so MVC does not count the type as simple.
+    /// </summary>
+    private sealed class CodedIdConverter : TypeConverter
+    {
+        public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
+        {
+            return destinationType == typeof(string) && value is CodedId id
+                ? $"C-{id.Value}"
+                : base.ConvertTo(context, culture, value, destinationType);
+        }
+    }
+
+    private sealed class BoundFilter
+    {
+        public BoundId Id { get; set; }
+
+        public CodedId? Code { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    private sealed class BoundOuter
+    {
+        public BoundFilter? Inner { get; set; }
+
+        public List<BoundId> Ids { get; set; } = [];
+    }
+
+    private sealed record BoundRange(int From, int To)
+    {
+        public override string ToString()
+        {
+            return $"{From}-{To}";
+        }
+    }
+
+    private sealed class PropertyBinderFilter
+    {
+        [ModelBinder(typeof(NoOpBinder))]
+        public BoundRange? Range { get; set; }
     }
 
     private sealed class SearchFilter
