@@ -45,6 +45,7 @@ namespace Api.ToMcp.Generator.Parsing
                 HasMcpExposeAttribute = hasMcpExpose,
                 HasMcpIgnoreAttribute = hasMcpIgnore,
                 Actions = actions,
+                ActionNames = ActionMethodAnalyzer.GetActionNames(namedType),
                 BaseClasses = GetBaseClasses(namedType)
             };
         }

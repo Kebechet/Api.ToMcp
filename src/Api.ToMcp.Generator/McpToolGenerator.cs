@@ -252,20 +252,25 @@ namespace Api.ToMcp.Generator
         /// </summary>
         private static IEnumerable<string> GetEntryNames(ControllerInfoModel controller, ActionInfoModel action)
         {
+            return GetEntryNames(controller, action.Name);
+        }
+
+        private static IEnumerable<string> GetEntryNames(ControllerInfoModel controller, string actionName)
+        {
             var controllerNames = GetEntryNames(controller).ToList();
 
-            return controllerNames.Concat(controllerNames.Select(x => $"{x}{EntryActionSeparator}{action.Name}"));
+            return controllerNames.Concat(controllerNames.Select(x => $"{x}{EntryActionSeparator}{actionName}"));
         }
 
         /// <summary>
         /// Every entry that names a controller or an action of the project. An action that cannot become a tool,
-        /// through <c>[McpIgnore]</c> or an <c>/mcp</c> route, is named all the same.
+        /// through <c>[McpIgnore]</c>, an <c>/mcp</c> route or HTTP methods no tool sends, is named all the same.
         /// </summary>
         private static HashSet<string> GetEntryNames(ImmutableArray<ControllerInfoModel> controllers)
         {
             return new HashSet<string>(
                 controllers.SelectMany(controller => GetEntryNames(controller)
-                    .Concat(controller.Actions.SelectMany(action => GetEntryNames(controller, action)))),
+                    .Concat(controller.ActionNames.SelectMany(action => GetEntryNames(controller, action)))),
                 StringComparer.Ordinal);
         }
 

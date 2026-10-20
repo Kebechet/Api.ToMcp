@@ -201,6 +201,57 @@ namespace TestApi
         Assert.DoesNotContain(GetGeneratorDiagnostics(Usings + ControllersKeptFromMcp, exclude), x => x.Id == UnmatchedConfigEntryId);
     }
 
+    private const string ActionsWithoutAToolMethod = @"
+namespace TestApi
+{
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+        [HttpHead(""base-head"")]
+        public IActionResult BaseHead() => Ok();
+    }
+
+    [Route(""api/[controller]"")]
+    public class ProductsController : CatalogControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public IActionResult GetById(int id) => Ok();
+
+        [HttpHead(""head"")]
+        public IActionResult HeadOnly() => Ok();
+
+        [Route(""any"")]
+        public IActionResult Any() => Ok();
+
+        public IActionResult Describe() => Ok();
+
+        [NonAction]
+        public IActionResult Helper() => Ok();
+    }
+}
+";
+
+    [Theory]
+    [InlineData("Products.HeadOnly")]
+    [InlineData("Products.Any")]
+    [InlineData("ProductsController.Describe")]
+    [InlineData("Products.BaseHead")]
+    public void Generator_DoesNotWarnAboutAnEntry_ThatNamesAnActionWithoutAnHttpMethodAToolSends(string entry)
+    {
+        // MVC serves these actions for HEAD, for every method or by conventional routing, so they are actions, which no
+        // tool calls: the entry names what it means to.
+        var config = $@"{{ ""mode"": ""AllExceptExcluded"", ""exclude"": [""{entry}""] }}";
+
+        Assert.DoesNotContain(GetGeneratorDiagnostics(Usings + ActionsWithoutAToolMethod, config), x => x.Id == UnmatchedConfigEntryId);
+    }
+
+    [Fact]
+    public void Generator_WarnsAtAnEntryThatNamesAMethodThatIsNoAction()
+    {
+        const string config = @"{ ""mode"": ""AllExceptExcluded"", ""exclude"": [""Products.Helper""] }";
+
+        Assert.Single(GetGeneratorDiagnostics(Usings + ActionsWithoutAToolMethod, config), x => x.Id == UnmatchedConfigEntryId);
+    }
+
     [Theory]
     [InlineData("ProductCrudController")]
     [InlineData("ProductCrud.GetAll")]

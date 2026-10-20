@@ -155,6 +155,18 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
+        /// The names of the controller's actions, as MVC finds them, whatever HTTP methods MVC serves them for.
+        /// </summary>
+        public static ImmutableArray<string> GetActionNames(INamedTypeSymbol controller)
+        {
+            return GetPublicMethods(controller)
+                .Where(IsAction)
+                .Select(x => x.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToImmutableArray();
+        }
+
+        /// <summary>
         /// The public methods MVC lists for a controller, as reflection's <c>GetMethods()</c> lists them: the class's own,
         /// then those of each base class up to the framework's <c>ControllerBase</c>, whose own are never actions. A
         /// method an override replaces is listed once, as the most derived override; one hidden with <c>new</c> is

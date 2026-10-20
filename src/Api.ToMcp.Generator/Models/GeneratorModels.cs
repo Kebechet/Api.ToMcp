@@ -79,6 +79,12 @@ namespace Api.ToMcp.Generator.Models
         public EquatableArray<ActionInfoModel> Actions { get; init; } = EquatableArray<ActionInfoModel>.Empty;
 
         /// <summary>
+        /// The names of every action MVC serves on the controller, its inherited ones included: also those no tool calls,
+        /// served for HEAD or OPTIONS only, for every method or by conventional routing, which an entry names all the same.
+        /// </summary>
+        public EquatableArray<string> ActionNames { get; init; } = EquatableArray<string>.Empty;
+
+        /// <summary>
         /// The classes the controller inherits actions from, nearest first, up to the framework's <c>ControllerBase</c>.
         /// </summary>
         public EquatableArray<BaseClassModel> BaseClasses { get; init; } = EquatableArray<BaseClassModel>.Empty;
