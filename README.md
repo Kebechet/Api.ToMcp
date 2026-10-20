@@ -119,6 +119,10 @@ public class ProductsController : ControllerBase
 }
 ```
 
+### 5. See your tools
+
+Run the app and point MCP Inspector at its MCP endpoint to see the generated tools and try them. See [Debugging & Inspecting Your Tools](#debugging--inspecting-your-tools).
+
 ## Configuration
 
 ### Selection Modes
@@ -557,6 +561,96 @@ Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivit
 - **One HTTP verb per action.** If an action carries multiple verb attributes (e.g. `[HttpGet]` and `[HttpHead]`), only the first is used.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
 - **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
+
+## Debugging & Inspecting Your Tools
+
+You don't need Claude, ChatGPT or another AI client to see what the generator produced. The official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connects to any MCP server: point it at your running app and it shows each tool exactly as a client receives it, and calls it against your API. The commands below were checked with Inspector 2.11.0, which declares Node.js 22.19 or later. They ask for `@latest` because on an older Node a bare `npx @modelcontextprotocol/inspector` runs the deprecated v1 instead, which prints `@modelcontextprotocol/inspector v1 is deprecated` and lacks some of the flags used here. On such a Node, `@latest` still runs; npm only prints `npm warn EBADENGINE Unsupported engine` for the Inspector and for `undici` when it installs them.
+
+### Connecting
+
+The endpoint URL is the app's address plus the pattern passed to `MapMcpEndpoint`, and the transport is Streamable HTTP. Run the app on plain HTTP and start the Inspector with that URL:
+
+```bash
+dotnet run --urls http://localhost:5080
+npx @modelcontextprotocol/inspector@latest --transport http --server-url http://localhost:5080/mcp
+```
+
+The Inspector opens in the browser at `http://127.0.0.1:6274` with the connection filled in. Where it cannot open a browser, open the full URL it prints, which carries the `MCP_INSPECTOR_API_TOKEN` the page asks for. Turn on the server's connection switch, open the **Tools** tab, pick a tool (listed by its title, with its name beneath), fill in its arguments and press **Execute Tool**. The result shows the text content and, under **Structured Output**, the structured content.
+
+**HTTPS.** The Inspector runs on Node, which does not trust the ASP.NET Core development certificate, so an `https://localhost` URL fails with `fetch failed` (cause: `self-signed certificate`). Inspect over HTTP as above, or export the certificate (only the certificate, not its key) and let Node trust it:
+
+```bash
+dotnet dev-certs https --export-path ./aspnetcore-dev.pem --format Pem
+NODE_EXTRA_CA_CERTS=./aspnetcore-dev.pem npx @modelcontextprotocol/inspector@latest --transport http --server-url https://localhost:5001/mcp
+```
+
+### From the command line
+
+The same package has a CLI that prints the raw JSON, which suits scripts and CI:
+
+```bash
+npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --method tools/list
+npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --method tools/call --tool-name Products_GetById --tool-arg id=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+- The transport is inferred from a URL ending in `/mcp`; for another pattern add `--transport http`.
+- `--tool-arg` converts each value to the type the tool's input schema declares: numbers and booleans are parsed (`days=3` is a number), and an object or array argument is parsed as JSON, `--tool-arg 'request={"city":"Brno","temperatureC":21}'`. Anything else stays a string. `--tool-args-json` passes the arguments verbatim instead.
+- A call whose result is an error exits with code `5`. `--format json` prints one JSON object, with the whole output under a `result` key of its own; that is the CLI's envelope, separate from the `{"result": ...}` wrapping of structured content described below.
+- `tools/list` also prints a schema portability summary, and `--strict` its details. The usual warnings are nullable properties written as a type array, `"type": ["string", "null"]`: valid JSON Schema, which a client that allows one type per property may reject or simplify.
+
+### What to check
+
+| Look at | What it tells you |
+|---|---|
+| The tool list | One tool per selected action, named by `toolNameFormat`, plus every hand-written `[McpServerTool]`. If one is missing, see [A tool is missing](#a-tool-is-missing). |
+| `description`, and each argument's | The `<summary>` and `<param>` text, which is what the model reads. `Invokes Controller.Action` or `Parameter: name` is the generic fallback: the XML comment is missing or the project does not generate XML docs. See [Tool Descriptions](#tool-descriptions). |
+| `title` and `annotations` | The title derived from the action name, and the read-only, destructive, idempotent and open-world hints derived from the scope and HTTP method. See [Tool annotations](#tool-annotations) and [Tool titles](#tool-titles). |
+| `inputSchema` | One property per route, query and body parameter. A request DTO's properties carry their XML `<summary>` as `description`; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). |
+| `outputSchema` | The action's response type. A tool without one returns text only; see [Which type](#which-type). |
+| A call's `structuredContent` | The response body as JSON, next to the same body as text. |
+| A call with `isError: true` | `HTTP <status>: <reason> - <body>` is your API's own answer, for example `HTTP 404: Not Found - {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404,...}`. `An error occurred invoking '<tool>'.` means the tool threw instead; see [A call fails](#a-call-fails). |
+
+The Inspector negotiates protocol `2025-11-25` unless told otherwise, so a tool whose result is not an object, such as a list or a body that can be `null`, shows its `outputSchema` and `structuredContent` wrapped in `{"result": ...}` (see [Clients on an older protocol](#clients-on-an-older-protocol)). Add `--protocol-era modern` to negotiate `2026-07-28` and see them unwrapped. In that mode Inspector 2.11.0 rejects a success without a body: the server sends `"structuredContent": null`, which the schema allows, and the Inspector reports `declares an output schema but returned no structured content`. The default mode shows the same call as `{"result": null}`.
+
+### Auth and scopes
+
+Every tool is listed, whatever the caller is allowed to do: scopes are checked when a tool is called, not when the list is built. To call tools behind auth, send the header your API expects; the generated tools forward it to the API call:
+
+```bash
+npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --header "Authorization: Bearer <token>" --method tools/call --tool-name Products_GetAll
+```
+
+The web UI takes the same `--header` flag, and needs it at launch: a session started with a server URL is read-only, so a header cannot be added in the UI afterwards. If your API uses JWT bearer authentication (`AddAuthentication().AddJwtBearer()`), `dotnet user-jwts create --claim "permissions=mcp:read" -o token`, run in the API project, prints a token the app accepts in the Development environment.
+
+If your app requires authentication on the MCP endpoint itself, such as through a fallback authorization policy, `tools/list` already needs `--header`. Without it the endpoint answers `401`, and the CLI reports `auth_required` and exits with code `3`; in an interactive terminal the Inspector tries to start an OAuth sign-in instead.
+
+A refused call comes back as `isError: true`:
+
+| Situation | Result text | Where the reason is |
+|---|---|---|
+| No scope validation, and the API refuses the call | `HTTP 401: Unauthorized` | In the result |
+| Scope validation on, no token | `An error occurred invoking '<tool>'.` | App log: `User is not authenticated. Scope validation requires authentication.` |
+| The token has no `ClaimName` claim | `An error occurred invoking '<tool>'.` | App log: `Claim 'permissions' not found. Required scope: Read` |
+| The claim grants too little | `An error occurred invoking '<tool>'.` | App log: `Insufficient scope. Required: Write, Granted: Read` |
+
+A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the client only that generic text. The reason is in the app's log, as an error from `ModelContextProtocol.Server.McpServer`: `"<tool>" threw an unhandled exception.`, followed by the exception. See [Scope-Based Access Control](#scope-based-access-control).
+
+### A tool is missing
+
+- The Inspector lists what the running app registered. After changing `generator.json` or an attribute, rebuild, restart the app and connect again.
+- The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes only `[McpExpose]` actions until you list others or switch to `AllExceptExcluded`. The build that creates it warns with `MCP100`, and `MCP006` follows while no tool is generated.
+- A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included, so again only `[McpExpose]` actions. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Both give build warning `MCP001`, pointing at what could not be read; see [Troubleshooting](#troubleshooting).
+- An action whose route contains `/mcp` anywhere, such as `api/settings/mcp-status`, is never exposed (loop prevention).
+- An action that is not `public`, or whose HTTP method comes from anything but `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]` (`[AcceptVerbs]`, `[HttpHead]`, `[HttpOptions]`, conventional routing), is skipped without a diagnostic.
+- `AdditionalFiles`, include names and minimal APIs: see [Troubleshooting](#troubleshooting).
+
+To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the project. A build then writes it to `obj/<Configuration>/<TargetFramework>/generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`, one file per tool, such as `ProductsController_GetByIdTool.g.cs`. A project can move it with `<CompilerGeneratedFilesOutputPath>`: the demo sets `$(BaseIntermediateOutputPath)Generated`, so its files are in `obj/Generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`. A file stays there after its tool is gone; `McpToolsRegistration.g.cs` lists the current tools.
+
+### A call fails
+
+`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. Apart from a scope rejection, the usual cause is the tool's HTTP call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
+
+`HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation.
 
 ## Troubleshooting
 
