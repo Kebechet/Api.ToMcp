@@ -20,4 +20,5 @@ internal static class KnownTypeNames
     public const string ActionResult = "Microsoft.AspNetCore.Mvc.ActionResult";
     public const string IResult = "Microsoft.AspNetCore.Http.IResult";
     public const string IConvertToActionResult = "Microsoft.AspNetCore.Mvc.Infrastructure.IConvertToActionResult";
+    public const string AttributeUsage = "System.AttributeUsageAttribute";
 }

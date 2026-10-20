@@ -83,6 +83,13 @@ namespace Api.ToMcp.Generator.Models
         public string ControllerName { get; set; } = "";
         public string HttpMethod { get; set; } = "";
         public string RouteTemplate { get; set; } = "";
+
+        /// <summary>
+        /// Why the generator cannot read the route or HTTP method MVC serves the action at from its routing attributes, as
+        /// a clause of MCP009's message, or null when it can.
+        /// </summary>
+        public string? RouteProblem { get; set; }
+
         public ImmutableArray<ParameterInfoModel> Parameters { get; set; } = ImmutableArray<ParameterInfoModel>.Empty;
         public ReturnTypeInfoModel ReturnType { get; set; } = new ReturnTypeInfoModel();
         public bool HasMcpExposeAttribute { get; set; }

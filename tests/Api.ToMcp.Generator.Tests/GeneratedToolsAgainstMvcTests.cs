@@ -152,6 +152,45 @@ namespace TestApi
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
     }
 
+    // Route attributes an app derives from MVC's or implements itself, which MVC reads by their interfaces.
+    public sealed class EchoRouteAttribute : RouteAttribute
+    {
+        public EchoRouteAttribute() : base(""custom/[controller]"")
+        {
+        }
+    }
+
+    public sealed class EchoGetAttribute : HttpGetAttribute
+    {
+        public EchoGetAttribute(string template) : base(""by/"" + template)
+        {
+        }
+    }
+
+    public sealed class EchoDocsRouteAttribute : Attribute, Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider
+    {
+        public string Template => ""docs/{slug}"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
+    [ApiController]
+    [EchoRoute]
+    public class CustomRouteController : ControllerBase
+    {
+        [EchoGet(""{id}"")]
+        public object GetById(int id) => new { id, path = Request.Path.Value };
+
+        [AcceptVerbs(""HEAD"", ""PATCH"", Route = ""verbs/{id}"")]
+        public object PatchVerbs(int id, [FromBody] ProductFilter filter) => new { id, filter.City, method = Request.Method };
+
+        [HttpGet]
+        [EchoDocsRoute]
+        public object GetDocs(string slug) => new { slug };
+    }
+
     // Actions a concrete controller inherits from a generic base, with the base's type arguments substituted.
     [ApiController]
     [Route(""api/[controller]"")]
@@ -219,6 +258,9 @@ namespace TestApi
     [InlineData("EchoController_PostUpperTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("EchoController_GetOrderedTool", @"{""name"":""a"",""count"":2,""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""name"":""a"",""count"":2,""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostClashTool", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""bodyJson"":{""city"":""Brno""},""cancellationToken"":""c1"",""routeroute"":""rr"",""System"":""s1"",""JsonSerializer"":""j1"",""McpScope"":""m1""}", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""city"":""Brno"",""cancellationToken"":""c1"",""routeroute"":""rr"",""system"":""s1"",""jsonSerializer"":""j1"",""mcpScope"":""m1""}")]
+    [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
+    [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
+    [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetOptionalTool", @"{}", @"{""id"":null,""path"":""/api/optional""}")]

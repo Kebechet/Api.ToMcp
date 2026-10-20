@@ -46,7 +46,7 @@ namespace TestApi
 ";
         var (controller, compilation) = GetControllerSymbol(Usings + AspNetStubs + controllerSource, "TestApi.ProductsController");
 
-        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", compilation, CancellationToken.None);
+        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", null, compilation, CancellationToken.None);
 
         var search = Assert.Single(actions);
         Assert.Equal("/api/products/search", search.RouteTemplate);
@@ -68,7 +68,7 @@ namespace TestApi
 ";
         var (controller, compilation) = GetControllerSymbol(Usings + AspNetStubs + controllerSource, "TestApi.ProductsController");
 
-        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", compilation, CancellationToken.None);
+        var actions = ActionMethodAnalyzer.GetActions(controller, "api/[controller]", null, compilation, CancellationToken.None);
 
         var getById = Assert.Single(actions);
         Assert.Equal("/api/products/{id}", getById.RouteTemplate);

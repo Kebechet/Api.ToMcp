@@ -190,6 +190,11 @@ namespace Api.ToMcp.Generator.Emitting
         /// </summary>
         internal static string? GetUnbuildableRouteReason(ActionInfoModel action)
         {
+            if (action.RouteProblem != null)
+            {
+                return action.RouteProblem;
+            }
+
             var parameters = action.Parameters
                 .Where(p => p.Source != ParameterSourceModel.Services)
                 .ToList();

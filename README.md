@@ -128,7 +128,20 @@ Run the app and point MCP Inspector at its MCP endpoint to see the generated too
 The generator finds controllers and actions the way MVC does, so every tool calls an endpoint your app serves:
 
 - **Controllers.** A public, top-level class that inherits from `ControllerBase` or carries `[ApiController]`, on itself or a base class, whatever its name. Abstract, generic, static, nested and non-public classes are not controllers, and neither is one marked `[NonController]`, on itself or a base class.
-- **Actions.** A public instance method of a controller with `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]`. Static and generic methods are not actions, and neither is one marked `[NonAction]`, on itself or the base action it overrides, an override of a method of `object` such as `ToString()`, or the implementation of `IDisposable.Dispose`.
+- **Actions.** A public instance method of a controller that MVC serves for GET, POST, PUT, PATCH or DELETE, the HTTP methods a tool sends: with `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]`, `[HttpDelete]` or `[AcceptVerbs]`, or an attribute of your own, as below. Static and generic methods are not actions, and neither is one marked `[NonAction]`, on itself or the base action it overrides, an override of a method of `object` such as `ToString()`, or the implementation of `IDisposable.Dispose`.
+- **Routing attributes.** MVC reads routes and HTTP methods through the interfaces `IRouteTemplateProvider` and `IActionHttpMethodProvider`, so the generator takes an attribute derived from `[Route]` or an `[Http*]` attribute, or one that implements those interfaces itself, as MVC does:
+
+  ```csharp
+  public sealed class ApiRouteAttribute : RouteAttribute
+  {
+      public ApiRouteAttribute() : base("api/[controller]") { }
+  }
+
+  [ApiRoute]
+  public class ProductsController : ControllerBase { ... }   // routed at api/products
+  ```
+
+  MVC creates the attribute and asks it for its template; the generator follows the attribute's constructors down to MVC's, or reads its `Template` property, as long as they pass on constants, their own parameters, and concatenations or interpolations of those. The code of an attribute declared in a referenced assembly, such as a shared package, is not in its metadata, so an action routed by one gets no tool and build warning [`MCP009`](#troubleshooting).
 - **Inherited actions.** A controller has the actions it inherits from its base classes as well as its own. Each concrete controller gets its own tool for an inherited action, named after that controller, with `[controller]` in the route filled with its name; an abstract base class gets none. An overridden action gets one tool, from the most derived override.
 - **Inherited attributes.** What MVC inherits is read from the base classes and from the action an override replaces: `[Route]`, `[ApiController]`, `[NonController]`, `[NonAction]`, the `[Http*]` attributes, `[ActionName]`, `[Produces]` and `[ProducesResponseType]`, as well as [`[McpExpose]`](#mcpexpose) and [`[McpIgnore]`](#mcpignore). A parameter of an override is sent as MVC binds it: with the binding attributes of the parameter at its position in the action it overrides, `[FromQuery(Name = "...")]` included, unless it declares one of the same class itself, which replaces the base's whole, so a bare `[FromQuery]` drops the base's `Name`. Routes follow MVC's rule: `[Route]` and the `[Http*]` attributes count together, taken from the class or action that declares any of them. A controller takes them from the nearest class that does. An override that declares none is routed as its action was first declared, skipping any override in between. An override with only a `[Route]` gets no tool, as MVC serves it for every HTTP method, as it does an action that overrides nothing.
 
@@ -606,7 +619,7 @@ Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivit
 ## Limitations
 
 - **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are. Support is tracked in [#11](https://github.com/Kebechet/Api.ToMcp/issues/11).
-- **One HTTP verb per action.** If an action carries multiple verb attributes (e.g. `[HttpGet]` and `[HttpHead]`), only the first is used.
+- **One route per action.** MVC serves an action at every route and HTTP method its attributes give it; its tool calls the first route with a method the tool sends, with the first such method: `GET` for `[HttpHead] [HttpGet]`, `PUT` for `[AcceptVerbs("HEAD", "PUT", "POST")]`.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
 - **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
 
@@ -689,7 +702,7 @@ A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the
 - The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes only `[McpExpose]` actions until you list others or switch to `AllExceptExcluded`. The build that creates it warns with `MCP100`, and `MCP006` follows while no tool is generated.
 - A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included, so again only `[McpExpose]` actions. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Both give build warning `MCP001`, pointing at what could not be read; see [Troubleshooting](#troubleshooting).
 - An action whose route contains `/mcp` anywhere, such as `api/settings/mcp-status`, is never exposed (loop prevention).
-- An action that is not `public`, or whose HTTP method comes from anything but `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]` (`[AcceptVerbs]`, `[HttpHead]`, `[HttpOptions]`, conventional routing), is skipped without a diagnostic.
+- An action that is not `public` is skipped without a diagnostic, as is one MVC serves only for HTTP methods a tool does not send (`[HttpHead]`, `[HttpOptions]`, `[AcceptVerbs("HEAD")]`), for every method (a `[Route]` alone), or through conventional routing. Attributes derived from MVC's routing attributes, or implementing their interfaces, count like MVC's own; see [Controllers and Actions](#controllers-and-actions).
 - An action declared on a base controller is a tool of each concrete controller that inherits it, named after that controller (`Products_GetAll`, not `Crud_GetAll`); an abstract base class gets none. Classes and methods MVC does not serve get no tool, among them `[NonController]` classes, `[NonAction]` methods, overrides of `ToString`, `Equals` or `GetHashCode`, and the `IDisposable.Dispose` implementation. See [Controllers and Actions](#controllers-and-actions).
 - Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
 - An `include` entry that names no controller or action, through a typo or a base controller's name, selects nothing. The build warns with `MCP008`; see [Troubleshooting](#troubleshooting).
@@ -714,7 +727,7 @@ The build reports these warnings:
 | `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
 | `MCP007` | Generator | Two or more generated tools get the same name, and the MCP SDK keeps only one of them |
 | `MCP008` | Generator | An `include` or `exclude` entry names no controller or action of the project, so it selects or excludes nothing |
-| `MCP009` | Generator | An action gets no tool, as the generator cannot build its route, such as a route value no parameter fills |
+| `MCP009` | Generator | An action gets no tool, as the generator cannot build its route: a route value no parameter fills, or a routing attribute whose code it cannot read |
 | `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
 | `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
 
@@ -747,6 +760,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 **Build warning `MCP009: No MCP tool is generated for action '...'`.**
 - The generator cannot build the request MVC serves the action at, so it generates no tool for it rather than one that would not compile or would call another endpoint. The warning gives the reason and points at the action; the other tools are generated as usual.
 - `no parameter or property fills the route value '{id}'`: no parameter of the action, and no property of one, fills a placeholder of its route, such as `[HttpGet("z/{id}")] public IActionResult Z()`, which reads the value from `RouteData` itself. Give the action a parameter for it, `Z(int id)`. An optional route value nothing fills only gets the warning before the end of the route, where MVC needs it; at the end, the URL leaves it out.
+- `the route template of its [...] attribute is set in code the generator cannot read` (or `of the [...] attribute on <controller>`, or `the HTTP methods of ...`): a routing attribute of your own gives the template or the HTTP methods through code the generator cannot follow, usually because the attribute is declared in a referenced assembly, whose constructor bodies are not in its metadata, or because its constructor computes them from more than constants and its own parameters. Route the action, or its controller, with MVC's `[Route]` and `[Http*]` attributes, or declare the attribute in the project.
 - To keep the action from MCP without the warning, mark it `[McpIgnore]` or exclude it in `generator.json`, or suppress the warning like any other.
 
 **Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**

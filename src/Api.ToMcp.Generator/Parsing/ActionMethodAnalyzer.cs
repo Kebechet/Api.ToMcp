@@ -14,13 +14,6 @@ namespace Api.ToMcp.Generator.Parsing
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
         private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
-        internal const string RouteAttributeName = "RouteAttribute";
-        private const string HttpGetAttributeName = "HttpGetAttribute";
-        private const string HttpPostAttributeName = "HttpPostAttribute";
-        private const string HttpPutAttributeName = "HttpPutAttribute";
-        private const string HttpDeleteAttributeName = "HttpDeleteAttribute";
-        private const string HttpPatchAttributeName = "HttpPatchAttribute";
-        private const string RouteTemplateProviderFullName = "Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider";
         private const string ActionNameAttributeName = "ActionNameAttribute";
         private const string ApiVersionAttributeName = "ApiVersionAttribute";
         private const string ScopePropertyName = "Scope";
@@ -39,22 +32,27 @@ namespace Api.ToMcp.Generator.Parsing
         private const string DestructiveHintPropertyName = "Destructive";
         private const string IdempotentHintPropertyName = "Idempotent";
         private const string OpenWorldHintPropertyName = "OpenWorld";
+        private const string AttributeUsageInheritedPropertyName = "Inherited";
 
         /// <summary>
-        /// The HTTP method each of MVC's <c>[Http*]</c> attributes routes, by the attribute's simple name.
+        /// The HTTP methods a tool calls an action with, the ones <c>IMcpHttpInvoker</c> sends.
         /// </summary>
-        private static readonly Dictionary<string, string> HttpMethodAttributes = new Dictionary<string, string>
+        private static readonly HashSet<string> ToolHttpMethods = new HashSet<string>(StringComparer.Ordinal)
         {
-            [HttpGetAttributeName] = HttpMethodNames.Get,
-            [HttpPostAttributeName] = HttpMethodNames.Post,
-            [HttpPutAttributeName] = HttpMethodNames.Put,
-            [HttpDeleteAttributeName] = HttpMethodNames.Delete,
-            [HttpPatchAttributeName] = HttpMethodNames.Patch
+            HttpMethodNames.Get,
+            HttpMethodNames.Post,
+            HttpMethodNames.Put,
+            HttpMethodNames.Patch,
+            HttpMethodNames.Delete
         };
 
+        /// <param name="routePrefixProblem">
+        /// Why the controller's route template cannot be read, as a clause of MCP009's message, or null when it can.
+        /// </param>
         public static ImmutableArray<ActionInfoModel> GetActions(
             INamedTypeSymbol controller,
             string? routePrefix,
+            string? routePrefixProblem,
             Compilation compilation,
             CancellationToken ct)
         {
@@ -70,9 +68,13 @@ namespace Api.ToMcp.Generator.Parsing
                 if (!IsAction(method))
                     continue;
 
-                var httpInfo = GetHttpMethodInfo(method);
+                var httpInfo = GetHttpMethodInfo(method, compilation, ct);
                 if (httpInfo == null)
                     continue;
+
+                // An absolute template replaces the controller's, so an unreadable one does not matter to it.
+                var routeProblem = httpInfo.Value.Problem ??
+                    (IsAbsoluteTemplate(httpInfo.Value.Template) ? null : routePrefixProblem);
 
                 var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController);
                 var returnType = AnalyzeReturnType(method);
@@ -114,6 +116,7 @@ namespace Api.ToMcp.Generator.Parsing
                     ControllerName = controller.Name,
                     HttpMethod = httpInfo.Value.Method,
                     RouteTemplate = fullRoute,
+                    RouteProblem = routeProblem,
                     Parameters = parameters,
                     ReturnType = returnType,
                     HasMcpExposeAttribute = actionMcpExposeAttr != null,
@@ -204,17 +207,117 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The HTTP method and template of the action's route attributes, taken as MVC takes them, as a whole: from the
-        /// action if it declares any (<c>[Route]</c>, an <c>[Http*]</c> or another route template provider), else from the
-        /// method it overrides as first declared, skipping the overrides in between, as reflection's
-        /// <c>GetBaseDefinition()</c> does. Null when those attributes name no HTTP method the generator calls, such as a
-        /// <c>[Route]</c> alone, which MVC serves for every method.
+        /// The HTTP method and template a tool calls the action with, read from its routing attributes as MVC reads them.
+        /// MVC takes the attributes that give a route template (<c>[Route]</c>, an <c>[Http*]</c>, <c>[AcceptVerbs]</c> or
+        /// another <c>IRouteTemplateProvider</c>) as a whole: from the action if it declares any, else from the method it
+        /// overrides as first declared, skipping the overrides in between, as reflection's <c>GetBaseDefinition()</c> does.
+        /// Other <c>IActionHttpMethodProvider</c> attributes it reads as the action inherits them. Of the routes MVC serves
+        /// the action at (<c>DefaultApplicationModelProvider.CreateSelectors</c>), the tool takes the first with an HTTP
+        /// method it sends. Null when no route has one, such as a <c>[Route]</c> alone, which MVC serves for every method,
+        /// or an <c>[HttpHead]</c>; a problem when the route that may have one cannot be read.
         /// </summary>
-        private static (string Method, string? Template)? GetHttpMethodInfo(IMethodSymbol method)
+        private static (string Method, string? Template, string? Problem)? GetHttpMethodInfo(IMethodSymbol method, Compilation compilation, CancellationToken ct)
         {
-            var routedMethod = method.GetAttributes().Any(IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
+            var routedMethod = method.GetAttributes().Any(RouteAttributeReader.IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
+            var routeAttributes = routedMethod.GetAttributes()
+                .Where(RouteAttributeReader.IsRouteTemplateProvider)
+                .Select(x => RouteAttributeReader.Read(x, compilation, ct))
+                .ToList();
+            var httpMethodAttributes = GetInheritedAttributes(method)
+                .Where(x => RouteAttributeReader.IsHttpMethodProvider(x) && !RouteAttributeReader.IsRouteTemplateProvider(x))
+                .Select(x => RouteAttributeReader.Read(x, compilation, ct))
+                .ToList();
 
-            return GetDeclaredHttpMethodInfo(routedMethod);
+            string? problem = null;
+            foreach (var (route, httpMethodProviders) in GetRouteSelectors(routeAttributes, httpMethodAttributes))
+            {
+                if (route is { IsTemplateKnown: false })
+                {
+                    problem ??= $"the route template of its [{route.DisplayName}] attribute is set in code the generator cannot read, such as a constructor in a referenced assembly";
+                    continue;
+                }
+
+                var httpMethod = httpMethodProviders
+                    .Where(x => x.AreHttpMethodsKnown)
+                    .SelectMany(x => x.HttpMethods)
+                    .FirstOrDefault(ToolHttpMethods.Contains);
+                if (httpMethod != null)
+                {
+                    return (httpMethod, route?.Template, null);
+                }
+
+                var unreadable = httpMethodProviders.FirstOrDefault(x => !x.AreHttpMethodsKnown);
+                if (unreadable != null)
+                {
+                    problem ??= $"the HTTP methods of its [{unreadable.DisplayName}] attribute are set in code the generator cannot read, such as a constructor in a referenced assembly";
+                }
+            }
+
+            return problem is null ? null : ("", null, problem);
+        }
+
+        /// <summary>
+        /// The routes MVC serves an action at, each with the attributes that give its HTTP methods, as
+        /// <c>DefaultApplicationModelProvider.CreateSelectors</c> groups them: a route attribute that sets a template, a
+        /// name or an order defines a route of its own, which an <c>[Http*]</c> one serves for its methods alone, and any
+        /// other for the methods of the remaining attributes. Those, a bare <c>[HttpGet]</c> say, get a route of their own,
+        /// the controller's, unless such an other attribute takes them, as <c>[Route("search")]</c> does.
+        /// </summary>
+        private static List<(RouteAttributeInfo? Route, List<RouteAttributeInfo> HttpMethodProviders)> GetRouteSelectors(
+            List<RouteAttributeInfo> routeAttributes,
+            List<RouteAttributeInfo> httpMethodAttributes)
+        {
+            var routeDefiningAttributes = routeAttributes.Where(x => x.DefinesRoute).ToList();
+            var remainingHttpMethodProviders = routeAttributes
+                .Where(x => !x.DefinesRoute && x.IsHttpMethodProvider)
+                .Concat(httpMethodAttributes)
+                .ToList();
+            var hasRemainingRouteAttributes = routeAttributes.Any(x => !x.DefinesRoute) &&
+                routeDefiningAttributes.All(x => x.IsHttpMethodProvider);
+
+            var selectors = new List<(RouteAttributeInfo? Route, List<RouteAttributeInfo> HttpMethodProviders)>();
+            foreach (var routeAttribute in routeDefiningAttributes)
+            {
+                selectors.Add((routeAttribute, routeAttribute.IsHttpMethodProvider
+                    ? new List<RouteAttributeInfo> { routeAttribute }
+                    : remainingHttpMethodProviders));
+            }
+
+            if (routeDefiningAttributes.Count == 0 || hasRemainingRouteAttributes)
+            {
+                selectors.Add((null, remainingHttpMethodProviders));
+            }
+
+            return selectors;
+        }
+
+        /// <summary>
+        /// The method's attributes and those of the methods it overrides that reflection's <c>GetCustomAttributes(true)</c>
+        /// returns for it: of an overridden method, those whose <c>[AttributeUsage]</c> leaves <c>Inherited</c> true.
+        /// </summary>
+        private static IEnumerable<AttributeData> GetInheritedAttributes(IMethodSymbol method)
+        {
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                foreach (var attribute in current.GetAttributes())
+                {
+                    if (SymbolEqualityComparer.Default.Equals(current, method) || IsInheritedAttribute(attribute))
+                        yield return attribute;
+                }
+            }
+        }
+
+        private static bool IsInheritedAttribute(AttributeData attribute)
+        {
+            if (attribute.AttributeClass is null)
+                return false;
+
+            var usage = FindNearestAttribute(
+                attribute.AttributeClass,
+                x => x.BaseType,
+                x => x.AttributeClass?.ToDisplayString() == KnownTypeNames.AttributeUsage);
+
+            return usage?.NamedArguments.FirstOrDefault(x => x.Key == AttributeUsageInheritedPropertyName).Value.Value is not false;
         }
 
         private static IMethodSymbol GetBaseDefinition(IMethodSymbol method)
@@ -224,48 +327,6 @@ namespace Api.ToMcp.Generator.Parsing
                 definition = definition.OverriddenMethod;
 
             return definition;
-        }
-
-        /// <summary>
-        /// An attribute MVC reads an action's route from: one implementing <c>IRouteTemplateProvider</c>, which also covers
-        /// <c>[HttpHead]</c>, <c>[AcceptVerbs]</c> and custom ones, or one the generator knows by name, as it does elsewhere.
-        /// </summary>
-        private static bool IsRouteTemplateProvider(AttributeData attribute)
-        {
-            var attributeClass = attribute.AttributeClass;
-
-            return attributeClass != null &&
-                (attributeClass.Name == RouteAttributeName ||
-                    HttpMethodAttributes.ContainsKey(attributeClass.Name) ||
-                    attributeClass.AllInterfaces.Any(x => x.ToDisplayString() == RouteTemplateProviderFullName));
-        }
-
-        private static (string Method, string? Template)? GetDeclaredHttpMethodInfo(IMethodSymbol method)
-        {
-            // A method-level [Route("...")] supplies the template when the HTTP verb
-            // attribute carries none (e.g. [HttpGet] + [Route("search")]).
-            var routeAttrTemplate = method.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.Name == RouteAttributeName &&
-                                        attr.ConstructorArguments.Length > 0)
-                ?.ConstructorArguments[0].Value?.ToString();
-
-            foreach (var attr in method.GetAttributes())
-            {
-                var attrName = attr.AttributeClass?.Name;
-                if (attrName == null || !HttpMethodAttributes.TryGetValue(attrName, out var httpMethod))
-                    continue;
-
-                var template = attr.ConstructorArguments.Length > 0
-                    ? attr.ConstructorArguments[0].Value?.ToString()
-                    : null;
-
-                if (string.IsNullOrEmpty(template))
-                    template = routeAttrTemplate;
-
-                return (httpMethod, template);
-            }
-
-            return null;
         }
 
         private static ImmutableArray<ParameterInfoModel> AnalyzeParameters(
@@ -617,11 +678,17 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
+        /// <summary>
+        /// Whether an action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
+        /// </summary>
+        private static bool IsAbsoluteTemplate(string? template)
+        {
+            return template != null && (template.StartsWith("/") || template.StartsWith("~/"));
+        }
+
         private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
         {
-            // An action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
-            var isAbsoluteTemplate = template != null && (template.StartsWith("/") || template.StartsWith("~/"));
-            if (isAbsoluteTemplate)
+            if (IsAbsoluteTemplate(template))
                 return ReplaceRouteTokens($"/{template!.TrimStart('~').TrimStart('/').TrimEnd('/')}", controllerName, actionName);
 
             var parts = new List<string>();
