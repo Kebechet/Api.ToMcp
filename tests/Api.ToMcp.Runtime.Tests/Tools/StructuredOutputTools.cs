@@ -58,6 +58,38 @@ public sealed class StructuredMoneyConverter : JsonConverter<StructuredMoney>
     }
 }
 
+/// <summary>
+/// A response whose converted property holds the first of two lines, so the exporter writes the second line's amount as
+/// a $ref into it.
+/// </summary>
+public sealed class StructuredRefInvoice
+{
+    [JsonConverter(typeof(StructuredLineConverter))]
+    public StructuredLine First { get; set; } = new();
+
+    public StructuredLine Second { get; set; } = new();
+}
+
+public sealed class StructuredLine
+{
+    public StructuredMoney Amount { get; set; } = new();
+
+    public string Sku { get; set; } = "";
+}
+
+public sealed class StructuredLineConverter : JsonConverter<StructuredLine>
+{
+    public override StructuredLine Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        return new StructuredLine { Sku = reader.GetString()! };
+    }
+
+    public override void Write(Utf8JsonWriter writer, StructuredLine value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value.Sku);
+    }
+}
+
 /// <summary>Shaped like the tools the generator emits for actions with a typed response.</summary>
 [McpServerToolType]
 public static class GeneratedStructuredTools
@@ -82,6 +114,14 @@ public static class GeneratedStructuredTools
     [McpGeneratedTool]
     [Description("Generated tool whose request and response have a property its own converter writes.")]
     public static Task<object> Converted(StructuredInvoice invoice)
+    {
+        return Task.FromResult<object>(new CallToolResult());
+    }
+
+    [McpServerTool(Name = "generated_refs", UseStructuredContent = true, OutputSchemaType = typeof(StructuredRefInvoice))]
+    [McpGeneratedTool]
+    [Description("Generated tool whose request and response hold a $ref into a converted property.")]
+    public static Task<object> Refs(StructuredRefInvoice invoice)
     {
         return Task.FromResult<object>(new CallToolResult());
     }

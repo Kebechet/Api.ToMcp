@@ -134,6 +134,40 @@ public class McpOutputSchemaBuilderTests
         Assert.Equal("""{"description":"Tax as the till prints it."}""", properties.GetProperty("tax").GetRawText());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Build_KeepsEveryRefResolvable_WhenItsTargetLiesInsideAConvertedProperty(bool isNullable)
+    {
+        // The exporter writes a node it meets again as a $ref to its first place, here inside a converted property,
+        // whose subtree the any-value schema replaces.
+        var schema = JsonNode.Parse(Build(typeof(RefInvoice), isNullable).GetRawText())!;
+        var properties = (isNullable ? schema["anyOf"]![0]! : schema)["properties"]!;
+
+        var refs = CollectRefs(schema).ToList();
+
+        Assert.All(refs, x => Assert.NotNull(ResolvePointer(schema, x)));
+        Assert.Equal(JsonValueKind.True, properties["first"]!.GetValueKind());
+        Assert.Equal(JsonValueKind.True, properties["payments"]!.GetValueKind());
+        Assert.Equal(["amount", "currency"], ResolveRefs(schema, properties["second"]!["properties"]!["amount"]!)["properties"]!.AsObject().Select(x => x.Key));
+        Assert.Equal(["amount", "currency"], ResolveRefs(schema, properties["refunds"]!["items"]!)["properties"]!.AsObject().Select(x => x.Key));
+    }
+
+    [Fact]
+    public void Build_KeepsEveryRefResolvable_ForARecursiveTypeFirstMetInsideAConvertedProperty()
+    {
+        var schema = JsonNode.Parse(Build(typeof(BranchPair)).GetRawText())!;
+
+        // The plain branch's children were a $ref into the converted branch; they hold a copy now, and refer to it.
+        var refs = CollectRefs(schema).ToList();
+
+        Assert.NotEmpty(refs);
+        Assert.All(refs, x => Assert.NotNull(ResolvePointer(schema, x)));
+        var plainChildren = ResolveRefs(schema, schema["properties"]!["plain"]!["properties"]!["children"]!);
+        Assert.Equal("array", plainChildren["type"]!.GetValue<string>());
+        Assert.Equal(["name", "children"], ResolveRefs(schema, plainChildren["items"]!)["properties"]!.AsObject().Select(x => x.Key));
+    }
+
     [Fact]
     public void ConvertedProperties_AreWrittenAsTheirConverterWritesThem_NotInTheShapeOfTheirType()
     {
@@ -338,6 +372,19 @@ public class McpOutputSchemaBuilderTests
         }
     }
 
+    /// <summary>
+    /// The node itself, or the node its <c>$ref</c> points at, followed until it is not a reference.
+    /// </summary>
+    private static JsonNode ResolveRefs(JsonNode root, JsonNode node)
+    {
+        while (node is JsonObject jsonObject && jsonObject["$ref"] is JsonValue reference)
+        {
+            node = ResolvePointer(root, reference.GetValue<string>())!;
+        }
+
+        return node;
+    }
+
     private static JsonNode? ResolvePointer(JsonNode root, string reference)
     {
         var current = root;
@@ -399,6 +446,81 @@ public class McpOutputSchemaBuilderTests
 
         [JsonConverter(typeof(UnixTimeConverter))]
         public DateTime IssuedAt { get; set; }
+    }
+
+    public sealed class RefInvoice
+    {
+        [JsonConverter(typeof(LineConverter))]
+        public Line First { get; set; } = new();
+
+        public Line Second { get; set; } = new();
+
+        [JsonConverter(typeof(MoneyListConverter))]
+        public List<Money> Payments { get; set; } = [];
+
+        public List<Money> Refunds { get; set; } = [];
+    }
+
+    public sealed class Line
+    {
+        public Money Amount { get; set; } = new();
+
+        public string Sku { get; set; } = "";
+    }
+
+    public sealed class LineConverter : JsonConverter<Line>
+    {
+        public override Line Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return new Line { Sku = reader.GetString()! };
+        }
+
+        public override void Write(Utf8JsonWriter writer, Line value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(value.Sku);
+        }
+    }
+
+    public sealed class MoneyListConverter : JsonConverter<List<Money>>
+    {
+        public override List<Money> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            reader.Skip();
+            return [];
+        }
+
+        public override void Write(Utf8JsonWriter writer, List<Money> value, JsonSerializerOptions options)
+        {
+            writer.WriteNumberValue(value.Count);
+        }
+    }
+
+    public sealed class BranchPair
+    {
+        [JsonConverter(typeof(BranchConverter))]
+        public Branch Converted { get; set; } = new();
+
+        public Branch Plain { get; set; } = new();
+    }
+
+    public sealed class Branch
+    {
+        public string Name { get; set; } = "";
+
+        public List<Branch> Children { get; set; } = [];
+    }
+
+    public sealed class BranchConverter : JsonConverter<Branch>
+    {
+        public override Branch Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return new Branch { Name = reader.GetString()! };
+        }
+
+        public override void Write(Utf8JsonWriter writer, Branch value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(value.Name);
+        }
     }
 
     public sealed class Money

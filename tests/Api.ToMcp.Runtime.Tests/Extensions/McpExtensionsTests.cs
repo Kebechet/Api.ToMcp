@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
@@ -118,6 +119,24 @@ public class McpExtensionsTests
 
         Assert.Equal("""{"description":"Total as the till prints it."}""", inputTotal.GetRawText());
         Assert.Equal("""{"description":"Total as the till prints it."}""", outputTotal.GetRawText());
+    }
+
+    [Fact]
+    public void AddMcpTools_KeepsEveryRefResolvable_WhenItsTargetLiesInsideAConvertedProperty()
+    {
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_refs").ProtocolTool;
+
+        // Before, the second line's amount was {"$ref": ".../first/properties/amount"}, into the replaced first line.
+        var input = JsonNode.Parse(tool.InputSchema.GetRawText())!;
+        var output = JsonNode.Parse(tool.OutputSchema!.Value.GetRawText())!;
+
+        foreach (var (root, invoice) in new[] { (input, input["properties"]!["invoice"]!), (output, output) })
+        {
+            Assert.All(CollectRefs(root), x => Assert.NotNull(ResolvePointer(root, x)));
+            Assert.Equal(JsonValueKind.True, invoice["properties"]!["first"]!.GetValueKind());
+            var amount = invoice["properties"]!["second"]!["properties"]!["amount"]!;
+            Assert.Equal(["amount", "currency"], amount["properties"]!.AsObject().Select(x => x.Key));
+        }
     }
 
     [Fact]
@@ -435,6 +454,28 @@ public class McpExtensionsTests
     private static bool IsGenerated(McpServerTool tool)
     {
         return tool.ProtocolTool.Name.StartsWith("generated_", StringComparison.Ordinal);
+    }
+
+    private static IEnumerable<string> CollectRefs(JsonNode? node)
+    {
+        return node switch
+        {
+            JsonObject jsonObject => jsonObject.SelectMany(x => x.Key == "$ref" ? [x.Value!.GetValue<string>()] : CollectRefs(x.Value)),
+            JsonArray jsonArray => jsonArray.SelectMany(CollectRefs),
+            _ => []
+        };
+    }
+
+    private static JsonNode? ResolvePointer(JsonNode root, string reference)
+    {
+        var current = root;
+        foreach (var segment in reference.TrimStart('#').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var name = segment.Replace("~1", "/").Replace("~0", "~");
+            current = current is JsonArray jsonArray ? jsonArray[int.Parse(name)] : current?[name];
+        }
+
+        return current;
     }
 
     private static JsonElement GetToolInputProperty(IEnumerable<McpServerTool> tools, string toolName, string argumentName)
