@@ -18,6 +18,8 @@ namespace Api.ToMcp.Generator
         private const string McpRouteSegment = "/mcp";
         private const string IncludeListName = "include";
         private const string ExcludeListName = "exclude";
+        private const string GeneratedSourceSuffix = ".g.cs";
+        private const string RegistrationSourceName = "McpToolsRegistration";
 
         /// <summary>
         /// Separates the controller from the action in an include or exclude entry such as <c>Products.GetById</c>.
@@ -43,63 +45,87 @@ namespace Api.ToMcp.Generator
                 .Select((info, _) => info!)
                 .WithTrackingName(TrackingNames.Controllers);
 
-            // Step 3: Combine config with controllers
-            var combined = controllerProvider.Collect().Combine(configProvider).Combine(context.CompilationProvider);
+            // Step 3: Decide which tools to generate and which diagnostics to report, from the models alone. After an edit
+            // that changes no controller and not the config, Roslyn reuses this step's output and the sources made from it.
+            var plan = controllerProvider.Collect()
+                .Combine(configProvider)
+                .Select((source, _) => CreatePlan(source.Left, source.Right))
+                .WithTrackingName(TrackingNames.Plan);
 
-            // Step 4: Generate source
-            context.RegisterSourceOutput(combined, (ctx, source) =>
+            // Step 4: Generate source, one output per tool, so that an edit generates only the tools it changes again.
+            var tools = plan
+                .SelectMany((x, _) => x.Tools)
+                .WithTrackingName(TrackingNames.ToolSources);
+            context.RegisterSourceOutput(tools, (ctx, tool) =>
+                ctx.AddSource(tool.ClassName + GeneratedSourceSuffix, ToolClassEmitter.Emit(tool)));
+
+            var toolClassNames = plan
+                .Select((x, _) => new EquatableArray<string>(x.Tools.Select(tool => tool.ClassName).ToImmutableArray()))
+                .WithTrackingName(TrackingNames.Registration);
+            context.RegisterSourceOutput(toolClassNames, (ctx, names) =>
+                ctx.AddSource(RegistrationSourceName + GeneratedSourceSuffix, ToolClassEmitter.EmitRegistration(names)));
+
+            // Step 5: Report the diagnostics. Only this step reads the compilation, so it runs again after every edit: a
+            // warning at an action has to point into the syntax tree of the compilation that reports it, for the file's
+            // #pragma warning disable and .editorconfig severities to apply to it.
+            var diagnostics = plan
+                .Select((x, _) => x.Diagnostics)
+                .Combine(context.CompilationProvider)
+                .WithTrackingName(TrackingNames.Diagnostics);
+            context.RegisterSourceOutput(diagnostics, (ctx, source) =>
             {
-                var ((controllers, config), compilation) = source;
-                var selectedActions = SelectActions(controllers, config);
-                var entryNames = GetEntryNames(controllers);
-
-                // An invalid config gets MCP001 instead of MCP006: MCP006 would advise on the fallback, not on what the
-                // file says.
-                if (config.Error != null)
+                var (plannedDiagnostics, compilation) = source;
+                foreach (var diagnostic in plannedDiagnostics)
                 {
-                    ctx.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticDescriptors.InvalidConfig,
-                        CreateConfigLocation(config, config.Error.Position),
-                        config.Error.Fallback,
-                        config.Error.Reason));
+                    ctx.ReportDiagnostic(diagnostic.ToDiagnostic(compilation));
                 }
-                else if (selectedActions.IsEmpty)
-                {
-                    ReportNoToolsGenerated(ctx, controllers, config, entryNames);
-                }
-
-                // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
-                ReportUnmatchedEntries(ctx, controllers, config, entryNames);
-                selectedActions = SkipActionsWithoutARoute(ctx, selectedActions, compilation);
-                ReportDuplicateToolNames(ctx, selectedActions, config, compilation);
-
-                // Track seen tool class names to handle overloads
-                var seenToolClassNames = new Dictionary<string, int>(StringComparer.Ordinal);
-
-                foreach (var action in selectedActions)
-                {
-                    var baseClassName = action.ToolClassName;
-                    string uniqueClassName;
-
-                    if (seenToolClassNames.TryGetValue(baseClassName, out var count))
-                    {
-                        // Overload detected, add suffix
-                        seenToolClassNames[baseClassName] = count + 1;
-                        uniqueClassName = $"{baseClassName}_{count + 1}";
-                    }
-                    else
-                    {
-                        seenToolClassNames[baseClassName] = 1;
-                        uniqueClassName = baseClassName;
-                    }
-
-                    var generatedCode = ToolClassEmitter.Emit(action, config, uniqueClassName);
-                    ctx.AddSource($"{uniqueClassName}.g.cs", generatedCode);
-                }
-
-                ctx.AddSource("McpToolsRegistration.g.cs",
-                    ToolClassEmitter.EmitRegistration(selectedActions, seenToolClassNames));
             });
+        }
+
+        /// <summary>
+        /// The tools to generate for the controllers' actions the config selects, and the diagnostics to report.
+        /// </summary>
+        private static GenerationPlanModel CreatePlan(ImmutableArray<ControllerInfoModel> controllers, GeneratorConfigModel config)
+        {
+            var diagnostics = new List<DiagnosticInfoModel>();
+            var selectedActions = SelectActions(controllers, config);
+            var entryNames = GetEntryNames(controllers);
+
+            // An invalid config gets MCP001 instead of MCP006: MCP006 would advise on the fallback, not on what the
+            // file says.
+            if (config.Error != null)
+            {
+                diagnostics.Add(DiagnosticInfoModel.InFile(
+                    DiagnosticDescriptors.InvalidConfig,
+                    config.FilePath,
+                    new LinePositionSpan(config.Error.Position, config.Error.Position),
+                    config.Error.Fallback,
+                    config.Error.Reason));
+            }
+            else if (selectedActions.IsEmpty)
+            {
+                ReportNoToolsGenerated(diagnostics, controllers, config, entryNames);
+            }
+
+            // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
+            ReportUnmatchedEntries(diagnostics, controllers, config, entryNames);
+            selectedActions = SkipActionsWithoutARoute(diagnostics, selectedActions);
+            ReportDuplicateToolNames(diagnostics, selectedActions, config);
+
+            var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(selectedActions);
+            var tools = selectedActions.Select((action, i) => new ToolSourceModel
+            {
+                ClassName = toolClassNames[i],
+                Action = action with { SourceLocation = null },
+                Naming = config.Naming,
+                StructuredOutput = config.StructuredOutput
+            });
+
+            return new GenerationPlanModel
+            {
+                Tools = tools.ToImmutableArray(),
+                Diagnostics = diagnostics.ToImmutableArray()
+            };
         }
 
         /// <summary>
@@ -108,10 +134,9 @@ namespace Api.ToMcp.Generator
         /// change a name a client may already call.
         /// </summary>
         private static void ReportDuplicateToolNames(
-            SourceProductionContext ctx,
+            List<DiagnosticInfoModel> diagnostics,
             ImmutableArray<ActionInfoModel> actions,
-            GeneratorConfigModel config,
-            Compilation compilation)
+            GeneratorConfigModel config)
         {
             // The SDK looks tools up with the default string comparer, which is ordinal.
             var duplicates = actions
@@ -120,17 +145,11 @@ namespace Api.ToMcp.Generator
 
             foreach (var duplicate in duplicates)
             {
-                var locations = duplicate
-                    .Select(x => x.SourceLocation?.ToLocation(compilation))
-                    .OfType<Location>()
-                    .Distinct()
-                    .ToList();
                 var producers = string.Join(", ", duplicate.Select(x => $"{x.ControllerName}.{x.Name} ({x.HttpMethod} {x.RouteTemplate})"));
 
-                ctx.ReportDiagnostic(Diagnostic.Create(
+                diagnostics.Add(DiagnosticInfoModel.InSource(
                     DiagnosticDescriptors.DuplicateToolName,
-                    locations.FirstOrDefault() ?? Location.None,
-                    locations.Skip(1),
+                    duplicate.Select(x => x.SourceLocation),
                     duplicate.Key,
                     duplicate.Count(),
                     producers));
@@ -142,9 +161,8 @@ namespace Api.ToMcp.Generator
         /// not compile or would call an endpoint MVC does not serve it at.
         /// </summary>
         private static ImmutableArray<ActionInfoModel> SkipActionsWithoutARoute(
-            SourceProductionContext ctx,
-            ImmutableArray<ActionInfoModel> actions,
-            Compilation compilation)
+            List<DiagnosticInfoModel> diagnostics,
+            ImmutableArray<ActionInfoModel> actions)
         {
             var routableActions = ImmutableArray.CreateBuilder<ActionInfoModel>();
             foreach (var action in actions)
@@ -156,9 +174,9 @@ namespace Api.ToMcp.Generator
                     continue;
                 }
 
-                ctx.ReportDiagnostic(Diagnostic.Create(
+                diagnostics.Add(DiagnosticInfoModel.InSource(
                     DiagnosticDescriptors.UnbuildableRoute,
-                    action.SourceLocation?.ToLocation(compilation) ?? Location.None,
+                    new[] { action.SourceLocation },
                     action.ControllerName,
                     action.Name,
                     reason));
@@ -275,7 +293,7 @@ namespace Api.ToMcp.Generator
         /// action from MCP by attribute or route, gets no tools by its own code rather than by a config mistake.
         /// </summary>
         private static void ReportNoToolsGenerated(
-            SourceProductionContext context,
+            List<DiagnosticInfoModel> diagnostics,
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
             HashSet<string> entryNames)
@@ -289,23 +307,12 @@ namespace Api.ToMcp.Generator
             if (example == null)
                 return;
 
-            context.ReportDiagnostic(Diagnostic.Create(
+            diagnostics.Add(DiagnosticInfoModel.InFile(
                 DiagnosticDescriptors.NoToolsGenerated,
-                CreateConfigLocation(config, default(LinePosition)),
+                config.FilePath,
+                default,
                 config.Mode.ToString(),
                 GetNoToolsAdvice(config, entryNames, example.Controller, example.Action)));
-        }
-
-        private static Location CreateConfigLocation(GeneratorConfigModel config, LinePosition position)
-        {
-            return CreateConfigLocation(config, new LinePositionSpan(position, position));
-        }
-
-        private static Location CreateConfigLocation(GeneratorConfigModel config, LinePositionSpan span)
-        {
-            return config.FilePath == null
-                ? Location.None
-                : Location.Create(config.FilePath, default, span);
         }
 
         /// <summary>
@@ -349,21 +356,21 @@ namespace Api.ToMcp.Generator
         /// whichever list the mode reads: the other takes effect once the mode changes.
         /// </summary>
         private static void ReportUnmatchedEntries(
-            SourceProductionContext context,
+            List<DiagnosticInfoModel> diagnostics,
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
             HashSet<string> entryNames)
         {
             ReportUnmatchedEntries(
-                context, controllers, config, entryNames,
+                diagnostics, controllers, config, entryNames,
                 IncludeListName, config.Include, config.IncludeSpans, "selects nothing");
             ReportUnmatchedEntries(
-                context, controllers, config, entryNames,
+                diagnostics, controllers, config, entryNames,
                 ExcludeListName, config.Exclude, config.ExcludeSpans, "excludes nothing");
         }
 
         private static void ReportUnmatchedEntries(
-            SourceProductionContext context,
+            List<DiagnosticInfoModel> diagnostics,
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
             HashSet<string> entryNames,
@@ -378,9 +385,10 @@ namespace Api.ToMcp.Generator
                 if (entry == null || entryNames.Contains(entry))
                     continue;
 
-                context.ReportDiagnostic(Diagnostic.Create(
+                diagnostics.Add(DiagnosticInfoModel.InFile(
                     DiagnosticDescriptors.UnmatchedConfigEntry,
-                    CreateConfigLocation(config, i < spans.Length ? spans[i] : default),
+                    config.FilePath,
+                    i < spans.Length ? spans[i] : default,
                     listName,
                     entry,
                     effect,

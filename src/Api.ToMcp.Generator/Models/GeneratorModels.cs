@@ -157,6 +157,29 @@ namespace Api.ToMcp.Generator.Models
     }
 
     /// <summary>
+    /// What the generator makes of the controllers and the config: the tools to generate, in the order the registration
+    /// lists them, and the diagnostics to report.
+    /// </summary>
+    internal sealed record GenerationPlanModel
+    {
+        public EquatableArray<ToolSourceModel> Tools { get; init; } = EquatableArray<ToolSourceModel>.Empty;
+        public EquatableArray<DiagnosticInfoModel> Diagnostics { get; init; } = EquatableArray<DiagnosticInfoModel>.Empty;
+    }
+
+    /// <summary>
+    /// What the source of one tool is generated from: the action, without the place it is declared at, which only
+    /// diagnostics point at, so that an edit that moves an action generates no source again; the tool's class name; and
+    /// the parts of the config the tool's source reads.
+    /// </summary>
+    internal sealed record ToolSourceModel
+    {
+        public string ClassName { get; init; } = "";
+        public ActionInfoModel Action { get; init; } = new ActionInfoModel();
+        public NamingConfigModel Naming { get; init; } = new NamingConfigModel();
+        public bool StructuredOutput { get; init; }
+    }
+
+    /// <summary>
     /// A place in a source file, as plain values: a <c>Location</c> would hold its syntax tree, and the compilation
     /// with it, in the generator's pipeline from one compilation to the next.
     /// </summary>
