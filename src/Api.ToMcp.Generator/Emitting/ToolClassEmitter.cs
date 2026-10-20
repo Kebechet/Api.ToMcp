@@ -69,8 +69,10 @@ namespace Api.ToMcp.Generator.Emitting
             // The MCP server injects the request's CancellationToken into any tool method that
             // declares one (bound by type, so it is not surfaced as a tool input parameter).
             // Emitted last so its default value doesn't violate parameter ordering.
+            // MCP passes arguments by name, so the required parameters come first, wherever the action declares them:
+            // a nullable one without a default is optional, and C# wants every optional parameter after the required ones.
             var paramDecls = new List<string> { "IMcpHttpInvoker invoker" };
-            paramDecls.AddRange(parameters.Select(FormatParameterDeclaration));
+            paramDecls.AddRange(parameters.Where(x => !IsOptional(x)).Concat(parameters.Where(IsOptional)).Select(FormatParameterDeclaration));
             paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
 
             var annotations = FormatAnnotationArguments(action.Annotations);
@@ -465,6 +467,15 @@ namespace Api.ToMcp.Generator.Emitting
             return naming.ToolNameFormat
                 .Replace("{Controller}", controller)
                 .Replace("{Action}", actionName);
+        }
+
+        /// <summary>
+        /// Whether the tool declares the parameter with a default value, which the MCP SDK leaves out of the input
+        /// schema's <c>required</c>: the action's own default, else <c>null</c> for a nullable type.
+        /// </summary>
+        private static bool IsOptional(ParameterInfoModel param)
+        {
+            return param.HasDefaultValue || param.IsNullable;
         }
 
         private static string FormatParameterDeclaration(ParameterInfoModel param)

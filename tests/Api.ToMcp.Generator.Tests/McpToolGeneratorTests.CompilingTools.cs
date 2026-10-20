@@ -40,6 +40,23 @@ public partial class McpToolGeneratorTests
         Assert.Contains($" {expectedDeclaration},", tool);
     }
 
+    [Theory]
+    [InlineData("string name, int? count, OrderId orderId", "name, orderId, count")]
+    [InlineData("string? note, string city, OrderStatus? status, Guid tenant, [FromQuery] int page = 1", "city, tenant, note, status, page")]
+    public void Generator_DeclaresTheRequiredParametersFirst_SoAnOptionalOneBeforeARequiredOneCompiles(string parameters, string expectedOrder)
+    {
+        // MCP passes arguments by name, so the tool's parameter order is free; C# wants every optional one last (CS1737).
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet] public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        var declaredNames = tool
+            .Split('\n')
+            .Select(x => x.Trim())
+            .Where(x => x.StartsWith("[Description(\"Parameter: ", StringComparison.Ordinal))
+            .Select(x => x.Split('"')[1].Substring("Parameter: ".Length));
+
+        Assert.Equal(expectedOrder, string.Join(", ", declaredNames));
+    }
+
     [Fact]
     public void Generator_AnnotatesAReferenceParameterWithANullDefault_OfANullableObliviousAction_SoTheToolCompilesWithoutWarnings()
     {

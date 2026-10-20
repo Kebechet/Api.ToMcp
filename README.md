@@ -804,7 +804,7 @@ The generator finds the converter in the type's `[TypeConverter]` at compile tim
 
 ### Required and optional arguments
 
-An argument is optional when the action's parameter has a default value or a nullable type, and required otherwise. A client that leaves an optional argument out gets the action's default value, which the tool writes into its own signature, constants and enum members included (`OrderStatus status = OrderStatus.Open`). A struct parameter with a default value accepts `null` as well, which sends nothing, so MVC binds the action's default: `Point origin = default` becomes `Point? origin = null`, as a struct's `default` has no constant to write.
+An argument is optional when the action's parameter has a default value or a nullable type, and required otherwise. The tool declares the required arguments first, as C# wants, so a nullable parameter before a required one, as in `Find(string name, int? count, OrderId orderId)`, moves behind it; MCP passes arguments by name, so this changes only the order the input schema lists them in. A client that leaves an optional argument out gets the action's default value, which the tool writes into its own signature, constants and enum members included (`OrderStatus status = OrderStatus.Open`). A struct parameter with a default value accepts `null` as well, which sends nothing, so MVC binds the action's default: `Point origin = default` becomes `Point? origin = null`, as a struct's `default` has no constant to write.
 
 ### Generated Code Example
 

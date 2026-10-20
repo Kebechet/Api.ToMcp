@@ -24,6 +24,7 @@ using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 using Xunit;
 
 namespace Api.ToMcp.Generator.Tests;
@@ -102,6 +103,9 @@ namespace TestApi
 
         [HttpPost(""upper/{Id}"")]
         public object PostUpper(int id) => new { id };
+
+        [HttpGet(""ordered"")]
+        public object GetOrdered(string name, int? count, OrderId orderId) => new { name, count, orderId = orderId.Value };
     }
 
     [Route(""plain"")]
@@ -200,6 +204,7 @@ namespace TestApi
     [InlineData("EchoController_GetOrderTool", @"{""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostBodyIdTool", @"{""id"":{""value"":""" + OrderGuid + @"""}}", @"{""id"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostUpperTool", @"{""id"":7}", @"{""id"":7}")]
+    [InlineData("EchoController_GetOrderedTool", @"{""name"":""a"",""count"":2,""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""name"":""a"",""count"":2,""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]
@@ -220,6 +225,15 @@ namespace TestApi
 
         Assert.True(statusCode == StatusCodes.Status200OK, $"{toolClassName}: {statusCode} {body}");
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedEcho), JsonNode.Parse(body)), $"{toolClassName}: expected {expectedEcho}, MVC bound {body}");
+    }
+
+    [Fact]
+    public void Tool_RequiresTheArgumentsItsActionRequires_WhenAnOptionalOneComesBeforeThem()
+    {
+        var inputSchema = _host.GetInputSchema("EchoController_GetOrderedTool");
+
+        Assert.Equal(["name", "orderId"], inputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal(["count", "name", "orderId"], inputSchema.GetProperty("properties").EnumerateObject().Select(x => x.Name).Order());
     }
 
     /// <summary>
@@ -276,6 +290,17 @@ namespace TestApi
             await (Task)toolMethod.Invoke(null, parameterValues)!;
 
             return _invoker.LastResponse;
+        }
+
+        /// <summary>
+        /// The input schema the MCP SDK gives a generated tool, with the invoker bound from the services, as in the app.
+        /// </summary>
+        public JsonElement GetInputSchema(string toolClassName)
+        {
+            var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
+            using var services = new ServiceCollection().AddSingleton<IMcpHttpInvoker>(_invoker).BuildServiceProvider();
+
+            return McpServerTool.Create(toolMethod, options: new McpServerToolCreateOptions { Services = services }).ProtocolTool.InputSchema;
         }
 
         private static Assembly CompileWithGeneratedTools(string source)
