@@ -32,10 +32,11 @@ public class ToolClassEmitterTests
     }
 
     [Fact]
-    public void RouteContainsParameter_IsCaseSensitive()
+    public void RouteContainsParameter_IgnoresCase_AsMvcRouteValuesDo()
     {
         Assert.True(ToolClassEmitter.RouteContainsParameter("/api/{Id}", "Id"));
-        Assert.False(ToolClassEmitter.RouteContainsParameter("/api/{Id}", "id"));
+        Assert.True(ToolClassEmitter.RouteContainsParameter("/api/{Id}", "id"));
+        Assert.True(ToolClassEmitter.RouteContainsParameter("/api/{ID:int}", "id"));
     }
 
     #endregion

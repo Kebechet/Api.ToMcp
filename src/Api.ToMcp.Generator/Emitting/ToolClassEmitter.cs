@@ -399,14 +399,14 @@ namespace Api.ToMcp.Generator.Emitting
 
         internal static bool RouteContainsParameter(string route, string paramName)
         {
-            // Check for {name} or {name:constraint} or {name?} patterns
+            // Check for {name} or {name:constraint} or {name?} patterns, ignoring case as MVC's route values do
             var simplePattern = "{" + paramName + "}";
             var optionalPattern = "{" + paramName + "?}";
             var constraintPattern = "{" + paramName + ":";
 
-            return route.Contains(simplePattern) ||
-                   route.Contains(optionalPattern) ||
-                   route.Contains(constraintPattern);
+            return route.IndexOf(simplePattern, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   route.IndexOf(optionalPattern, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   route.IndexOf(constraintPattern, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         internal static string ConvertRouteTemplate(string route, List<ParameterInfoModel> routeParams)
