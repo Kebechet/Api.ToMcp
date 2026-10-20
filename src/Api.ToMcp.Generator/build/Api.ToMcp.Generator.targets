@@ -7,20 +7,21 @@
     <ApiToMcpConfigDirectory>$([System.IO.Path]::GetDirectoryName('$(ApiToMcpConfigPath)'))</ApiToMcpConfigDirectory>
   </PropertyGroup>
 
-  <Target Name="CreateMcpGeneratorConfig"
+  <!-- On a case-sensitive file system the config can sit at a path that differs only in case, such as mcp/ for the
+       default Mcp/, and Exists() misses it. Conditions compare case-insensitively, so this finds it, if the difference
+       is in the config's folder or file name. It runs whether or not a starter config may be written: the generator
+       needs the file either way, and a starter written beside it would be used in its place and clash with it as a
+       duplicate Content item (NETSDK1022) on the next build.
+       See https://github.com/Kebechet/Api.ToMcp/issues/17 -->
+  <Target Name="FindMcpGeneratorConfigCaseVariant"
           BeforeTargets="CoreCompile"
-          Condition="'$(ApiToMcpAutoCreateConfig)' == 'true' AND !Exists('$(ApiToMcpConfigPath)')">
+          Condition="!Exists('$(ApiToMcpConfigPath)')">
 
     <PropertyGroup>
       <_McpConfigFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(ApiToMcpConfigPath)'))</_McpConfigFullPath>
       <_McpConfigSearchDirectory>$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetDirectoryName('$(_McpConfigFullPath)'))))</_McpConfigSearchDirectory>
     </PropertyGroup>
 
-    <!-- On a case-sensitive file system the config can sit at a path that differs only in case, such as mcp/ for the
-         default Mcp/, and Exists() misses it. Conditions compare case-insensitively, so this finds it, if the difference
-         is in the config's folder or file name. A starter written beside it would leave it unused, and the two then
-         clash as duplicate Content items (NETSDK1022) on the next build.
-         See https://github.com/Kebechet/Api.ToMcp/issues/17 -->
     <ItemGroup Condition="'$(_McpConfigSearchDirectory)' != ''">
       <_McpConfigCandidate Include="$(_McpConfigSearchDirectory)/*/*.json" />
       <_McpCaseVariantConfig Include="@(_McpConfigCandidate)"
@@ -28,11 +29,19 @@
     </ItemGroup>
 
     <Warning Code="MCP101"
+             File="@(_McpCaseVariantConfig->'%(FullPath)')"
              Condition="'@(_McpCaseVariantConfig)' != ''"
              Text="Api.ToMcp found no config at $(_McpConfigFullPath) but found @(_McpCaseVariantConfig->'%(FullPath)'), whose path differs only in letter case, so it uses that file and creates no starter config. Set ApiToMcpConfigPath to that file, or rename it to match, so that every file system finds it." />
 
+  </Target>
+
+  <Target Name="CreateMcpGeneratorConfig"
+          BeforeTargets="CoreCompile"
+          AfterTargets="FindMcpGeneratorConfigCaseVariant"
+          Condition="'$(ApiToMcpAutoCreateConfig)' == 'true' AND !Exists('$(ApiToMcpConfigPath)') AND '@(_McpCaseVariantConfig)' == ''">
+
     <MakeDir Directories="$(ApiToMcpConfigDirectory)"
-             Condition="'@(_McpCaseVariantConfig)' == '' AND !Exists('$(ApiToMcpConfigDirectory)')" />
+             Condition="!Exists('$(ApiToMcpConfigDirectory)')" />
 
     <PropertyGroup>
       <_McpStarterConfig><![CDATA[{
@@ -49,14 +58,14 @@
 
     <WriteLinesToFile File="$(ApiToMcpConfigPath)"
                       Lines="$(_McpStarterConfig)"
-                      Overwrite="true"
-                      Condition="'@(_McpCaseVariantConfig)' == ''" />
+                      Overwrite="true" />
 
     <!-- A warning rather than a message: the starter config selects no action, so the app's MCP server lists no tools
-         until its include is filled, and a message is missing from IDE error lists and most CI log views.
+         until its include is filled, and a message is missing from IDE error lists and most CI log views. It names the
+         file to fill in, not this .targets file in the NuGet cache.
          See https://github.com/Kebechet/Api.ToMcp/issues/17 -->
     <Warning Code="MCP100"
-             Condition="'@(_McpCaseVariantConfig)' == ''"
+             File="$(_McpConfigFullPath)"
              Text="Api.ToMcp created a starter config at $(_McpConfigFullPath), as none existed there. It is in SelectedOnly mode with an empty include list, so no MCP tools are generated until you list controllers or actions in its include. If your config is at another path, set ApiToMcpConfigPath to it and delete this file." />
 
   </Target>
@@ -70,6 +79,15 @@
     <ItemGroup>
       <_ExistingMcpConfig Include="@(AdditionalFiles)"
                           Condition="$([System.String]::new('%(Identity)').EndsWith('generator.json'))" />
+    </ItemGroup>
+
+    <!-- A config listed by hand at the configured path names no file when only its case variant exists; left in, it
+         would keep the variant out and hand the generator a file it cannot read. -->
+    <ItemGroup Condition="'@(_McpCaseVariantConfig)' != ''">
+      <_StaleMcpConfig Include="@(_ExistingMcpConfig)"
+                       Condition="!Exists('%(FullPath)')" />
+      <AdditionalFiles Remove="@(_StaleMcpConfig)" />
+      <_ExistingMcpConfig Remove="@(_StaleMcpConfig)" />
     </ItemGroup>
 
     <ItemGroup Condition="'@(_ExistingMcpConfig)' == ''">
