@@ -246,16 +246,21 @@ namespace Api.ToMcp.Generator.Emitting
                 }
                 else
                 {
-                    // Else a property: of a [FromRoute] or [FromBody] parameter first, then of one bound from the route,
-                    // query and form values, a [FromRoute] one before an unattributed one. Failing those, any property of
-                    // the placeholder's name fills it, which MVC reads from elsewhere but the URL needs a segment for.
+                    // Else a property MVC reads from the route value: of a [FromRoute] parameter first, then of one bound
+                    // from the route, query and form values, a [FromRoute] one before an unattributed one. Failing those, a
+                    // property of the placeholder's name fills it, which MVC reads from elsewhere but the URL needs a
+                    // segment for: a [FromBody] parameter's, which MVC reads from the body, first, then any.
                     var propertySource = parameters
-                        .Where(p => p.Source is ParameterSourceModel.Route or ParameterSourceModel.Body)
-                        .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => FillsPlaceholder(p, prop, placeholder))))
+                        .Where(p => p.Source == ParameterSourceModel.Route)
+                        .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => ReadsRouteValue(prop, placeholder))))
                         .Concat(unprefixableParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
                             prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
                         .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
                             prop.Source == ParameterSourceModel.Auto && ReadsRouteValue(prop, placeholder)))))
+                        .Concat(parameters
+                            .Where(p => p.Source == ParameterSourceModel.Body)
+                            .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                                string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase)))))
                         .Concat(parameters.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => IsNamedBy(prop, placeholder)))))
                         .FirstOrDefault(x => x.Property != null);
 
@@ -374,18 +379,6 @@ namespace Api.ToMcp.Generator.Emitting
         private static (string Expression, string VariableName) GetRouteValueSource(ParameterInfoModel parameter, PropertyInfoModel property)
         {
             return (GetPropertyAccess(parameter, property), $"{parameter.Name}_{property.Name}");
-        }
-
-        /// <summary>
-        /// Whether a property fills a route placeholder. A [FromBody] parameter's does by its name, as MVC reads it from
-        /// the body and the route value only completes the URL. Any other's does when MVC reads it from the route values
-        /// under the placeholder's name.
-        /// </summary>
-        private static bool FillsPlaceholder(ParameterInfoModel parameter, PropertyInfoModel property, string placeholder)
-        {
-            return parameter.Source == ParameterSourceModel.Body
-                ? string.Equals(property.Name, placeholder, StringComparison.OrdinalIgnoreCase)
-                : ReadsRouteValue(property, placeholder);
         }
 
         /// <summary>

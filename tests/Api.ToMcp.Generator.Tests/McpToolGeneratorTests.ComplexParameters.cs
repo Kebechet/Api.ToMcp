@@ -170,6 +170,20 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain("\"q\"", tool);
     }
 
+    [Theory]
+    [InlineData("[FromBody] Shipment body, AttributedQuery q")]
+    [InlineData("AttributedQuery q, [FromBody] Shipment body")]
+    public void Generator_FillsTheRouteFromAPropertyMvcReadsFromIt_BeforeASameNamedPropertyOfTheBody(string parameters)
+    {
+        // MVC reads q.Id from {id} and body.Id from the body; filled from body.Id, the route would give q.Id body's value.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"body/{{id}}\")] public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", q.City);", tool);
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(body);", tool);
+        Assert.DoesNotContain("body.Id", tool);
+    }
+
     [Fact]
     public void Generator_KeepsTheNameOfAFromQueryParameter_ThatNamesItsPrefix()
     {
