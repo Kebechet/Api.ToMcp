@@ -152,7 +152,7 @@ namespace Api.ToMcp.Generator.Emitting
             foreach (var param in parameters)
             {
                 var isNamedByRoute = routeValues.Template.HasParameter(param.Name);
-                if (param.Source == ParameterSourceModel.Query && param.Properties.Any(routeValues.RouteProperties.Contains))
+                if (param.Source == ParameterSourceModel.Query && param.Properties.Any(x => routeValues.RouteProperties.Contains((param, x))))
                 {
                     queryValues.AddRange(GetQueryValues(param, routeValues.RouteProperties));
                 }
@@ -230,9 +230,9 @@ namespace Api.ToMcp.Generator.Emitting
             // string, where only a [FromRoute] property reads the route.
             var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action)).ToList();
             var unprefixableParams = parameters.Where(p => FallsBackToNoPrefix(p, action)).ToList();
-            var routeProperties = new HashSet<PropertyInfoModel>(unprefixableParams
-                .SelectMany(p => p.Properties)
-                .Where(prop => prop.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(prop, placeholder))));
+            var routeProperties = new HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)>(unprefixableParams
+                .SelectMany(p => p.Properties.Select(prop => (Parameter: p, Property: prop)))
+                .Where(x => x.Property.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(x.Property, placeholder))));
 
             foreach (var placeholder in routePlaceholders)
             {
@@ -270,7 +270,7 @@ namespace Api.ToMcp.Generator.Emitting
 
                         if (valueProviderParams.Contains(propertySource.Parameter) && ReadsRouteValue(propertySource.Property, placeholder))
                         {
-                            routeProperties.Add(propertySource.Property);
+                            routeProperties.Add((propertySource.Parameter, propertySource.Property));
                         }
                     }
                 }
@@ -364,15 +364,17 @@ namespace Api.ToMcp.Generator.Emitting
         /// with such a property sends the others under their own names, each where MVC reads it: a <c>[FromQuery]</c> one
         /// or one without a binding attribute in the query string, any other not at all.
         /// </summary>
-        private static IEnumerable<(string Key, string Expression)> GetQueryValues(ParameterInfoModel parameter, HashSet<PropertyInfoModel> routeProperties)
+        private static IEnumerable<(string Key, string Expression)> GetQueryValues(
+            ParameterInfoModel parameter,
+            HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties)
         {
-            if (!parameter.Properties.Any(routeProperties.Contains))
+            if (!parameter.Properties.Any(x => routeProperties.Contains((parameter, x))))
             {
                 return new[] { (parameter.Name, EscapeIdentifier(parameter.Name)) };
             }
 
             return parameter.Properties
-                .Where(x => x.Source is ParameterSourceModel.Auto or ParameterSourceModel.Query && !routeProperties.Contains(x))
+                .Where(x => x.Source is ParameterSourceModel.Auto or ParameterSourceModel.Query && !routeProperties.Contains((parameter, x)))
                 .Select(x => (GetBinderModelName(x), GetPropertyAccess(parameter, x)));
         }
 
@@ -650,7 +652,7 @@ namespace Api.ToMcp.Generator.Emitting
                 RouteTemplate template,
                 IReadOnlyList<RouteTemplatePart> parts,
                 Dictionary<string, (string Expression, string VariableName)> sources,
-                HashSet<PropertyInfoModel> routeProperties,
+                HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties,
                 string? unfilledName)
             {
                 Template = template;
@@ -666,9 +668,10 @@ namespace Api.ToMcp.Generator.Emitting
 
             /// <summary>
             /// The properties of parameters bound from the value providers that the tool sends only in the route, so their
-            /// parameters go out without their prefix.
+            /// parameters go out without their prefix. Each is paired with its parameter: the models are compared by value,
+            /// so two parameters of one type have equal properties, of which one may fill the route and the other not.
             /// </summary>
-            public HashSet<PropertyInfoModel> RouteProperties { get; }
+            public HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> RouteProperties { get; }
 
             public string? UnfilledName { get; }
         }

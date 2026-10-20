@@ -45,6 +45,19 @@ namespace TestApi
 }
 ";
 
+    [Fact]
+    public void Generator_FindsControllersEqualToTheRunBefore_AfterAnEditToAFileWithoutControllers()
+    {
+        var compilation = CreateCompilationOfFiles((ControllersFile, CrudControllers), (FileWithoutControllers, ClockSource));
+        var driver = CreateTrackingDriver(AllExceptExcludedConfig).RunGenerators(compilation);
+
+        driver = driver.RunGenerators(InsertText(compilation, FileWithoutControllers, ClockSource.Length, "// edited\n"));
+
+        // Roslyn scans every class again after any edit, as the edit can change what a class means. Only models equal to
+        // the run before's let the steps after the scan reuse their output.
+        AssertStepReasons(driver, TrackingNames.Controllers, IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged);
+    }
+
     [Theory]
     [InlineData(InvalidConfigId)]
     [InlineData(NoToolsGeneratedId)]
@@ -150,6 +163,17 @@ namespace TestApi
             new[] { new McpToolGenerator().AsSourceGenerator() },
             new AdditionalText[] { new InMemoryAdditionalText("Mcp/generator.json", generatorJson) },
             driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
+    }
+
+    /// <summary>
+    /// Asserts that each output of the named step ran for one of the reasons.
+    /// </summary>
+    private static void AssertStepReasons(GeneratorDriver driver, string stepName, params IncrementalStepRunReason[] reasons)
+    {
+        var outputs = driver.GetRunResult().Results.Single().TrackedSteps[stepName].SelectMany(x => x.Outputs).ToList();
+
+        Assert.NotEmpty(outputs);
+        Assert.All(outputs, x => Assert.Contains(x.Reason, reasons));
     }
 
     private static IReadOnlyList<Diagnostic> GetDiagnostics(GeneratorDriver driver)

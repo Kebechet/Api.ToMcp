@@ -29,14 +29,10 @@ namespace Api.ToMcp.Generator
             // Step 1: Read generator.json configuration
             var configProvider = context.AdditionalTextsProvider
                 .Where(file => file.Path.EndsWith(ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase))
-                .Select((file, ct) =>
-                {
-                    var config = ConfigParser.Parse(file.GetText(ct)?.ToString());
-                    config.FilePath = file.Path;
-                    return config;
-                })
+                .Select((file, ct) => ConfigParser.Parse(file.GetText(ct)?.ToString()) with { FilePath = file.Path })
                 .Collect()
-                .Select((configs, _) => configs.FirstOrDefault() ?? new GeneratorConfigModel());
+                .Select((configs, _) => configs.FirstOrDefault() ?? new GeneratorConfigModel())
+                .WithTrackingName(TrackingNames.Config);
 
             // Step 2: Find all controller classes
             var controllerProvider = context.SyntaxProvider
@@ -44,7 +40,8 @@ namespace Api.ToMcp.Generator
                     predicate: (node, _) => node is ClassDeclarationSyntax,
                     transform: (ctx, ct) => ControllerScanner.TryGetControllerInfo(ctx, ct))
                 .Where(info => info != null)
-                .Select((info, _) => info!);
+                .Select((info, _) => info!)
+                .WithTrackingName(TrackingNames.Controllers);
 
             // Step 3: Combine config with controllers
             var combined = controllerProvider.Collect().Combine(configProvider).Combine(context.CompilationProvider);
@@ -373,8 +370,8 @@ namespace Api.ToMcp.Generator
             Compilation compilation,
             HashSet<string> entryNames,
             string listName,
-            ImmutableArray<string> entries,
-            ImmutableArray<LinePositionSpan> spans,
+            EquatableArray<string> entries,
+            EquatableArray<LinePositionSpan> spans,
             string effect)
         {
             for (var i = 0; i < entries.Length; i++)
