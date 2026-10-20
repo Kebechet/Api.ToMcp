@@ -263,6 +263,11 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public bool IsSimpleType { get; init; }
 
+        /// <summary>
+        /// Whether the type is an array or another enumerable but a string, whose items a query string repeats the key for.
+        /// </summary>
+        public bool IsCollection { get; init; }
+
         public EquatableArray<PropertyInfoModel> Properties { get; init; } = EquatableArray<PropertyInfoModel>.Empty;
 
         /// <summary>
@@ -319,6 +324,12 @@ namespace Api.ToMcp.Generator.Models
         Body,
         Header,
         Services,
+
+        /// <summary>
+        /// A model binder of the parameter's own, named by <c>[ModelBinder(typeof(...))]</c> on it or on its type, which
+        /// reads the route, query and form values under the parameter's model name.
+        /// </summary>
+        Custom,
 
         /// <summary>
         /// A binding source a tool does not send, such as a header, a form field or a service, of a property.

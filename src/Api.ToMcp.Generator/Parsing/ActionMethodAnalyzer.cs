@@ -371,7 +371,10 @@ namespace Api.ToMcp.Generator.Parsing
             foreach (var param in method.Parameters)
             {
                 var bindingAttributes = GetBindingAttributes(param);
-                var declaredSource = GetDeclaredParameterSource(bindingAttributes);
+                // After its own attributes MVC reads those of its type (ModelAttributes), where an id type names its binder.
+                var modelAttributes = bindingAttributes.Concat(GetTypeAttributes(param.Type)).ToList();
+                var declaredSource = GetDeclaredParameterSource(bindingAttributes) ??
+                    (HasModelBinder(modelAttributes) ? ParameterSourceModel.Custom : null);
 
                 // Skip service-injected parameters
                 if (declaredSource == ParameterSourceModel.Services)
@@ -401,9 +404,11 @@ namespace Api.ToMcp.Generator.Parsing
                     DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
                     Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
                     IsSimpleType = isSimpleType,
+                    IsCollection = IsCollection(param.Type),
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
-                    QueryName = GetFromQueryName(bindingAttributes)
+                    QueryName = GetFromQueryName(bindingAttributes) ??
+                        (declaredSource == ParameterSourceModel.Custom ? modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null) : null)
                 });
             }
 
@@ -661,6 +666,29 @@ namespace Api.ToMcp.Generator.Parsing
 
             return attribute.ConstructorArguments.Any(x => x.Value is not null) ||
                 attribute.NamedArguments.Any(x => x.Key == BindingAttributeNames.BinderTypePropertyName && x.Value.Value is not null);
+        }
+
+        private static bool IsCollection(ITypeSymbol type)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            return type.SpecialType != SpecialType.System_String &&
+                (type is IArrayTypeSymbol || type.AllInterfaces.Any(x => x.SpecialType == SpecialType.System_Collections_IEnumerable));
+        }
+
+        /// <summary>
+        /// Whether the first attribute that gives a binding source is <c>[ModelBinder]</c> or <c>[BindProperty]</c> with a
+        /// binder type, which gives MVC's custom one: <c>[ApiController]</c> then infers no source for the parameter, and the
+        /// binder reads the route, query and form values, whatever the HTTP method.
+        /// </summary>
+        private static bool HasModelBinder(IEnumerable<AttributeData> attributes)
+        {
+            return attributes.FirstOrDefault(GivesBindingSource)?.AttributeClass is { } attributeClass &&
+                (ResponseTypeResolver.IsOrImplements(attributeClass, BindingAttributeNames.ModelBinder) ||
+                    ResponseTypeResolver.IsOrImplements(attributeClass, BindingAttributeNames.BindProperty));
         }
 
         private static ParameterSourceModel? GetDeclaredParameterSource(IEnumerable<AttributeData> attributes)

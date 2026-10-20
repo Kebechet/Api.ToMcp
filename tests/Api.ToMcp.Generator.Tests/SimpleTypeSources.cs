@@ -347,6 +347,45 @@ namespace TestApi
         }
     }
 
+    // A model binder of its own makes MVC bind the parameter from the route, query and form values, under its name,
+    // whatever the HTTP method: neither the body nor property by property.
+    [ModelBinder(typeof(TextOrderIdBinder))]
+    public sealed record TextOrderId(string Value)
+    {
+        public override string ToString() => Value;
+    }
+
+    public sealed class TextOrderIdBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext)
+        {
+            if (bindingContext.ValueProvider.GetValue(bindingContext.ModelName).FirstValue is { } value)
+            {
+                bindingContext.Result = Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingResult.Success(new TextOrderId(value));
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed record PlainCode(string Value)
+    {
+        public override string ToString() => Value;
+    }
+
+    public sealed class PlainCodeBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext)
+        {
+            if (bindingContext.ValueProvider.GetValue(bindingContext.ModelName).FirstValue is { } value)
+            {
+                bindingContext.Result = Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingResult.Success(new PlainCode(value));
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class TypedBinderQuery
     {
         public BinderId? Ref { get; set; }

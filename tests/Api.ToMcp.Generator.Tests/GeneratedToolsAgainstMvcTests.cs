@@ -129,6 +129,15 @@ namespace TestApi
         [HttpPost(""body-route/{id}"")]
         public object PostBodyRoute([FromBody] Shipment body, AttributedQuery q) => new { bodyId = body.Id, qId = q.Id, q.City };
 
+        [HttpGet(""text-order"")]
+        public object GetTextOrder(TextOrderId id) => new { id = id.Value };
+
+        [HttpPost(""text-order"")]
+        public object PostTextOrder(TextOrderId id) => new { id = id.Value };
+
+        [HttpPost(""plain-code"")]
+        public object PostPlainCode([ModelBinder(typeof(PlainCodeBinder), Name = ""code"")] PlainCode value) => new { code = value.Value };
+
         [HttpPost(""typed-binder"")]
         public object PostTypedBinder(TypedBinderQuery q) => q;
 
@@ -324,6 +333,9 @@ namespace TestApi
     // MVC binds a parameter with a name of its own under that prefix, so never from the route.
     [InlineData("EchoController_GetQueryNamedTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}}", @"{""order"":""00000000-0000-0000-0000-000000000000"",""city"":""Brno"",""page"":3}")]
     [InlineData("EchoController_PostBodyRouteTool", @"{""body"":{""id"":9,""note"":""n""},""q"":{""id"":7,""city"":""Brno""}}", @"{""bodyId"":9,""qId"":7,""city"":""Brno""}")]
+    [InlineData("EchoController_GetTextOrderTool", @"{""id"":{""value"":""A-7""}}", @"{""id"":""A-7""}")]
+    [InlineData("EchoController_PostTextOrderTool", @"{""id"":{""value"":""A-7""}}", @"{""id"":""A-7""}")]
+    [InlineData("EchoController_PostPlainCodeTool", @"{""value"":{""value"":""B-8""}}", @"{""code"":""B-8""}")]
     [InlineData("EchoController_PostTypedBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_PostFileQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno"",""hasAttachment"":false}")]

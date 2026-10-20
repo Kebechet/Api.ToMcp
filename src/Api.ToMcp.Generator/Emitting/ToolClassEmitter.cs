@@ -165,6 +165,10 @@ namespace Api.ToMcp.Generator.Emitting
                 {
                     queryValues.AddRange(GetQueryValues(param, routeValues.RouteProperties));
                 }
+                else if (param.Source == ParameterSourceModel.Custom && !isNamedByRoute)
+                {
+                    queryValues.Add((param.QueryName ?? param.Name, GetModelBinderValue(param)));
+                }
                 else if (param.Source == ParameterSourceModel.Query ||
                     (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && param.IsSimpleType))
                 {
@@ -360,6 +364,26 @@ namespace Api.ToMcp.Generator.Emitting
             return parameter.DefaultValueExpression is { } defaultValue && defaultValue != NullLiteral
                 ? $"{name} == {defaultValue} ? null : {name}"
                 : name;
+        }
+
+        /// <summary>
+        /// The value of a parameter with a model binder of its own, which reads one value under the parameter's model name:
+        /// written whole, as a route value is, rather than property by property, which no binder reads. A collection's
+        /// items repeat the key, as MVC hands such a binder all the values of a key.
+        /// </summary>
+        private static string GetModelBinderValue(ParameterInfoModel parameter)
+        {
+            if (parameter.IsCollection)
+            {
+                return GetSentValue(parameter);
+            }
+
+            var name = EscapeIdentifier(parameter.Name);
+            var formattedValue = $"{RequestValueFormatter}.Format({name})";
+
+            return parameter.IsValueType && !parameter.IsNullable && !parameter.HasDefaultValue
+                ? formattedValue
+                : $"{name} is null ? null : {formattedValue}";
         }
 
         /// <summary>
