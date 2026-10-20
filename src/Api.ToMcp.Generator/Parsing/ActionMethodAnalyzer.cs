@@ -16,6 +16,15 @@ namespace Api.ToMcp.Generator.Parsing
         private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
         internal const string RouteAttributeName = "RouteAttribute";
         private const string RouteTemplateProviderFullName = "Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider";
+        private const string ActionNameAttributeName = "ActionNameAttribute";
+        private const string ApiVersionAttributeName = "ApiVersionAttribute";
+        private const string FromRouteAttributeName = "FromRouteAttribute";
+        private const string FromQueryAttributeName = "FromQueryAttribute";
+        private const string FromBodyAttributeName = "FromBodyAttribute";
+        private const string FromHeaderAttributeName = "FromHeaderAttribute";
+        private const string FromServicesAttributeName = "FromServicesAttribute";
+        private const string FromQueryNamePropertyName = "Name";
+        private const string ScopePropertyName = "Scope";
         private const string ToolNamePropertyName = "ToolName";
         private const string TitlePropertyName = "Title";
         private const string DescriptionPropertyName = "Description";
@@ -277,9 +286,9 @@ namespace Api.ToMcp.Generator.Parsing
         private static string? GetFromQueryName(IParameterSymbol param)
         {
             return param.GetAttributes()
-                .Where(x => x.AttributeClass?.Name == "FromQueryAttribute")
+                .Where(x => x.AttributeClass?.Name == FromQueryAttributeName)
                 .SelectMany(x => x.NamedArguments)
-                .Where(x => x.Key == "Name")
+                .Where(x => x.Key == FromQueryNamePropertyName)
                 .Select(x => x.Value.Value as string)
                 .FirstOrDefault(x => !string.IsNullOrEmpty(x));
         }
@@ -320,15 +329,15 @@ namespace Api.ToMcp.Generator.Parsing
                 var attrName = attr.AttributeClass?.Name;
                 switch (attrName)
                 {
-                    case "FromRouteAttribute":
+                    case FromRouteAttributeName:
                         return ParameterSourceModel.Route;
-                    case "FromQueryAttribute":
+                    case FromQueryAttributeName:
                         return ParameterSourceModel.Query;
-                    case "FromBodyAttribute":
+                    case FromBodyAttributeName:
                         return ParameterSourceModel.Body;
-                    case "FromHeaderAttribute":
+                    case FromHeaderAttributeName:
                         return ParameterSourceModel.Header;
-                    case "FromServicesAttribute":
+                    case FromServicesAttributeName:
                         return ParameterSourceModel.Services;
                 }
             }
@@ -444,7 +453,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static string GetRouteActionName(IMethodSymbol method)
         {
-            var actionNameAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.Name == "ActionNameAttribute");
+            var actionNameAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.Name == ActionNameAttributeName);
             var explicitActionName = actionNameAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
 
             return string.IsNullOrEmpty(explicitActionName)
@@ -496,7 +505,7 @@ namespace Api.ToMcp.Generator.Parsing
         private static string? GetApiVersion(ISymbol symbol)
         {
             var attribute = symbol.GetAttributes()
-                .LastOrDefault(a => a.AttributeClass?.Name == "ApiVersionAttribute");
+                .LastOrDefault(a => a.AttributeClass?.Name == ApiVersionAttributeName);
 
             if (attribute == null || attribute.ConstructorArguments.Length == 0)
                 return null;
@@ -556,7 +565,7 @@ namespace Api.ToMcp.Generator.Parsing
             foreach (var namedArgument in mcpExposeAttribute.NamedArguments)
             {
                 // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
-                if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue)
+                if (namedArgument.Key == ScopePropertyName && namedArgument.Value.Value is int scopeValue)
                 {
                     return (McpScopeModel)scopeValue;
                 }
