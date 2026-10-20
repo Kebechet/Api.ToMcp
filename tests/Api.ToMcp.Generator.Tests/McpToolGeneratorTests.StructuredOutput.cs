@@ -585,6 +585,46 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenABaseAndADerivedControllerProduceDifferentGenericTypes()
+    {
+        // [Produces<Product>] and [Produces<Order>] are different classes, so the derived one does not replace the base's:
+        // MVC applies both.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [Produces<Product>]
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+    }
+
+    [Produces<Order>]
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CatalogControllerBase
+    {
+        [HttpGet]
+        public IActionResult Get() => Ok(new Order());
+    }
+}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_TakesTheControllersProducesType_UnderTheActionsJsonContentType()
+    {
+        // The action's [Produces] replaces only the controller's content types; the controller's type stays its 200.
+        var source = StructuredOutputSource(
+            "[Produces(\"application/json\")] public IActionResult Get() => Ok(new Order());",
+            controllerAttributes: "[Produces(\"text/csv\", Type = typeof(Order))]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Order)", tool);
+    }
+
+    [Fact]
     public void Generator_AdvertisesNoOutputSchema_WhenStructuredOutputIsOffInTheConfig()
     {
         const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""structuredOutput"": false }";
