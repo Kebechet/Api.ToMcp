@@ -480,6 +480,52 @@ namespace TestApi
         public IEnumerable<string> HttpMethods => new[] { ""GET"" };
     }
 
+    // Only the attribute's own constructors run before the named arguments: not a nested class's, nor a lambda one
+    // creates, which other code may run later.
+    public sealed class NestedPatchGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template;
+
+        public string? Template { get => _template; set => _template = value; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+
+        public void Patch(string? area) => new Patcher(this, area);
+
+        private sealed class Patcher
+        {
+            public Patcher(NestedPatchGetAttribute attribute, string? area)
+            {
+                attribute._template = area + ""/"" + attribute._template;
+            }
+        }
+    }
+
+    public sealed class LambdaCtorGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private readonly Action<string?> _prefix;
+        private string? _template;
+
+        public LambdaCtorGetAttribute()
+        {
+            _prefix = area => _template = area + ""/"" + _template;
+        }
+
+        public string? Template { get => _template; set => _template = value; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+
+        public void Prefix(string? area) => _prefix(area);
+    }
+
     public sealed class RefSideGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
     {
         private string? _template;
@@ -690,6 +736,8 @@ namespace TestApi
     [InlineData("[SideSetGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideSetGet] attribute, as the value SideSetGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[SideDerivedGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideDerivedGet] attribute, as the value SideDerivedGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[RefSideGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [RefSideGet] attribute, as the value RefSideGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    [InlineData("[NestedPatchGet(Template = \"items\")]", "the generator cannot read the route template of its [NestedPatchGet] attribute, as the value NestedPatchGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    [InlineData("[LambdaCtorGet(Template = \"items\")]", "the generator cannot read the route template of its [LambdaCtorGet] attribute, as the value LambdaCtorGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[CollectionAreaGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [CollectionAreaGet] attribute, as the setter of CollectionAreaGetAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     [InlineData("[PatternAreaGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [PatternAreaGet] attribute, as the setter of PatternAreaGetAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     [InlineData("[ObjectInitAreaGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [ObjectInitAreaGet] attribute, as the setter of ObjectInitAreaGetAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]

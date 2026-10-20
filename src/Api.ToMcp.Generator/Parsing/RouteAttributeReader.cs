@@ -370,7 +370,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var qualifiedName = $"{property.ContainingType.Name}.{property.Name}";
-            var (isAssigned, classWithoutCode) = FindAssignments(property, attributeClass, x => false, compilation, ct);
+            var (isAssigned, classWithoutCode) = FindAssignments(property, attributeClass, allowsConstructors: false, allowedSetter: null, compilation, ct);
             if (isAssigned)
             {
                 return new UnknownValue($"{qualifiedName} is set by code other than its initializer, which the generator does not follow");
@@ -468,12 +468,7 @@ namespace Api.ToMcp.Generator.Parsing
                     $"the setter of {propertyName} does more than store the value for its getter to return, which the generator does not follow");
             }
 
-            var (isSetElsewhere, _) = FindAssignments(
-                storedSymbol,
-                attributeClass,
-                x => x.Ancestors().Any(ancestor => ancestor == setter || ancestor is ConstructorDeclarationSyntax constructor && !constructor.Modifiers.Any(SyntaxKind.StaticKeyword)),
-                compilation,
-                ct);
+            var (isSetElsewhere, _) = FindAssignments(storedSymbol, attributeClass, allowsConstructors: true, allowedSetter: setter, compilation, ct);
 
             return isSetElsewhere
                 ? new UnknownValue($"the value {propertyName} returns is set by code other than its setter and the constructors, which the generator does not follow")
@@ -655,15 +650,16 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Whether code of the attribute's class, or of a class between it and the one that first declares the property or
-        /// field, sets it outside the places allowed, as a constructor may: the value the generator would read from its
-        /// initializer is then not the one MVC reads. A property counts with the ones it overrides, through which code of
-        /// a base class sets it. Else the first of those classes that a referenced assembly declares, whose code metadata
-        /// does not hold, if any.
+        /// field, sets it anywhere but in the setter allowed and, if they are, the constructors of those classes, which
+        /// run before the named arguments are set: the value the generator would read is then not the one MVC reads. A
+        /// property counts with the ones it overrides, through which code of a base class sets it. Else the first of those
+        /// classes that a referenced assembly declares, whose code metadata does not hold, if any.
         /// </summary>
         private static (bool IsAssigned, INamedTypeSymbol? ClassWithoutCode) FindAssignments(
             ISymbol symbol,
             INamedTypeSymbol attributeClass,
-            Func<SyntaxNode, bool> isAllowed,
+            bool allowsConstructors,
+            SyntaxNode? allowedSetter,
             Compilation compilation,
             CancellationToken ct)
         {
@@ -692,7 +688,7 @@ namespace Api.ToMcp.Generator.Parsing
                         .Any(x => IsWritten(GetReferenceExpression(x)) &&
                             semanticModel.GetSymbolInfo(x, ct).Symbol?.OriginalDefinition is { } assigned &&
                             assignedSymbols.Contains(assigned) &&
-                            !isAllowed(x));
+                            !IsAllowedWrite(x, declaration, allowsConstructors, allowedSetter));
                     if (isAssigned)
                     {
                         return (true, null);
@@ -706,6 +702,23 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return (false, null);
+        }
+
+        /// <summary>
+        /// Whether the code a write runs in, its nearest method, accessor, local function or lambda, is the setter
+        /// allowed, or, if they are, a constructor of the class scanned: not a nested class's constructor, nor a lambda a
+        /// constructor creates, which other code may run later.
+        /// </summary>
+        private static bool IsAllowedWrite(SyntaxNode write, SyntaxNode declaration, bool allowsConstructors, SyntaxNode? allowedSetter)
+        {
+            var code = write.Ancestors().FirstOrDefault(x => x is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or
+                BaseMethodDeclarationSyntax or AccessorDeclarationSyntax or BasePropertyDeclarationSyntax or BaseFieldDeclarationSyntax or
+                BaseTypeDeclarationSyntax);
+
+            return code != null &&
+                (code == allowedSetter ||
+                    allowsConstructors && code is ConstructorDeclarationSyntax constructor &&
+                    !constructor.Modifiers.Any(SyntaxKind.StaticKeyword) && constructor.Parent == declaration);
         }
 
         /// <summary>
