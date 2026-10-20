@@ -434,25 +434,33 @@ namespace Api.ToMcp.Generator.Parsing
         {
             var attributeClass = attribute.AttributeClass!;
             var propertyName = $"{property.ContainingType.Name}.{property.Name}";
-            if (!(property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax declaration))
+            ISymbol? storedSymbol;
+            AccessorDeclarationSyntax? setter = null;
+            if (property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax declaration)
             {
-                // The compiler marks the accessors it writes for an auto-property, which is all metadata shows of one.
-                return property.Locations.Any(x => x.IsInSource)
-                    ? new UnknownValue($"the generator cannot read {propertyName}")
-                    : !IsCompilerGenerated(property.GetMethod) || !IsCompilerGenerated(property.SetMethod)
-                        ? new UnknownValue($"the referenced assembly '{property.ContainingAssembly?.Name}' holds no code of {propertyName}")
-                        : GetReferencedSetterProblem(attribute, property, propertyName);
+                var accessors = declaration.AccessorList?.Accessors ?? default;
+                var getter = accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.GetAccessorDeclaration));
+                setter = accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.SetAccessorDeclaration) || x.IsKind(SyntaxKind.InitAccessorDeclaration));
+                storedSymbol = getter is null || setter is null
+                    ? null
+                    : IsAutoAccessor(getter) && IsAutoAccessor(setter)
+                        ? property
+                        : GetStoredField(getter, setter, compilation.GetSemanticModel(declaration.SyntaxTree), ct);
             }
-
-            var accessors = declaration.AccessorList?.Accessors ?? default;
-            var getter = accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.GetAccessorDeclaration));
-            var setter = accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.SetAccessorDeclaration) || x.IsKind(SyntaxKind.InitAccessorDeclaration));
-            var semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
-            var storedSymbol = getter is null || setter is null
-                ? null
-                : IsAutoAccessor(getter) && IsAutoAccessor(setter)
-                    ? (ISymbol)property
-                    : GetStoredField(getter, setter, semanticModel, ct);
+            else if (property.Locations.Any(x => x.IsInSource))
+            {
+                return new UnknownValue($"the generator cannot read {propertyName}");
+            }
+            else if (IsCompilerGenerated(property.GetMethod) && IsCompilerGenerated(property.SetMethod))
+            {
+                // The compiler marks the accessors it writes for an auto-property, which is all metadata shows of one. The
+                // project's classes derived from the referenced one may still set it.
+                storedSymbol = property;
+            }
+            else
+            {
+                return new UnknownValue($"the referenced assembly '{property.ContainingAssembly?.Name}' holds no code of {propertyName}");
+            }
 
             if (storedSymbol is null)
             {

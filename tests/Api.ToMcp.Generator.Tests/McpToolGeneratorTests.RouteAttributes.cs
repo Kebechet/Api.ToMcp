@@ -634,6 +634,15 @@ namespace Shared
         public string? Name => null;
     }
 
+    public class SharedAutoRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        public string? Template { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
     public class SharedBaseCtorRouteAttribute : System.Attribute, IRouteTemplateProvider
     {
         public SharedBaseCtorRouteAttribute()
@@ -667,6 +676,15 @@ namespace TestApi
     {
         public override string? Template => ""items"";
     }
+
+    public sealed class LocalSideOverSharedAutoRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+        public string? Area { get => null; set => Template = value + ""/"" + Template; }
+    }
+
+    public sealed class LocalPlainOverSharedAutoRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+    }
 }
 ";
 
@@ -674,6 +692,8 @@ namespace TestApi
     [InlineData("[LocalInitOverrideRoute]", null, "the generator cannot read the route template of its [LocalInitOverrideRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedBaseCtorRouteAttribute, which may set LocalInitOverrideRouteAttribute.Template")]
     [InlineData("[LocalAutoOverrideRoute(Template = \"items\")]", "/api/products/items", null)]
     [InlineData("[LocalConstantOverrideRoute]", "/api/products/items", null)]
+    [InlineData("[LocalSideOverSharedAutoRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalSideOverSharedAutoRoute] attribute, as the value SharedAutoRouteAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    [InlineData("[LocalPlainOverSharedAutoRoute(Template = \"items\")]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [SharedSideSetRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedSideSetRouteAttribute.Area, whose setter a named argument runs, and which may set SharedSideSetRouteAttribute.Template")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Weight = 2)]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\")]", "/api/products/items", null)]
