@@ -47,6 +47,20 @@ namespace Api.ToMcp.Generator.Parsing
             HttpMethodNames.Delete
         };
 
+        /// <summary>
+        /// The HTTP method and route template each action declaration's routing attributes give, and its XML docs. Like the
+        /// flow analysis of its body, they are the declaration's, the same for every controller that inherits the action,
+        /// so they are read once per compilation; the route's tokens and prefix are each controller's.
+        /// </summary>
+        private static readonly CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?> HttpMethodInfos =
+            new CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?>(SymbolEqualityComparer.Default);
+
+        private static readonly CompilationCache<IMethodSymbol, string?> XmlDocSummaries =
+            new CompilationCache<IMethodSymbol, string?>(SymbolEqualityComparer.Default);
+
+        private static readonly CompilationCache<IMethodSymbol, IReadOnlyDictionary<string, string>> XmlDocParams =
+            new CompilationCache<IMethodSymbol, IReadOnlyDictionary<string, string>>(SymbolEqualityComparer.Default);
+
         /// <param name="routePrefixProblem">
         /// Why the controller's route template cannot be read, as a clause of MCP009's message, or null when it can.
         /// </param>
@@ -69,7 +83,7 @@ namespace Api.ToMcp.Generator.Parsing
                 if (!IsAction(method))
                     continue;
 
-                var httpInfo = GetHttpMethodInfo(method, compilation, ct);
+                var httpInfo = HttpMethodInfos.GetOrAdd(compilation, method.OriginalDefinition, x => GetHttpMethodInfo(x, compilation, ct));
                 if (httpInfo == null)
                     continue;
 
@@ -122,7 +136,7 @@ namespace Api.ToMcp.Generator.Parsing
                     ReturnType = returnType,
                     HasMcpExposeAttribute = actionMcpExposeAttr != null,
                     HasMcpIgnoreAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpIgnoreAttribute) != null,
-                    XmlDocSummary = GetXmlDocSummary(method),
+                    XmlDocSummary = XmlDocSummaries.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocSummary),
                     CustomToolName = customToolName,
                     Title = customTitle ?? ToolTitleBuilder.Build(customToolName, TrimSuffix(method.Name, AsyncSuffix)),
                     CustomDescription = customDescription,
@@ -352,7 +366,7 @@ namespace Api.ToMcp.Generator.Parsing
             Compilation compilation)
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
-            var paramDocs = GetXmlDocParams(method);
+            var paramDocs = XmlDocParams.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocParams);
 
             foreach (var param in method.Parameters)
             {
