@@ -395,6 +395,12 @@ namespace TestApi
         public override string? Template { get; set; } = ""init"";
     }
 
+    // A getter computed from constants alone returns its value whatever sets the property.
+    public sealed class ConstantOverrideGetAttribute : BaseCtorGetAttribute
+    {
+        public override string? Template => ""constant"";
+    }
+
     public class SideBaseGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
     {
         public virtual string? Template { get; set; }
@@ -433,6 +439,8 @@ namespace TestApi
     [InlineData("[BangGetter(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
     [InlineData("[ParenthesizedGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
     [InlineData("[OverridingGet] public IActionResult Find() => Ok();", "GET", "/api/products/overridden")]
+    [InlineData("[ConstantOverrideGet] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
+    [InlineData("[ConstantOverrideGet(Template = \"ignored\")] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
     [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     public void Generator_ReadsTheRouteAndHttpMethod_FromAnyAttributeMvcReadsThemFrom(string action, string expectedMethod, string expectedRoute)
@@ -654,12 +662,18 @@ namespace TestApi
     {
         public override string? Template { get; set; }
     }
+
+    public sealed class LocalConstantOverrideRouteAttribute : Shared.SharedBaseCtorRouteAttribute
+    {
+        public override string? Template => ""items"";
+    }
 }
 ";
 
     [Theory]
     [InlineData("[LocalInitOverrideRoute]", null, "the generator cannot read the route template of its [LocalInitOverrideRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedBaseCtorRouteAttribute, which may set LocalInitOverrideRouteAttribute.Template")]
     [InlineData("[LocalAutoOverrideRoute(Template = \"items\")]", "/api/products/items", null)]
+    [InlineData("[LocalConstantOverrideRoute]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [SharedSideSetRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedSideSetRouteAttribute.Area, whose setter a named argument runs, and which may set SharedSideSetRouteAttribute.Template")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Weight = 2)]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\")]", "/api/products/items", null)]

@@ -355,6 +355,14 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var property = GetOverride(implementation, attributeClass);
+
+            // A getter the generator can evaluate reads no field, so whatever sets the property, a constructor or a named
+            // argument, cannot change what it returns.
+            if (HasGetterOfItsOwn(property, ct) && ReadPropertyValue(property, compilation, ct) is var computed && !(computed is UnknownValue))
+            {
+                return computed;
+            }
+
             var namedArguments = attribute.NamedArguments.Where(x => x.Key == property.Name).ToList();
             if (namedArguments.Count > 0 && property.ExplicitInterfaceImplementations.IsEmpty)
             {
@@ -376,6 +384,21 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return ReadPropertyValue(property, compilation, ct);
+        }
+
+        /// <summary>
+        /// Whether the project declares the property's getter with code of its own, unlike an auto-property's.
+        /// </summary>
+        private static bool HasGetterOfItsOwn(IPropertySymbol property, CancellationToken ct)
+        {
+            if (!(property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax declaration))
+            {
+                return false;
+            }
+
+            var getter = declaration.AccessorList?.Accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.GetAccessorDeclaration));
+
+            return declaration.ExpressionBody != null || getter is { } && !IsAutoAccessor(getter);
         }
 
         /// <summary>
