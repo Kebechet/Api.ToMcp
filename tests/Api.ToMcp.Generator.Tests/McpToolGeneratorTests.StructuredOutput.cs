@@ -78,6 +78,10 @@ namespace TestApi
     [InlineData("[Produces(typeof(Order))] public ActionResult<Product> Get() => new Product();", "global::TestApi.Order")]
     [InlineData("[Produces(typeof(Product), Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
     [InlineData("[Produces<Product>(Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200, Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
+    [InlineData("[ProducesResponseType<Product>(200, Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
+    [InlineData("[ProducesResponseType(StatusCodes.Status204NoContent, Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200, \"text/csv\", Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
     public void Generator_AdvertisesTheSuccessResponseType_AsTheOutputSchema(string action, string expectedType)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
@@ -122,6 +126,8 @@ namespace TestApi
     [InlineData("[Produces(\"text/csv\", Type = typeof(Product))] public IActionResult Get() => Ok();")]
     [InlineData("[Produces(typeof(Product))] [ProducesResponseType(typeof(Order), 201)] public IActionResult Get() => Ok();")]
     [InlineData("[Produces(typeof(Product), Type = null)] public IActionResult Get() => Ok();")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200, Type = null)] public IActionResult Get() => Ok();")]
+    [InlineData("[ProducesResponseType<Product>(200, Type = null)] public IActionResult Get() => Ok();")]
     public void Generator_AdvertisesNoOutputSchema_WhenTheSuccessBodyIsNotReliablyTypedJson(string action)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
@@ -421,6 +427,31 @@ namespace TestApi
         var source = StructuredOutputSource(
             "[Produces(typeof(Order), Type = null)] public IActionResult Get() => Ok(new Product());",
             controllerAttributes: "[Produces(typeof(Product))]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Theory]
+    [InlineData("[ProducesResponseType(typeof(Order), 200, Type = null)] public IActionResult Get() => Ok(new Product());")]
+    [InlineData("[ProducesResponseType<Order>(200, Type = null)] public IActionResult Get() => Ok(new Product());")]
+    public void Generator_KeepsTheControllersResponseType_UnderAnActionsResponseTypeWhoseTypeIsSetToNull(string action)
+    {
+        // ApiExplorer adds no response for a null type, so the action declares no 200 to replace the controller's.
+        var source = StructuredOutputSource(action, controllerAttributes: "[ProducesResponseType(typeof(Product), 200)]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_IgnoresTheControllersResponseType_WhoseTypeIsSetToNull()
+    {
+        var source = StructuredOutputSource(
+            "public ActionResult<Product> Get() => new Product();",
+            controllerAttributes: "[ProducesResponseType(typeof(Order), 200, Type = null)]");
 
         var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
 
