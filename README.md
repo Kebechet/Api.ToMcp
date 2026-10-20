@@ -496,6 +496,7 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 **Build warning `MCP007: Tool name '...' is given to N tools`.**
 - Several generated tools have the same name, and the MCP SDK keeps only one of them, dropping the others without an error. The warning names every action that produces the name and points at its declaration. The generator still generates them all, so a name a client already calls does not change under it.
 - The usual causes: a `ToolName` on a base action that several controllers inherit, two actions with the same `ToolName`, overloads (both get `{Controller}_{Action}`), or a `toolNameFormat` without `{Controller}`. Give each tool its own name with `[McpExpose(ToolName = ...)]`, on an override for an inherited action, or exclude the ones you do not need.
+- To accept a collision, suppress the warning like any other: `#pragma warning disable MCP007` in the file it points at, `dotnet_diagnostic.MCP007.severity = none` in an `.editorconfig` section for that file, or `<NoWarn>` for the project.
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).

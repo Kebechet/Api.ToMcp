@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Linq;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using Xunit;
@@ -197,6 +198,51 @@ namespace TestApi
         Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == DuplicateToolNameId);
     }
 
+    private const string ActionsWithTheSameToolName = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    using Api.ToMcp.Abstractions;
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ReportsController : ControllerBase
+    {
+        [McpExpose(ToolName = ""export"")]
+        [HttpGet(""csv"")]
+        public ActionResult<Product> ExportCsv() => new Product();
+
+        [McpExpose(ToolName = ""export"")]
+        [HttpGet(""pdf"")]
+        public ActionResult<Product> ExportPdf() => new Product();
+    }
+}
+";
+
+    [Fact]
+    public void Generator_LetsAPragmaSuppressTheWarning_InTheFileOfTheActionItPointsAt()
+    {
+        // The compiler reads #pragma warning disable from the syntax tree of the warning's location, so the warning must
+        // point into one.
+        Assert.Contains(GetGeneratorDiagnostics(ActionsWithTheSameToolName, AllExceptExcludedConfig), x => x.Id == DuplicateToolNameId && !x.IsSuppressed);
+
+        var diagnostics = GetGeneratorDiagnostics("#pragma warning disable MCP007\n" + ActionsWithTheSameToolName, AllExceptExcludedConfig);
+
+        Assert.DoesNotContain(diagnostics, x => x.Id == DuplicateToolNameId && !x.IsSuppressed);
+    }
+
+    [Fact]
+    public void Generator_LetsAFileSeveritySuppressTheWarning_InTheFileOfTheActionItPointsAt()
+    {
+        // The compiler hands an .editorconfig section's severity over per syntax tree, looked up by the warning's location.
+        var compilation = CreateCompilation(ActionsWithTheSameToolName);
+        var severities = new FileSeverityProvider(compilation.SyntaxTrees.Single(), DuplicateToolNameId, ReportDiagnostic.Suppress);
+        compilation = compilation.WithOptions(compilation.Options.WithSyntaxTreeOptionsProvider(severities));
+
+        var diagnostics = CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation).GetRunResult().Diagnostics;
+
+        Assert.DoesNotContain(diagnostics, x => x.Id == DuplicateToolNameId && !x.IsSuppressed);
+    }
+
     private static Diagnostic GetSingleDuplicateToolNameWarning(string source, string generatorJson)
     {
         return Assert.Single(GetGeneratorDiagnostics(source, generatorJson), x => x.Id == DuplicateToolNameId);
@@ -221,5 +267,39 @@ namespace TestApi
         Assert.Equal(sourceText.Lines.GetLinePositionSpan(location.SourceSpan), location.GetLineSpan().Span);
 
         return sourceText.ToString(location.SourceSpan);
+    }
+
+    /// <summary>
+    /// One diagnostic's severity for one file, as an <c>.editorconfig</c> section sets it.
+    /// </summary>
+    private sealed class FileSeverityProvider : SyntaxTreeOptionsProvider
+    {
+        private readonly SyntaxTree _tree;
+        private readonly string _diagnosticId;
+        private readonly ReportDiagnostic _severity;
+
+        public FileSeverityProvider(SyntaxTree tree, string diagnosticId, ReportDiagnostic severity)
+        {
+            _tree = tree;
+            _diagnosticId = diagnosticId;
+            _severity = severity;
+        }
+
+        public override GeneratedKind IsGenerated(SyntaxTree tree, CancellationToken cancellationToken)
+        {
+            return GeneratedKind.Unknown;
+        }
+
+        public override bool TryGetDiagnosticValue(SyntaxTree tree, string diagnosticId, CancellationToken cancellationToken, out ReportDiagnostic severity)
+        {
+            severity = _severity;
+            return tree == _tree && diagnosticId == _diagnosticId;
+        }
+
+        public override bool TryGetGlobalDiagnosticValue(string diagnosticId, CancellationToken cancellationToken, out ReportDiagnostic severity)
+        {
+            severity = default;
+            return false;
+        }
     }
 }

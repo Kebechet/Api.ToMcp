@@ -32,15 +32,15 @@ namespace Api.ToMcp.Generator
                 .Select((info, _) => info!);
 
             // Step 3: Combine config with controllers
-            var combined = controllerProvider.Collect().Combine(configProvider);
+            var combined = controllerProvider.Collect().Combine(configProvider).Combine(context.CompilationProvider);
 
             // Step 4: Generate source
             context.RegisterSourceOutput(combined, (ctx, source) =>
             {
-                var (controllers, config) = source;
+                var ((controllers, config), compilation) = source;
                 var selectedActions = SelectActions(controllers, config);
 
-                ReportDuplicateToolNames(ctx, selectedActions, config);
+                ReportDuplicateToolNames(ctx, selectedActions, config, compilation);
 
                 // Track seen tool class names to handle overloads
                 var seenToolClassNames = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -79,7 +79,8 @@ namespace Api.ToMcp.Generator
         private static void ReportDuplicateToolNames(
             SourceProductionContext ctx,
             ImmutableArray<ActionInfoModel> actions,
-            GeneratorConfigModel config)
+            GeneratorConfigModel config,
+            Compilation compilation)
         {
             // The SDK looks tools up with the default string comparer, which is ordinal.
             var duplicates = actions
@@ -89,7 +90,7 @@ namespace Api.ToMcp.Generator
             foreach (var duplicate in duplicates)
             {
                 var locations = duplicate
-                    .Select(x => x.SourceLocation?.ToLocation())
+                    .Select(x => x.SourceLocation?.ToLocation(compilation))
                     .OfType<Location>()
                     .Distinct()
                     .ToList();

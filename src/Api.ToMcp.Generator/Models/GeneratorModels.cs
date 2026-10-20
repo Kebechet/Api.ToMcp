@@ -111,9 +111,18 @@ namespace Api.ToMcp.Generator.Models
             };
         }
 
-        public Location ToLocation()
+        /// <summary>
+        /// The location in the compilation's syntax tree of the file: the compiler applies the file's
+        /// <c>#pragma warning</c> and <c>.editorconfig</c> severities to a diagnostic through that tree, and to one
+        /// pointing at a bare file path it applies neither. A file location only when no tree has the file's path.
+        /// </summary>
+        public Location ToLocation(Compilation compilation)
         {
-            return Location.Create(FilePath, TextSpan, LineSpan);
+            var tree = compilation.SyntaxTrees.FirstOrDefault(x => x.FilePath == FilePath);
+
+            return tree is null
+                ? Location.Create(FilePath, TextSpan, LineSpan)
+                : Location.Create(tree, TextSpan);
         }
     }
 
