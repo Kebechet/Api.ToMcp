@@ -148,7 +148,7 @@ Entries are case-sensitive, and the `Controller` suffix may be left out (`"Produ
 | `ApiToMcpConfigPath` | `Mcp\generator.json` in the project directory | The config the build adds to `AdditionalFiles`, and creates when it does not exist. |
 | `ApiToMcpAutoCreateConfig` | `true` | `false` stops the build from creating a starter config when there is none. |
 
-On Linux and other case-sensitive file systems the path is matched exactly, so a config in `mcp/` is not at the default `Mcp/generator.json`. When the build finds no config at `ApiToMcpConfigPath` but one whose folder or file name differs from it only in letter case, it uses that file instead of writing a starter config and warns with `MCP101`: set `ApiToMcpConfigPath` to it, or rename it to match.
+On Linux and other case-sensitive file systems the path is matched exactly, so a config in `mcp/` is not at the default `Mcp/generator.json`. When the build finds no config at `ApiToMcpConfigPath` but one whose folder or file name differs from it only in letter case, it gives the generator that file and warns with `MCP101`: set `ApiToMcpConfigPath` to it, or rename it to match. It does so whether or not `ApiToMcpAutoCreateConfig` is on, writes no starter config beside it, and puts it in place of an `AdditionalFiles` item that names the missing configured path.
 
 ### Structured Output
 
@@ -460,7 +460,7 @@ The build reports these warnings:
 
 | Code | From | When |
 |------|------|------|
-| `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, or an unreadable file |
+| `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, an empty file, or an unreadable one |
 | `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
 | `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
 | `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
@@ -475,15 +475,15 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
 
 **Build warning `MCP001`: `generator.json cannot be used as written`.**
-- The file is not valid JSON (a missing bracket, a trailing comma), has a value of the wrong type (a string where `include` expects a list), names a `mode` other than `SelectedOnly` or `AllExceptExcluded`, or could not be read. The warning quotes the parser's error and points at the line it stopped on, when the parser names one.
+- The file is not valid JSON (a missing bracket, a trailing comma), has a value of the wrong type (a string where `include` expects a list), names a `mode` other than `SelectedOnly` or `AllExceptExcluded`, is empty or holds only `null`, or could not be read. The warning quotes the parser's error and points at where the parser stopped, or at the unknown `mode`.
 - The generator falls back as the warning says: to the default config, `SelectedOnly` mode with an empty `include`, so only `[McpExpose]` actions become tools; or, for an unknown `mode`, to `SelectedOnly` mode with the file's lists. `MCP006` is not reported as well, as its advice would describe the fallback rather than your file.
 
 **Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**
-- No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning comes only from the build that writes the file. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.
+- No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning points at that file, and comes only from the build that writes it. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.
 - If your config is somewhere else, set `ApiToMcpConfigPath` to it and delete the created file. See [Config file location](#config-file-location).
 
 **Build warning `MCP101`: `Api.ToMcp found no config at ... but found ...`.**
-- On a case-sensitive file system, the config is at a path that differs from `ApiToMcpConfigPath` only in the letter case of its folder or file name, such as `mcp/generator.json` for the default `Mcp/generator.json`. The build uses that file and writes no starter config, so it generates the same tools as on Windows or macOS.
+- On a case-sensitive file system, the config is at a path that differs from `ApiToMcpConfigPath` only in the letter case of its folder or file name, such as `mcp/generator.json` for the default `Mcp/generator.json`. The build gives the generator that file, and the warning points at it. The build writes no starter config, and replaces an `AdditionalFiles` item that names the missing configured path. It generates the same tools as on Windows or macOS.
 - Set `ApiToMcpConfigPath` to that file, or rename it to match, and the warning goes away.
 
 **`InvalidOperationException: Unable to determine base URL`.**
