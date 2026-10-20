@@ -74,6 +74,7 @@ namespace TestApi
     [InlineData("[Produces<Product>] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
     [InlineData("[Produces(\"application/json\", Type = typeof(Product))] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
     [InlineData("[Produces<Product>] [ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces(typeof(Product), Order = 0)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
     public void Generator_AdvertisesTheSuccessResponseType_AsTheOutputSchema(string action, string expectedType)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
@@ -531,6 +532,53 @@ namespace TestApi
         public override IActionResult Get() => Ok();
     }
 }
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Theory]
+    [InlineData("[Produces(typeof(Product), Order = -1)] public IActionResult Get() => Ok(new Product());", "[Produces(\"text/csv\")]")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());", "[Produces(typeof(Order), Order = 1)]")]
+    public void Generator_AdvertisesNoOutputSchema_WhenAProducesSetsItsOrder(string action, string controllerAttributes)
+    {
+        // MVC sorts filters by Order before scope, so an Order can run an action's [Produces] before its controller's.
+        var source = StructuredOutputSource(action, controllerAttributes);
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Theory]
+    [InlineData("[ProducesCsv]", "")]
+    [InlineData("", "[ProducesCsv]")]
+    [InlineData("[ProducesProduct]", "")]
+    public void Generator_AdvertisesNoOutputSchema_UnderASubclassOfProduces(string controllerAttributes, string actionAttributes)
+    {
+        // A subclass hands its content types to the base constructor in code, which attribute data does not show.
+        var source = StructuredOutputUsings + StructuredOutputModels + $@"
+namespace TestApi
+{{
+    public sealed class ProducesCsvAttribute : ProducesAttribute
+    {{
+        public ProducesCsvAttribute() : base(""text/csv"") {{ }}
+    }}
+
+    public sealed class ProducesProductAttribute : ProducesAttribute<Product>
+    {{
+        public ProducesProductAttribute() => ContentTypes = new Microsoft.AspNetCore.Mvc.Formatters.MediaTypeCollection {{ ""text/csv"" }};
+    }}
+
+    {controllerAttributes}
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {{
+        [HttpGet]
+        [ProducesResponseType(typeof(Product), 200)]
+        {actionAttributes}
+        public IActionResult Get() => Ok(new Product());
+    }}
+}}
 ";
 
         AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));

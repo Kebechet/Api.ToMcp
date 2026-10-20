@@ -36,6 +36,8 @@ namespace Api.ToMcp.Generator.Parsing
         private const string GenericProducesAttribute = "Microsoft.AspNetCore.Mvc.ProducesAttribute<T>";
         private const string StatusCodePropertyName = "StatusCode";
         private const string TypePropertyName = "Type";
+        private const string OrderPropertyName = "Order";
+        private const int DefaultFilterOrder = 0;
 
         private const string JsonSubtype = "json";
         private const string JsonStructuredSuffix = "+json";
@@ -77,7 +79,8 @@ namespace Api.ToMcp.Generator.Parsing
             var actionProduces = GetProducesAttributes(method, x => x.OverriddenMethod);
             var controllerProduces = GetProducesAttributes(controller, x => x.BaseType);
             var produces = actionProduces.Count > 0 ? actionProduces : controllerProduces;
-            if (!produces.All(x => CanBeJson(GetContentTypes(x, firstContentTypeArgument: 0))))
+            if (!actionProduces.Concat(controllerProduces).All(CanReadProduces) ||
+                !produces.All(x => CanBeJson(GetContentTypes(x, firstContentTypeArgument: 0))))
             {
                 return new ResponseTypeInfo(null, hasBodylessSuccess: false);
             }
@@ -232,13 +235,21 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static bool IsProducesAttribute(AttributeData attribute)
         {
-            var attributeClass = attribute.AttributeClass;
-            if (attributeClass == null)
+            return attribute.AttributeClass != null && IsOrImplements(attribute.AttributeClass, ProducesAttribute);
+        }
+
+        /// <summary>
+        /// Whether attribute data shows what MVC does with the <c>[Produces]</c>. A subclass hands its content types to the
+        /// base constructor in code, and an <c>Order</c> sorts it before or after the others whatever its scope, so with
+        /// either the content types MVC writes are unknown.
+        /// </summary>
+        private static bool CanReadProduces(AttributeData attribute)
+        {
+            var definition = attribute.AttributeClass?.OriginalDefinition.ToDisplayString();
+            if (definition is not (ProducesAttribute or GenericProducesAttribute))
                 return false;
 
-            return attributeClass.IsGenericType
-                ? attributeClass.OriginalDefinition.ToDisplayString() == GenericProducesAttribute
-                : attributeClass.ToDisplayString() == ProducesAttribute;
+            return !attribute.NamedArguments.Any(x => x.Key == OrderPropertyName && x.Value.Value is int order && order != DefaultFilterOrder);
         }
 
         /// <summary>
