@@ -70,8 +70,9 @@ namespace Api.ToMcp.Generator.Parsing
         /// Whether the converter an attribute names reads a string, which it does only by overriding
         /// <c>CanConvertFrom</c>: <c>TypeConverter</c>'s own answers no, so a converter made for a property grid, such as
         /// <c>ExpandableObjectConverter</c>, leaves its type complex. <c>ReferenceConverter</c>, whose
-        /// <c>ComponentConverter</c> every component inherits, reads one only given a context, which MVC never passes. A
-        /// converter named by a string cannot be looked into and is taken to read one.
+        /// <c>ComponentConverter</c> every component inherits, reads one only given a context, which MVC never passes. What
+        /// an override answers is decided when it runs, so one that accepts only another source type, such as an int, is
+        /// taken to read a string too, as is a converter named by a string, which cannot be looked into.
         /// </summary>
         private static bool CanConvertFromString(AttributeData converterAttribute)
         {
