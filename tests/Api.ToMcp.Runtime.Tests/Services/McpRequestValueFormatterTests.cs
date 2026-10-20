@@ -440,6 +440,33 @@ public class McpRequestValueFormatterTests
         Assert.Equal(new[] { "f.Range=3-5" }, queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_RepeatsTheKeyOfACollectionWithAModelBinderOfItsOwn_ForEachItem()
+    {
+        // The binder reads every value under the key; one value would be the collection's ToString().
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new BoundCollectionsFilter { Ids = [1, 2, 3], Names = ["a", "b"], Codes = new CodedList { "x", "y" }, City = "Brno" });
+
+        Assert.Equal(new[] { "f.Ids=1", "f.Ids=2", "f.Ids=3", "f.Names=a", "f.Names=b", "f.Codes=x", "f.Codes=y", "f.City=Brno" }, queryParts);
+    }
+
+    private sealed class BoundCollectionsFilter
+    {
+        [ModelBinder(typeof(NoOpBinder))]
+        public int[] Ids { get; set; } = [];
+
+        [ModelBinder(BinderType = typeof(NoOpBinder))]
+        public List<string> Names { get; set; } = [];
+
+        public CodedList? Codes { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    [ModelBinder(typeof(NoOpBinder))]
+    private sealed class CodedList : List<string>;
+
     private sealed class SourcedFilter
     {
         public string? City { get; set; }

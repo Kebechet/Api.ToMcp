@@ -51,6 +51,15 @@ public class QueryBindingTests
     }
 
     [Fact]
+    public async Task ACollectionPropertyWithAModelBinderOfItsOwn_ReachesTheBinderWithEveryItem()
+    {
+        var bound = await PostAsync("ids", "f", new QueryIdsFilter { Ids = [1, 2, 3], City = "Brno" });
+
+        Assert.Equal([1, 2, 3], bound.GetProperty("ids").EnumerateArray().Select(x => x.GetInt32()));
+        Assert.Equal("Brno", bound.GetProperty("city").GetString());
+    }
+
+    [Fact]
     public async Task AnObjectWithACancellationToken_SendsOnlyWhatTheQueryBinds()
     {
         using var cancellation = new CancellationTokenSource();
@@ -95,6 +104,9 @@ public sealed class QueryBindingController : ControllerBase
     [HttpPost("nested")]
     public IActionResult Nested([FromQuery] QueryOrderOuter o) => Ok(new { inner = o.Inner?.Id.Value, ids = o.Ids.Select(x => x.Value) });
 
+    [HttpPost("ids")]
+    public IActionResult Ids([FromQuery] QueryIdsFilter f) => Ok(new { ids = f.Ids, f.City });
+
     [HttpPost("ct")]
     public IActionResult Cancellation(QueryCancellationFilter f) => Ok(new { f.City, query = Request.QueryString.Value });
 }
@@ -131,6 +143,28 @@ public sealed class QueryOrderOuter
     public QueryOrderFilter? Inner { get; set; }
 
     public List<QueryOrderId> Ids { get; set; } = [];
+}
+
+public sealed class QueryIdsFilter
+{
+    [ModelBinder(typeof(QueryIdsBinder))]
+    public int[] Ids { get; set; } = [];
+
+    public string? City { get; set; }
+}
+
+/// <summary>
+/// Reads every value under its key, as a binder of a collection does.
+/// </summary>
+public sealed class QueryIdsBinder : IModelBinder
+{
+    public Task BindModelAsync(ModelBindingContext bindingContext)
+    {
+        var values = bindingContext.ValueProvider.GetValue(bindingContext.ModelName).Values;
+        bindingContext.Result = ModelBindingResult.Success(values.Select(x => int.Parse(x!, System.Globalization.CultureInfo.InvariantCulture)).ToArray());
+
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class QueryCancellationFilter

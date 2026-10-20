@@ -116,9 +116,15 @@ public static class McpRequestValueFormatter
             return;
         }
 
-        if (IsScalar(value.GetType()) || HasModelBinder(value.GetType()))
+        if (IsScalar(value.GetType()))
         {
             AddWholeValue(queryParts, key, value);
+            return;
+        }
+
+        if (HasModelBinder(value.GetType()))
+        {
+            AddBinderValue(queryParts, key, value);
             return;
         }
 
@@ -167,6 +173,27 @@ public static class McpRequestValueFormatter
         queryParts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(Format(value))}");
     }
 
+    /// <summary>
+    /// A value a model binder of its own reads from the query string under its key: one value, or for a collection
+    /// each item under the same key, all of which the binder finds in the key's <c>Values</c>.
+    /// </summary>
+    private static void AddBinderValue(List<string> queryParts, string key, object value)
+    {
+        if (value is not IEnumerable items || IsScalar(value.GetType()))
+        {
+            AddWholeValue(queryParts, key, value);
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            if (item is not null)
+            {
+                AddWholeValue(queryParts, key, item);
+            }
+        }
+    }
+
     private static void AddProperties(List<string> queryParts, string prefix, object value, int depth)
     {
         var type = value.GetType();
@@ -191,7 +218,7 @@ public static class McpRequestValueFormatter
             var propertyValue = property.GetValue(value);
             if (propertyValue is not null && attributes.OfType<IBinderTypeProviderMetadata>().Any(x => x.BinderType is not null))
             {
-                AddWholeValue(queryParts, key, propertyValue);
+                AddBinderValue(queryParts, key, propertyValue);
                 continue;
             }
 
