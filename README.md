@@ -437,17 +437,18 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ## Correlating Tool Calls with API Logs
 
-A tool call reaches your API as two HTTP requests: the MCP client's `POST /mcp`, and the request the tool makes to your controller, such as `GET /api/products/{id}`. Each has its own `HttpContext.TraceIdentifier`, logged as `RequestId`, but both belong to one W3C trace, with nothing to switch on: the invoker's `HttpClient` comes from `IHttpClientFactory`, .NET sends the current `Activity` with it as a `traceparent` header, and ASP.NET Core continues that trace for the internal request. Because the internal request goes through your real pipeline, it is logged and traced like any other request, and no correlation ID has to be built by hand.
+A tool call reaches your API as two HTTP requests: the MCP client's `POST /mcp`, and the request the tool makes to your controller, such as `GET /api/products/{id}`. Each has its own `HttpContext.TraceIdentifier`, logged as `RequestId`, but both belong to one W3C trace, with nothing to switch on: .NET's `HttpClient` sends the current `Activity` as a `traceparent` header with every request, the invoker's included, and ASP.NET Core continues that trace for the internal request. Because the internal request goes through your real pipeline, it is logged and traced like any other request, and no correlation ID has to be built by hand.
 
 ### What the internal request carries
 
 | Header | Where it comes from |
 |---|---|
 | `traceparent`, and `tracestate` when the MCP request has one | .NET's `HttpClient`, from the current `Activity`: the trace of the MCP request, which continues the client's trace when the MCP request came with a `traceparent` |
+| `baggage` when the MCP request has one (`Correlation-Context` on .NET 8 and 9) | .NET's `HttpClient`, from the current `Activity`'s baggage, the same way as `traceparent` |
 | `Authorization` | Copied from the MCP request, when it parses as an authentication header |
 | `X-MCP-Internal-Call: true` | Added by the invoker, so that `UseMcpLoopPrevention` refuses the request if it targets `/mcp` |
 
-No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent` or `X-Forwarded-For`. If your API logs a correlation ID taken from a header of its own, the internal request has none; use the trace ID.
+No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent` or `X-Forwarded-For`. If your API logs a correlation ID taken from a header of its own, the internal request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it on both requests.
 
 `X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only `/mcp` refuses it), so never let it skip authentication or authorization.
 
@@ -533,6 +534,8 @@ POST mcp/                              server   the MCP request
 ### When the link breaks
 
 With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The internal request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. No `Authorization` header is forwarded at all, because that request's `HttpContext` is gone by then, so scope checks fail too. Leave the option at its default, `false`.
+
+Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivityPropagation` switch set to `false` or `DOTNET_SYSTEM_NET_HTTP_ENABLEACTIVITYPROPAGATION=0`, stops `HttpClient` from sending `traceparent` and `baggage`, so the internal request starts a trace of its own.
 
 ## Limitations
 
