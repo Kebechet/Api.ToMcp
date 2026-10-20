@@ -1,8 +1,11 @@
 using System.ComponentModel;
 using System.Globalization;
 using Api.ToMcp.Runtime.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Primitives;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -355,6 +358,120 @@ public class McpRequestValueFormatterTests
         items.Add(items);
 
         Assert.Throws<InvalidOperationException>(() => McpRequestValueFormatter.AddQueryValue([], "items", items));
+    }
+
+    [Fact]
+    public void AddQueryValue_LeavesOutAPropertyMvcBindsFromAHeaderAFormFieldAServiceOrTheBody()
+    {
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new SourcedFilter { City = "Brno", Tenant = "t1", Comment = "c1", Clock = TimeProvider.System, Payload = "p1", Internal = "i1", Required = "r1" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "n", new NeverBoundFilter { City = "Praha" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "k", new KeyedServiceRecord("Ostrava", TimeProvider.System));
+
+        Assert.Equal(new[] { "f.City=Brno", "f.Required=r1", "k.City=Ostrava" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_LeavesOutAPropertyMvcBindsByItsType_WithoutReadingIt()
+    {
+        // Reading a CancellationToken's WaitHandle creates an event nothing disposes, once per call.
+        using var cancellation = new CancellationTokenSource();
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new TypeBoundFilter
+        {
+            City = "Brno",
+            Token = cancellation.Token,
+            File = new UnreadableFormFile(),
+            Files = [new UnreadableFormFile()],
+            Collection = new FormFileCollection { new UnreadableFormFile() },
+            Form = new FormCollection(new Dictionary<string, StringValues> { ["a"] = "b" })
+        });
+
+        Assert.Equal(new[] { "f.City=Brno" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsNothing_ForAValueMvcBindsByItsType()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "token", cancellation.Token);
+        McpRequestValueFormatter.AddQueryValue(queryParts, "file", new UnreadableFormFile());
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new LooseFilter { City = "Brno", Anything = cancellation.Token });
+
+        Assert.Equal(new[] { "f.City=Brno" }, queryParts);
+    }
+
+    private sealed class SourcedFilter
+    {
+        public string? City { get; set; }
+
+        [FromHeader]
+        public string? Tenant { get; set; }
+
+        [FromForm]
+        public string? Comment { get; set; }
+
+        [FromServices]
+        public TimeProvider? Clock { get; set; }
+
+        [FromBody]
+        public string? Payload { get; set; }
+
+        [BindNever]
+        public string? Internal { get; set; }
+
+        [BindRequired]
+        public string? Required { get; set; }
+    }
+
+    [BindNever]
+    private sealed class NeverBoundFilter
+    {
+        public string? City { get; set; }
+    }
+
+    private sealed record KeyedServiceRecord(string? City, [FromKeyedServices("clock")] TimeProvider? Clock);
+
+    private sealed class TypeBoundFilter
+    {
+        public string? City { get; set; }
+
+        public CancellationToken Token { get; set; }
+
+        public IFormFile? File { get; set; }
+
+        public List<IFormFile> Files { get; set; } = [];
+
+        public IFormFileCollection? Collection { get; set; }
+
+        public IFormCollection? Form { get; set; }
+    }
+
+    private sealed class LooseFilter
+    {
+        public string? City { get; set; }
+
+        public object? Anything { get; set; }
+    }
+
+    /// <summary>
+    /// Throws on every member, so a test fails if the formatter reads into it.
+    /// </summary>
+    private sealed class UnreadableFormFile : IFormFile
+    {
+        public string ContentType => throw new InvalidOperationException();
+        public string ContentDisposition => throw new InvalidOperationException();
+        public IHeaderDictionary Headers => throw new InvalidOperationException();
+        public long Length => throw new InvalidOperationException();
+        public string Name => throw new InvalidOperationException();
+        public string FileName => throw new InvalidOperationException();
+        public void CopyTo(Stream target) => throw new InvalidOperationException();
+        public Task CopyToAsync(Stream target, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
+        public Stream OpenReadStream() => throw new InvalidOperationException();
     }
 
     private sealed class SearchFilter
