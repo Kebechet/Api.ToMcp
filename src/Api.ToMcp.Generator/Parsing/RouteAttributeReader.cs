@@ -361,10 +361,18 @@ namespace Api.ToMcp.Generator.Parsing
                 return GetSetterProblem(property, attributeClass, compilation, ct) ?? ToValue(namedArguments[namedArguments.Count - 1].Value);
             }
 
-            if (IsAssignedInCode(property, attributeClass, x => false, compilation, ct))
+            var qualifiedName = $"{property.ContainingType.Name}.{property.Name}";
+            var (isAssigned, classWithoutCode) = FindAssignments(property, attributeClass, x => false, compilation, ct);
+            if (isAssigned)
+            {
+                return new UnknownValue($"{qualifiedName} is set by code other than its initializer, which the generator does not follow");
+            }
+
+            // Of a property a referenced assembly declares, the generator can read no initializer either, which says so.
+            if (classWithoutCode != null && !property.DeclaringSyntaxReferences.IsEmpty)
             {
                 return new UnknownValue(
-                    $"{property.ContainingType.Name}.{property.Name} is set by code other than its initializer, which the generator does not follow");
+                    $"the referenced assembly '{classWithoutCode.ContainingAssembly?.Name}' holds no code of {classWithoutCode.Name}, which may set {qualifiedName}");
             }
 
             return ReadPropertyValue(property, compilation, ct);
@@ -428,7 +436,7 @@ namespace Api.ToMcp.Generator.Parsing
                     $"the setter of {propertyName} does more than store the value for its getter to return, which the generator does not follow");
             }
 
-            var isSetElsewhere = IsAssignedInCode(
+            var (isSetElsewhere, _) = FindAssignments(
                 storedSymbol,
                 attributeClass,
                 x => x.Ancestors().Any(ancestor => ancestor == setter || ancestor is ConstructorDeclarationSyntax constructor && !constructor.Modifiers.Any(SyntaxKind.StaticKeyword)),
@@ -482,42 +490,56 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether code of the attribute's class, or of a class between it and the symbol's, assigns the property or
-        /// field outside the places allowed, as a constructor may: the value the generator would read from its
-        /// initializer is then not the one MVC reads.
+        /// Whether code of the attribute's class, or of a class between it and the one that first declares the property or
+        /// field, assigns it outside the places allowed, as a constructor may: the value the generator would read from its
+        /// initializer is then not the one MVC reads. A property counts with the ones it overrides, through which code of
+        /// a base class sets it. Else the first of those classes that a referenced assembly declares, whose code metadata
+        /// does not hold, if any.
         /// </summary>
-        private static bool IsAssignedInCode(
+        private static (bool IsAssigned, INamedTypeSymbol? ClassWithoutCode) FindAssignments(
             ISymbol symbol,
             INamedTypeSymbol attributeClass,
             Func<AssignmentExpressionSyntax, bool> isAllowed,
             Compilation compilation,
             CancellationToken ct)
         {
+            var assignedSymbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            var declaringClass = symbol.ContainingType;
+            for (ISymbol? current = symbol; current != null; current = (current as IPropertySymbol)?.OverriddenProperty)
+            {
+                assignedSymbols.Add(current.OriginalDefinition);
+                declaringClass = current.ContainingType;
+            }
+
             for (var type = attributeClass; type != null; type = type.BaseType)
             {
+                if (type.DeclaringSyntaxReferences.IsEmpty)
+                {
+                    return (false, type);
+                }
+
                 foreach (var reference in type.DeclaringSyntaxReferences)
                 {
                     var declaration = reference.GetSyntax(ct);
                     var semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
                     var isAssigned = declaration.DescendantNodes()
                         .OfType<AssignmentExpressionSyntax>()
-                        .Any(x => SymbolEqualityComparer.Default.Equals(
-                                semanticModel.GetSymbolInfo(x.Left, ct).Symbol?.OriginalDefinition,
-                                symbol.OriginalDefinition) &&
+                        .Any(x => semanticModel.GetSymbolInfo(x.Left, ct).Symbol?.OriginalDefinition is { } assigned &&
+                            assignedSymbols.Contains(assigned) &&
                             !isAllowed(x));
                     if (isAssigned)
                     {
-                        return true;
+                        return (true, null);
                     }
                 }
 
-                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, symbol.ContainingType.OriginalDefinition))
+                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, declaringClass.OriginalDefinition))
                 {
                     break;
                 }
             }
 
-            return false;
+            return (false, null);
         }
 
         /// <summary>

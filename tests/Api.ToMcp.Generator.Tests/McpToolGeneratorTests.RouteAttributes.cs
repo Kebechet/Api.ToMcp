@@ -336,6 +336,47 @@ namespace TestApi
 
         public IEnumerable<string> HttpMethods => new[] { ""GET"" };
     }
+
+    // The constructor sets the template through the virtual property, so through an override's setter, after the
+    // override's initializer has run.
+    public class BaseCtorGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public BaseCtorGetAttribute()
+        {
+            Template = ""from-base-ctor"";
+        }
+
+        public virtual string? Template { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class DerivedInitGetAttribute : BaseCtorGetAttribute
+    {
+        public override string? Template { get; set; } = ""init"";
+    }
+
+    public class SideBaseGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public virtual string? Template { get; set; }
+
+        public string? Area { get => null; set => Template = value + ""/"" + Template; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class SideDerivedGetAttribute : SideBaseGetAttribute
+    {
+        public override string? Template { get; set; }
+    }
 }
 ";
 
@@ -445,10 +486,13 @@ namespace TestApi
         Assert.Equal($"No MCP tool is generated for action 'OrdersController.Find': {reason}", warning.GetMessage());
     }
 
-    [Fact]
-    public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttribute_ThatCodeOtherThanItsInitializerSets()
+    [Theory]
+    [InlineData("[AssignedGet(\"actual\")]", "the generator cannot read the route template of its [AssignedGet] attribute, as AssignedGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
+    [InlineData("[DerivedInitGet]", "the generator cannot read the route template of its [DerivedInitGet] attribute, as DerivedInitGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
+    public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttribute_ThatCodeOtherThanItsInitializerSets(string attribute, string reason)
     {
-        // The constructor overwrites the initializer, so the initializer is not the template MVC reads.
+        // A constructor overwrites the initializer, so the initializer is not the template MVC reads; a base class's
+        // constructor does so through the property it declares, which the attribute's overrides.
         var source = RouteAttributeUsings + CustomRouteAttributes + @"
 namespace TestApi
 {
@@ -456,22 +500,21 @@ namespace TestApi
     [ApiRoute]
     public class ProductsController : ControllerBase
     {
-        [AssignedGet(""actual"")]
+        " + attribute + @"
         public IActionResult Find() => Ok();
     }
 }
 ";
         var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
 
-        Assert.Equal(
-            "No MCP tool is generated for action 'ProductsController.Find': the generator cannot read the route template of its [AssignedGet] attribute, as AssignedGetAttribute.Template is set by code other than its initializer, which the generator does not follow",
-            warning.GetMessage());
+        Assert.Equal($"No MCP tool is generated for action 'ProductsController.Find': {reason}", warning.GetMessage());
     }
 
     [Theory]
     [InlineData("[TransformedGet(Template = \"items\")]", "the generator cannot read the route template of its [TransformedGet] attribute, as the setter of TransformedGetAttribute.Template does more than store the value for its getter to return, which the generator does not follow")]
     [InlineData("[PrefixedGet(Template = \"items\")]", "the generator cannot read the route template of its [PrefixedGet] attribute, as the setter of PrefixedGetAttribute.Template does more than store the value for its getter to return, which the generator does not follow")]
     [InlineData("[SideSetGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideSetGet] attribute, as the value SideSetGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    [InlineData("[SideDerivedGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideDerivedGet] attribute, as the value SideDerivedGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     public void Generator_SaysWhyItCannotReadTheTemplateANamedArgumentSets_WhenThePropertyMayNotKeepIt(string attribute, string reason)
     {
         // MVC serves the template the getter returns, which a setter that adds to its value, say, makes /v1/items.
@@ -531,8 +574,74 @@ namespace Shared
 
         public string? Name => null;
     }
+
+    public class SharedBaseCtorRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        public SharedBaseCtorRouteAttribute()
+        {
+            Template = ""from-base-ctor"";
+        }
+
+        public virtual string? Template { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
 }
 ";
+
+    private const string AttributesDerivedFromReferencedOnes = @"
+namespace TestApi
+{
+    public sealed class LocalInitOverrideRouteAttribute : Shared.SharedBaseCtorRouteAttribute
+    {
+        public override string? Template { get; set; } = ""init"";
+    }
+
+    public sealed class LocalAutoOverrideRouteAttribute : Shared.SharedBaseCtorRouteAttribute
+    {
+        public override string? Template { get; set; }
+    }
+}
+";
+
+    [Theory]
+    [InlineData("[LocalInitOverrideRoute]", null, "the generator cannot read the route template of its [LocalInitOverrideRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedBaseCtorRouteAttribute, which may set LocalInitOverrideRouteAttribute.Template")]
+    [InlineData("[LocalAutoOverrideRoute(Template = \"items\")]", "/api/products/items", null)]
+    public void Generator_ReadsTheTemplateOfARouteAttribute_OnlyWhereNoCodeOfAReferencedAssemblyMaySetIt(string attribute, string? expectedRoute, string? reason)
+    {
+        // A referenced base class's constructor may set the template through the override, after its initializer; it runs
+        // before the named arguments, though.
+        var source = RouteAttributeUsings + AttributesDerivedFromReferencedOnes + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet]
+        " + attribute + @"
+        public IActionResult Find() => Ok();
+    }
+}
+";
+        var compilation = CreateCompilation(source).AddReferences(CompileToReference(RouteAttributeUsings + ReferencedRouteAttributes, "Shared"));
+
+        CreateDriver(AllExceptExcludedConfig).RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var diagnostics);
+        var generated = string.Join("\n", outputCompilation.SyntaxTrees.Skip(1).Select(x => x.ToString()));
+        var warnings = diagnostics.Where(x => x.Id == UnbuildableRouteId).Select(x => x.GetMessage()).ToList();
+
+        if (reason is null)
+        {
+            Assert.Empty(warnings);
+            Assert.Equal($"var route = $\"{expectedRoute}\";", GetRouteLine(generated, "ProductsController_FindTool"));
+        }
+        else
+        {
+            Assert.Equal($"No MCP tool is generated for action 'ProductsController.Find': {reason}", Assert.Single(warnings));
+        }
+    }
 
     [Fact]
     public void Generator_ReadsTheTemplateANamedArgumentSets_OnlyThroughAReferencedAutoProperty()
