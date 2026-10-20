@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
+using Api.ToMcp.Tests.Shared;
 using DemoApi.Models;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -458,8 +459,14 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 
         using var client = factory.CreateClient();
 
-        Assert.Contains(logs, x => x.Level == LogLevel.Debug && x.Message.Contains("MCP tools"));
-        Assert.Empty(logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
+        List<(LogLevel Level, string Message)> entries;
+        lock (logs)
+        {
+            entries = logs.ToList();
+        }
+
+        Assert.Contains(entries, x => x.Level == LogLevel.Debug && x.Message.Contains("MCP tools"));
+        Assert.Empty(entries.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
     }
 
     private static JsonElement GetOutputSchema(IList<McpClientTool> tools, string toolName)
@@ -563,52 +570,5 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         private readonly string _baseUrl;
         public FixedBaseUrlProvider(string baseUrl) => _baseUrl = baseUrl;
         public string GetBaseUrl() => _baseUrl;
-    }
-
-    private sealed class ListLoggerProvider : ILoggerProvider
-    {
-        private readonly List<(LogLevel Level, string Message)> _logs;
-
-        public ListLoggerProvider(List<(LogLevel Level, string Message)> logs)
-        {
-            _logs = logs;
-        }
-
-        public ILogger CreateLogger(string categoryName)
-        {
-            return new ListLogger(_logs);
-        }
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class ListLogger : ILogger
-    {
-        private readonly List<(LogLevel Level, string Message)> _logs;
-
-        public ListLogger(List<(LogLevel Level, string Message)> logs)
-        {
-            _logs = logs;
-        }
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
-        {
-            return null;
-        }
-
-        public bool IsEnabled(LogLevel logLevel)
-        {
-            return true;
-        }
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            lock (_logs)
-            {
-                _logs.Add((logLevel, formatter(state, exception)));
-            }
-        }
     }
 }

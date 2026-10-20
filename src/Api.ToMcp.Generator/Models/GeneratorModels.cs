@@ -15,6 +15,32 @@ namespace Api.ToMcp.Generator.Models
         public ImmutableArray<string> Exclude { get; set; } = ImmutableArray<string>.Empty;
         public NamingConfigModel Naming { get; set; } = new NamingConfigModel();
         public bool StructuredOutput { get; set; } = true;
+
+        /// <summary>
+        /// The generator.json this config was read from, or null for the default config of a project without one.
+        /// </summary>
+        public string? FilePath { get; set; }
+
+        /// <summary>
+        /// Why the generator.json could not be used as written, or null when it could. The config then holds what the
+        /// generator falls back to.
+        /// </summary>
+        public ConfigErrorModel? Error { get; set; }
+    }
+
+    internal sealed class ConfigErrorModel
+    {
+        /// <summary>
+        /// What the generator uses instead, as a clause of MCP001's message.
+        /// </summary>
+        public string Fallback { get; set; } = "";
+
+        public string Reason { get; set; } = "";
+
+        /// <summary>
+        /// Where in the file the problem is, or its start when the parser does not say.
+        /// </summary>
+        public LinePosition Position { get; set; }
     }
 
     internal enum SelectionModeModel
@@ -59,6 +85,14 @@ namespace Api.ToMcp.Generator.Models
         public string Title { get; set; } = "";
 
         public string? CustomDescription { get; set; }
+
+        /// <summary>
+        /// Whether MVC applies the <c>[ApiController]</c> conventions to the action's controller, and so infers the body
+        /// as the source of a complex parameter without a binding attribute. Without them it binds such a parameter
+        /// from the route, query and form values.
+        /// </summary>
+        public bool IsApiController { get; set; }
+
         public McpScopeModel RequiredScope { get; set; } = McpScopeModel.Read;
         public ToolAnnotationsModel Annotations { get; set; } = new ToolAnnotationsModel();
 
@@ -146,7 +180,22 @@ namespace Api.ToMcp.Generator.Models
         public bool HasDefaultValue { get; set; }
         public object? DefaultValue { get; set; }
         public ParameterSourceModel Source { get; set; }
+
+        /// <summary>
+        /// Whether MVC reads the parameter's type from one string, through a type converter or a static <c>TryParse</c>,
+        /// as it does a primitive or a strongly-typed id. Only such a parameter binds from the query string without
+        /// <c>[FromQuery]</c>; any other is complex, bound property by property.
+        /// </summary>
+        public bool IsSimpleType { get; set; }
+
         public ImmutableArray<PropertyInfoModel> Properties { get; set; } = ImmutableArray<PropertyInfoModel>.Empty;
+
+        /// <summary>
+        /// Whether a property of the parameter's type names a binding source of its own. <c>[ApiController]</c> then
+        /// infers no source for the parameter, so MVC binds it from the route, query and form values, not the body.
+        /// </summary>
+        public bool HasBindingSourceProperties => Properties.Any(x => x.NamesBindingSource);
+
         public string? Description { get; set; }
 
         /// <summary>
@@ -160,6 +209,31 @@ namespace Api.ToMcp.Generator.Models
         public string Name { get; set; } = "";
         public string Type { get; set; } = "";
         public bool IsNullable { get; set; }
+
+        /// <summary>
+        /// The key a binding attribute such as <c>[FromQuery(Name = "...")]</c> makes MVC bind the property from, or null
+        /// when it names none.
+        /// </summary>
+        public string? ModelName { get; set; }
+
+        /// <summary>
+        /// Where the property's own binding attribute makes MVC read it from: <see cref="ParameterSourceModel.Route"/> or
+        /// <see cref="ParameterSourceModel.Query"/>, <see cref="ParameterSourceModel.Other"/> for any other source, and
+        /// <see cref="ParameterSourceModel.Auto"/> when it has none and is read wherever its parameter is.
+        /// </summary>
+        public ParameterSourceModel Source { get; set; }
+
+        /// <summary>
+        /// Whether a record's primary constructor sets the property. MVC then binds it through the constructor parameter,
+        /// whose binding attributes <see cref="ModelName"/> and <see cref="Source"/> come from.
+        /// </summary>
+        public bool IsSetByConstructor { get; set; }
+
+        /// <summary>
+        /// Whether the property's binding source keeps <c>[ApiController]</c> from reading its type from the body. MVC
+        /// leaves the properties a record's constructor sets out of that check (<c>ModelMetadata.BoundProperties</c>).
+        /// </summary>
+        public bool NamesBindingSource => !IsSetByConstructor && Source != ParameterSourceModel.Auto;
     }
 
     internal enum ParameterSourceModel
@@ -169,7 +243,12 @@ namespace Api.ToMcp.Generator.Models
         Query,
         Body,
         Header,
-        Services
+        Services,
+
+        /// <summary>
+        /// A binding source a tool does not send, such as a header, a form field or a service, of a property.
+        /// </summary>
+        Other
     }
 
     internal sealed class ReturnTypeInfoModel

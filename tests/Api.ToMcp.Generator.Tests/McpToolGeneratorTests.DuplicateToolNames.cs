@@ -248,14 +248,6 @@ namespace TestApi
         return Assert.Single(GetGeneratorDiagnostics(source, generatorJson), x => x.Id == DuplicateToolNameId);
     }
 
-    private static ImmutableArray<Diagnostic> GetGeneratorDiagnostics(string source, string generatorJson)
-    {
-        return CreateDriver(generatorJson)
-            .RunGenerators(CreateCompilation(source))
-            .GetRunResult()
-            .Diagnostics;
-    }
-
     /// <summary>
     /// The text of the source that the location points at, after checking that the line and column it reports, which a
     /// build prints, are those of its span.

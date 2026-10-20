@@ -647,6 +647,39 @@ namespace TestApi
         Assert.Contains(NullableOutput, GetToolClass(generated, "SalesController_GetLatestTool"));
     }
 
+    [Fact]
+    public void Generator_WarnsThatNoToolsAreGenerated_NamingAnActionAConcreteControllerInherits()
+    {
+        // MCP006's example is an action that would become a tool: the concrete controller serves the base's action as its
+        // own, and the abstract base serves nothing, so on its own it gives no action to name and no warning.
+        const string crudBase = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public abstract class CrudController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public Task<string> GetById(Guid id) => Task.FromResult(string.Empty);
+    }
+}
+";
+        const string productsController = @"
+namespace TestApi
+{
+    public class ProductsController : CrudController
+    {
+    }
+}
+";
+        var diagnostic = Assert.Single(GetGeneratorDiagnostics(Usings + crudBase + productsController, StarterConfig));
+
+        Assert.Equal(NoToolsGeneratedId, diagnostic.Id);
+        Assert.Contains(
+            "The include list in generator.json is empty: add controllers such as 'ProductsController' or actions such as 'ProductsController.GetById' to it",
+            diagnostic.GetMessage());
+        Assert.Empty(GetGeneratorDiagnostics(Usings + crudBase, StarterConfig));
+    }
+
     private static void AssertCompiles(string source, string generatorJson)
     {
         var errors = CompileWithGeneratedTools(source, generatorJson);

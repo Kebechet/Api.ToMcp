@@ -4,10 +4,14 @@ namespace Api.ToMcp.Generator.Diagnostics
 {
     internal static class DiagnosticDescriptors
     {
-        public static readonly DiagnosticDescriptor ConfigParseError = new DiagnosticDescriptor(
+        /// <summary>
+        /// The generator.json is malformed, has a value of the wrong type or an unknown mode, or could not be read. The
+        /// generator falls back as the message says, so the build still succeeds, possibly with no tools.
+        /// </summary>
+        public static readonly DiagnosticDescriptor InvalidConfig = new DiagnosticDescriptor(
             id: "MCP001",
-            title: "Configuration Parse Error",
-            messageFormat: "Failed to parse generator.json: {0}",
+            title: "Invalid Configuration",
+            messageFormat: "generator.json cannot be used as written, so {0}: {1}",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
@@ -36,12 +40,16 @@ namespace Api.ToMcp.Generator.Diagnostics
             DiagnosticSeverity.Info,
             isEnabledByDefault: true);
 
-        public static readonly DiagnosticDescriptor NoConfigFile = new DiagnosticDescriptor(
-            id: "MCP005",
-            title: "No Configuration File",
-            messageFormat: "No generator.json found. Using default configuration (SelectedOnly mode with empty include list).",
+        /// <summary>
+        /// The config selects none of the actions it could expose, so the app's MCP server lists no tools. A warning
+        /// because nothing else says so: the app builds and starts as usual.
+        /// </summary>
+        public static readonly DiagnosticDescriptor NoToolsGenerated = new DiagnosticDescriptor(
+            id: "MCP006",
+            title: "No MCP Tools Generated",
+            messageFormat: "No MCP tools are generated: {0} mode selects none of the project's HTTP actions. {1}.",
             category: "Api.ToMcp.Generator",
-            DiagnosticSeverity.Info,
+            DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
 
         /// <summary>

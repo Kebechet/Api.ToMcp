@@ -604,12 +604,17 @@ namespace TestApi
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
     }
 
-    private static GeneratorDriver CreateDriver(string generatorJson)
+    /// <param name="generatorJson">The config's content, or null for a project without a generator.json.</param>
+    private static GeneratorDriver CreateDriver(string? generatorJson)
     {
-        return CSharpGeneratorDriver
-            .Create(new McpToolGenerator())
-            .AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(
-                new InMemoryAdditionalText("Mcp/generator.json", generatorJson)));
+        var driver = CSharpGeneratorDriver.Create(new McpToolGenerator());
+        if (generatorJson is null)
+        {
+            return driver;
+        }
+
+        return driver.AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(
+            new InMemoryAdditionalText("Mcp/generator.json", generatorJson)));
     }
 
     private sealed class InMemoryAdditionalText : AdditionalText
