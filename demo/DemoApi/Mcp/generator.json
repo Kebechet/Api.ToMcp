@@ -5,7 +5,8 @@
     "WeatherController",
     "ProductsController.GetAll",
     "ProductsController.GetById",
-    "ProductsController.GetCheapest"
+    "ProductsController.GetCheapest",
+    "CategoriesController"
   ],
   "exclude": [],
   "naming": {

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Immutable;
-using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -11,6 +10,7 @@ namespace Api.ToMcp.Generator.Parsing
     internal static class ControllerScanner
     {
         private const string ApiControllerAttributeFullName = "Microsoft.AspNetCore.Mvc.ApiControllerAttribute";
+        private const string NonControllerAttributeFullName = "Microsoft.AspNetCore.Mvc.NonControllerAttribute";
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
 
@@ -25,12 +25,14 @@ namespace Api.ToMcp.Generator.Parsing
             if (!(symbol is INamedTypeSymbol namedType))
                 return null;
 
-            if (!IsController(namedType, context.SemanticModel.Compilation))
+            if (!IsFirstDeclaration(namedType, classDecl) || !IsController(namedType, context.SemanticModel.Compilation))
                 return null;
 
             var routePrefix = GetRoutePrefix(namedType);
-            var hasMcpExpose = HasAttribute(namedType, McpExposeAttributeFullName);
-            var hasMcpIgnore = HasAttribute(namedType, McpIgnoreAttributeFullName);
+            // [McpExpose] and [McpIgnore] are inherited: a base class's covers this controller, the actions it inherits from
+            // that base included.
+            var hasMcpExpose = HasNearestAttribute(namedType, McpExposeAttributeFullName);
+            var hasMcpIgnore = HasNearestAttribute(namedType, McpIgnoreAttributeFullName);
 
             var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, context.SemanticModel.Compilation, ct);
 
@@ -45,13 +47,45 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
+        /// <summary>
+        /// Whether MVC serves the class as a controller, by the rules of its <c>ControllerFeatureProvider</c>: a public
+        /// top-level class, neither abstract nor static, without type parameters or <c>[NonController]</c>, whose name ends
+        /// in "Controller" or that carries <c>[Controller]</c>. Of those, the generator takes the ones that derive from
+        /// <c>ControllerBase</c> or carry <c>[ApiController]</c>, and these meet the name rule whatever their name:
+        /// <c>ControllerBase</c> carries <c>[Controller]</c>, and <c>[ApiController]</c> derives from it. The attributes
+        /// are inherited. An abstract base controller serves its actions only through the concrete controllers that
+        /// derive from it, which list them as their own.
+        /// </summary>
         private static bool IsController(INamedTypeSymbol type, Compilation compilation)
         {
+            if (type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsStatic || type.IsGenericType)
+                return false;
+
+            // MVC's IsPublic, which is false for a nested class whatever its modifiers.
+            if (type.DeclaredAccessibility != Accessibility.Public || type.ContainingType != null)
+                return false;
+
+            if (HasNearestAttribute(type, NonControllerAttributeFullName))
+                return false;
+
             var controllerBase = compilation.GetTypeByMetadataName(KnownTypeNames.ControllerBase);
             if (controllerBase != null && InheritsFrom(type, controllerBase))
                 return true;
 
-            return HasAttribute(type, ApiControllerAttributeFullName);
+            return HasNearestAttribute(type, ApiControllerAttributeFullName);
+        }
+
+        /// <summary>
+        /// Whether the declaration is the type's first. Each part of a partial class is a declaration of its own that
+        /// reaches the scanner, while the type's symbol holds the members of all of them, so only one of them may stand
+        /// for the controller; the others would repeat every tool.
+        /// </summary>
+        private static bool IsFirstDeclaration(INamedTypeSymbol type, ClassDeclarationSyntax declaration)
+        {
+            var references = type.DeclaringSyntaxReferences;
+
+            return references.Length == 0 ||
+                (references[0].SyntaxTree == declaration.SyntaxTree && references[0].Span == declaration.Span);
         }
 
         private static bool InheritsFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
@@ -66,22 +100,29 @@ namespace Api.ToMcp.Generator.Parsing
             return false;
         }
 
-        internal static bool HasAttribute(ISymbol symbol, string attributeFullName)
+        /// <summary>
+        /// Whether the class or one of its base classes carries the attribute or one derived from it, as reflection's
+        /// <c>IsDefined</c> finds an inherited attribute by its type.
+        /// </summary>
+        private static bool HasNearestAttribute(INamedTypeSymbol type, string attributeFullName)
         {
-            return symbol.GetAttributes()
-                .Any(attr => attr.AttributeClass?.ToDisplayString() == attributeFullName);
+            return ActionMethodAnalyzer.FindNearestAttribute(
+                type,
+                x => x.BaseType,
+                x => x.AttributeClass != null && ResponseTypeResolver.IsOrImplements(x.AttributeClass, attributeFullName)) != null;
         }
 
-        internal static AttributeData? GetAttribute(ISymbol symbol, string attributeFullName)
-        {
-            return symbol.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.ToDisplayString() == attributeFullName);
-        }
-
+        /// <summary>
+        /// The template of the nearest <c>[Route]</c>: MVC takes a controller's route attributes from the nearest class
+        /// that declares any, so a controller without one of its own is routed by its base class's, and one with its own
+        /// replaces the base's.
+        /// </summary>
         private static string? GetRoutePrefix(INamedTypeSymbol controller)
         {
-            var routeAttr = controller.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.Name == "RouteAttribute");
+            var routeAttr = ActionMethodAnalyzer.FindNearestAttribute(
+                controller,
+                x => x.BaseType,
+                x => x.AttributeClass?.Name == ActionMethodAnalyzer.RouteAttributeName);
 
             if (routeAttr?.ConstructorArguments.Length > 0)
             {

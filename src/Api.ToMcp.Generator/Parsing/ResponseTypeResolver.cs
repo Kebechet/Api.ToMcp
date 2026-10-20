@@ -398,7 +398,8 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Whether <c>typeof(...)</c> in the generated tool can name the type: not when any part of it is a type
-        /// parameter, such as the <c>T</c> of a generic base controller's <c>ActionResult&lt;List&lt;T&gt;&gt;</c>.
+        /// parameter. A generic base controller's <c>T</c> arrives as the concrete controller's type argument, and generic
+        /// controllers and actions are skipped, as MVC serves neither, so a type parameter is a safeguard only.
         /// </summary>
         private static bool CanBeNamed(ITypeSymbol type)
         {

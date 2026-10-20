@@ -19,6 +19,9 @@ Example project demonstrating Api.ToMcp usage.
 - `GET /api/products/cheapest` - Cheapest product in a category, `204 No Content` when it has none (exposed; its output schema allows null)
 - `DELETE /api/products/{id}` - Delete product (excluded via `[McpIgnore]`)
 
+**CategoriesController** - Inherited actions
+- `GET /api/categories` - Get all categories. The controller declares no action: it inherits `GetAll` from the abstract `ListControllerBase<T>`, and its tool is typed with `Category` for `T`. The base class gets no tool, as MVC serves nothing under it.
+
 ### Hand-written tool
 
 `Mcp/ServerTools.cs` is an MCP-only tool with no endpoint behind it. `AddMcpTools` registers it alongside the generated tools because the class carries `[McpServerToolType]`; its `IHostEnvironment` parameter is injected, not exposed as an argument.
@@ -49,6 +52,7 @@ Based on `Mcp/generator.json` configuration, these tools are generated:
 | `Products_GetAll` | ProductsController.GetAll |
 | `Products_GetById` | ProductsController.GetById |
 | `Products_GetCheapest` | ProductsController.GetCheapest |
+| `Categories_GetAll` | CategoriesController.GetAll, inherited from `ListControllerBase<Category>` |
 | `Server_GetEnvironment` | hand-written in `Mcp/ServerTools.cs` |
 
 ## Generator Configuration
@@ -62,7 +66,8 @@ The `Mcp/generator.json` uses `SelectedOnly` mode with explicit includes:
     "WeatherController",
     "ProductsController.GetAll",
     "ProductsController.GetById",
-    "ProductsController.GetCheapest"
+    "ProductsController.GetCheapest",
+    "CategoriesController"
   ]
 }
 ```
@@ -70,6 +75,7 @@ The `Mcp/generator.json` uses `SelectedOnly` mode with explicit includes:
 This demonstrates:
 - Including an entire controller (`WeatherController`)
 - Including specific actions (`ProductsController.GetAll`, `ProductsController.GetById`, `ProductsController.GetCheapest`)
+- Including a controller whose actions are inherited, by its own name (`CategoriesController`), not its base class's
 - The `[McpIgnore]` attribute on `Delete` action as additional protection
 
 ## Testing with MCP Client

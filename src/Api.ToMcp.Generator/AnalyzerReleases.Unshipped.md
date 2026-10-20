@@ -3,6 +3,7 @@
 Rule ID | Category | Severity | Notes
 --------|----------|----------|-------
 MCP006 | Api.ToMcp.Generator | Warning | No tools generated
+MCP007 | Api.ToMcp.Generator | Warning | Duplicate tool name
 
 ### Removed Rules
 

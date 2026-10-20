@@ -17,7 +17,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 
 > **For APIs you own the source of.** Api.ToMcp is a source generator — it runs inside your API project's compilation, which is what lets it read your XML doc comments for tool descriptions, fail at build time instead of runtime, and route tool calls through your real middleware pipeline (auth, validation, filters). If you only have an OpenAPI spec — a third-party or legacy API you can't recompile — this package is not the right fit; use an OpenAPI-to-MCP proxy instead.
 
-> **Controllers only.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`). Minimal API endpoints (`app.MapGet(...)`, `app.MapPost(...)`, etc.) are **not** discovered. See [Limitations](#limitations).
+> **Controllers only.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`), and finds their actions the way MVC does; see [Controllers and Actions](#controllers-and-actions). Minimal API endpoints (`app.MapGet(...)`, `app.MapPost(...)`, etc.) are **not** discovered. See [Limitations](#limitations).
 
 ## Features
 
@@ -123,6 +123,30 @@ public class ProductsController : ControllerBase
 
 Run the app and point MCP Inspector at its MCP endpoint to see the generated tools and try them. See [Debugging & Inspecting Your Tools](#debugging--inspecting-your-tools).
 
+## Controllers and Actions
+
+The generator finds controllers and actions the way MVC does, so every tool calls an endpoint your app serves:
+
+- **Controllers.** A public, top-level class that inherits from `ControllerBase` or carries `[ApiController]`, on itself or a base class, whatever its name. Abstract, generic, static, nested and non-public classes are not controllers, and neither is one marked `[NonController]`, on itself or a base class.
+- **Actions.** A public instance method of a controller with `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]`. Static and generic methods are not actions, and neither is one marked `[NonAction]`, on itself or the base action it overrides, an override of a method of `object` such as `ToString()`, or the implementation of `IDisposable.Dispose`.
+- **Inherited actions.** A controller has the actions it inherits from its base classes as well as its own. Each concrete controller gets its own tool for an inherited action, named after that controller, with `[controller]` in the route filled with its name; an abstract base class gets none. An overridden action gets one tool, from the most derived override.
+- **Inherited attributes.** What MVC inherits is read from the base classes and from the action an override replaces: `[Route]`, `[ApiController]`, `[NonController]`, `[NonAction]`, the `[Http*]` attributes, `[ActionName]`, `[Produces]` and `[ProducesResponseType]`, as well as [`[McpExpose]`](#mcpexpose) and [`[McpIgnore]`](#mcpignore). A parameter of an override is sent as MVC binds it: with the binding attributes of the parameter at its position in the action it overrides, `[FromQuery(Name = "...")]` included, unless it declares one of the same class itself, which replaces the base's whole, so a bare `[FromQuery]` drops the base's `Name`. Routes follow MVC's rule: `[Route]` and the `[Http*]` attributes count together, taken from the class or action that declares any of them. A controller takes them from the nearest class that does. An override that declares none is routed as its action was first declared, skipping any override in between. An override with only a `[Route]` gets no tool, as MVC serves it for every HTTP method, as it does an action that overrides nothing.
+
+An action inherited from a generic base class takes the controller's type arguments, so its parameters and output schema are typed:
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public abstract class CrudController<T> : ControllerBase
+{
+    [HttpGet]
+    public ActionResult<List<T>> GetAll() => ...;
+}
+
+public class ProductsController : CrudController<Product> { }   // Products_GetAll: GET /api/products, a List<Product>
+public class OrdersController : CrudController<Order> { }       // Orders_GetAll: GET /api/orders, a List<Order>
+```
+
 ## Configuration
 
 ### Selection Modes
@@ -136,7 +160,7 @@ Run the app and point MCP Inspector at its MCP endpoint to see the generated too
 
 | Option | Description |
 |--------|-------------|
-| `toolNameFormat` | Format string for tool names. Supports `{Controller}` and `{Action}` placeholders |
+| `toolNameFormat` | Format string for tool names. Supports `{Controller}` and `{Action}` placeholders. `{Controller}` is the controller that serves the action, also for an action it inherits |
 | `removeControllerSuffix` | When `true`, strips "Controller" from the controller name |
 
 ### Include/Exclude Patterns
@@ -145,6 +169,8 @@ Run the app and point MCP Inspector at its MCP endpoint to see the generated too
 - `"ProductsController.GetById"` - Include/exclude specific action
 
 Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`, and one the generator cannot use as written, such as malformed JSON or an unknown `mode`, with `MCP001`; see [Troubleshooting](#troubleshooting). The file may contain comments, but not trailing commas.
+
+An inherited action is named by the controller that serves it, as MVC names it: `ProductsController.GetAll` for the `GetAll` that `ProductsController` inherits from `CrudController<T>`. The base class's name selects nothing, since it serves no endpoint of its own.
 
 ### Config file location
 
@@ -171,6 +197,21 @@ Forces an endpoint to be exposed as an MCP tool, regardless of configuration mod
 [McpExpose(ToolName = "GetProduct", Title = "Get a product", Description = "Retrieves a product by ID")]
 public Task<Product> GetById(Guid id) { ... }
 ```
+
+On a controller, it exposes all of its actions, those it inherits included. It is inherited, as reflection reads it: on a base class, it exposes every controller derived from it, and on an action, every override of it. The nearest attribute counts - the action's own, else the one on the action it overrides; the controller's own, else its nearest base class's - and it replaces the base's as a whole. An override with `[McpExpose(Destructive = true)]` therefore drops the base action's `ToolName`, `Title`, `Description` and `Scope`, while an override without an `[McpExpose]` of its own keeps all of them.
+
+```csharp
+[McpExpose]
+public abstract class AdminControllerBase : ControllerBase { }
+
+public class UsersController : AdminControllerBase   // exposed in SelectedOnly mode, every action of it
+{
+    [HttpGet]
+    public Task<ActionResult<List<UserDto>>> GetAll() { ... }
+}
+```
+
+> **A `ToolName` on a base action names the tool of every controller that inherits the action.** The MCP SDK keeps only one tool per name and drops the others without an error, so the build warns with [`MCP007`](#troubleshooting). When several controllers inherit the action, give each one's tool a name of its own by overriding the action with its own `[McpExpose(ToolName = ...)]`, or leave `ToolName` off the base action.
 
 `Scope` overrides the scope derived from the HTTP method (see [Scope-Based Access Control](#scope-based-access-control)). Use it when the verb says something other than what the endpoint does - a search that takes its filter as a POST body and changes nothing would otherwise require `Write`:
 
@@ -228,6 +269,8 @@ Forces an endpoint to be excluded from MCP exposure.
 public Task<ActionResult> Delete(Guid id) { ... }
 ```
 
+On a controller, it excludes all of its actions, those it inherits included. It is inherited: on a base class, it excludes every controller that derives from it, and on an action, every override of it. It wins over `[McpExpose]`.
+
 ## Tool Descriptions
 
 Good descriptions matter for MCP — they're what the AI client reads to decide which tool to call and how to fill its arguments. Api.ToMcp pulls these from your existing XML doc comments automatically:
@@ -243,6 +286,8 @@ public Task<ActionResult<Product>> GetById(Guid id) { ... }
 ```
 
 Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`). Titles are derived from the action name instead; see [Tool titles](#tool-titles).
+
+An override without a `<summary>` of its own, or with only `<inheritdoc/>`, is described by the `<summary>` of the action it overrides, and a parameter it leaves undocumented takes that action's `<param>` for the parameter in the same position, as an override may rename it.
 
 > **Requires XML documentation generation.** The source generator can only read doc comments when the compiler produces them. Enable it in the project that hosts your controllers, otherwise descriptions fall back to the generic values:
 >
@@ -642,6 +687,8 @@ A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the
 - A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included, so again only `[McpExpose]` actions. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Both give build warning `MCP001`, pointing at what could not be read; see [Troubleshooting](#troubleshooting).
 - An action whose route contains `/mcp` anywhere, such as `api/settings/mcp-status`, is never exposed (loop prevention).
 - An action that is not `public`, or whose HTTP method comes from anything but `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]` (`[AcceptVerbs]`, `[HttpHead]`, `[HttpOptions]`, conventional routing), is skipped without a diagnostic.
+- An action declared on a base controller is a tool of each concrete controller that inherits it, named after that controller (`Products_GetAll`, not `Crud_GetAll`); an abstract base class gets none. Classes and methods MVC does not serve get no tool, among them `[NonController]` classes, `[NonAction]` methods, overrides of `ToString`, `Equals` or `GetHashCode`, and the `IDisposable.Dispose` implementation. See [Controllers and Actions](#controllers-and-actions).
+- Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
 - `AdditionalFiles`, include names and minimal APIs: see [Troubleshooting](#troubleshooting).
 
 To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the project. A build then writes it to `obj/<Configuration>/<TargetFramework>/generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`, one file per tool, such as `ProductsController_GetByIdTool.g.cs`. A project can move it with `<CompilerGeneratedFilesOutputPath>`: the demo sets `$(BaseIntermediateOutputPath)Generated`, so its files are in `obj/Generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`. A file stays there after its tool is gone; `McpToolsRegistration.g.cs` lists the current tools.
@@ -660,6 +707,7 @@ The build reports these warnings:
 |------|------|------|
 | `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, an empty file, or an unreadable one |
 | `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
+| `MCP007` | Generator | Two or more generated tools get the same name, and the MCP SDK keeps only one of them |
 | `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
 | `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
 
@@ -668,13 +716,18 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 **No tools are generated.**
 - Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. A `generator.json` the generator cannot use as written gets `MCP001` instead (see below). `MCP006` points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
-- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case.
-- Ensure the endpoint lives on a `ControllerBase`-derived class (or one with `[ApiController]`); minimal APIs are not supported.
+- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case, where `Controller` is the controller that serves the action, not a base class it inherits the action from.
+- Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). Minimal APIs are not supported.
 - With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
 
 **Build warning `MCP001`: `generator.json cannot be used as written`.**
 - The file is not valid JSON (a missing bracket, a trailing comma), has a value of the wrong type (a string where `include` expects a list), names a `mode` other than `SelectedOnly` or `AllExceptExcluded`, is empty or holds only `null`, or could not be read. The warning quotes the parser's error and points at where the parser stopped, or at the unknown `mode`.
 - The generator falls back as the warning says: to the default config, `SelectedOnly` mode with an empty `include`, so only `[McpExpose]` actions become tools; or, for an unknown `mode`, to `SelectedOnly` mode with the file's lists. `MCP006` is not reported as well, as its advice would describe the fallback rather than your file.
+
+**Build warning `MCP007: Tool name '...' is given to N tools`.**
+- Several generated tools have the same name, and the MCP SDK keeps only one of them, dropping the others without an error. The warning names every action that produces the name and points at its declaration. The generator still generates them all, so a name a client already calls does not change under it.
+- The usual causes: a `ToolName` on a base action that several controllers inherit, two actions with the same `ToolName`, overloads (both get `{Controller}_{Action}`), or a `toolNameFormat` without `{Controller}`. Give each tool its own name with `[McpExpose(ToolName = ...)]`, on an override for an inherited action, or exclude the ones you do not need.
+- To accept a collision, suppress the warning like any other: `#pragma warning disable MCP007` in the file it points at, `dotnet_diagnostic.MCP007.severity = none` in an `.editorconfig` section for that file, or `<NoWarn>` for the project.
 
 **Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**
 - No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning points at that file, and comes only from the build that writes it. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.

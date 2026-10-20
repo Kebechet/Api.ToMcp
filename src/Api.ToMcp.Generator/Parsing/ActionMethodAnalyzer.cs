@@ -13,6 +13,24 @@ namespace Api.ToMcp.Generator.Parsing
     {
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
+        private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
+        internal const string RouteAttributeName = "RouteAttribute";
+        private const string HttpGetAttributeName = "HttpGetAttribute";
+        private const string HttpPostAttributeName = "HttpPostAttribute";
+        private const string HttpPutAttributeName = "HttpPutAttribute";
+        private const string HttpDeleteAttributeName = "HttpDeleteAttribute";
+        private const string HttpPatchAttributeName = "HttpPatchAttribute";
+        private const string RouteTemplateProviderFullName = "Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider";
+        private const string ActionNameAttributeName = "ActionNameAttribute";
+        private const string ApiVersionAttributeName = "ApiVersionAttribute";
+        private const string ScopePropertyName = "Scope";
+        private const string XmlDocSummaryStartTag = "<summary>";
+        private const string XmlDocSummaryEndTag = "</summary>";
+
+        /// <summary>
+        /// A <c>&lt;param name="..."&gt;</c> element of an XML doc comment: its name, then its text.
+        /// </summary>
+        private const string XmlDocParamPattern = "<param name=\"([^\"]+)\">(.*?)</param>";
         private const string ToolNamePropertyName = "ToolName";
         private const string TitlePropertyName = "Title";
         private const string DescriptionPropertyName = "Description";
@@ -22,13 +40,16 @@ namespace Api.ToMcp.Generator.Parsing
         private const string IdempotentHintPropertyName = "Idempotent";
         private const string OpenWorldHintPropertyName = "OpenWorld";
 
-        private static readonly HashSet<string> HttpMethodAttributes = new HashSet<string>
+        /// <summary>
+        /// The HTTP method each of MVC's <c>[Http*]</c> attributes routes, by the attribute's simple name.
+        /// </summary>
+        private static readonly Dictionary<string, string> HttpMethodAttributes = new Dictionary<string, string>
         {
-            "HttpGetAttribute",
-            "HttpPostAttribute",
-            "HttpPutAttribute",
-            "HttpDeleteAttribute",
-            "HttpPatchAttribute"
+            [HttpGetAttributeName] = HttpMethodNames.Get,
+            [HttpPostAttributeName] = HttpMethodNames.Post,
+            [HttpPutAttributeName] = HttpMethodNames.Put,
+            [HttpDeleteAttributeName] = HttpMethodNames.Delete,
+            [HttpPatchAttributeName] = HttpMethodNames.Patch
         };
 
         public static ImmutableArray<ActionInfoModel> GetActions(
@@ -42,17 +63,11 @@ namespace Api.ToMcp.Generator.Parsing
             var controllerScope = GetDeclaredScope(controllerMcpExposeAttr);
             var isApiController = IsApiController(controller);
 
-            foreach (var member in controller.GetMembers())
+            foreach (var method in GetPublicMethods(controller))
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (!(member is IMethodSymbol method))
-                    continue;
-
-                if (method.MethodKind != MethodKind.Ordinary)
-                    continue;
-
-                if (method.DeclaredAccessibility != Accessibility.Public)
+                if (!IsAction(method))
                     continue;
 
                 var httpInfo = GetHttpMethodInfo(method);
@@ -66,7 +81,6 @@ namespace Api.ToMcp.Generator.Parsing
                 var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, GetRouteActionName(method));
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
 
-                var mcpExposeAttr = ControllerScanner.GetAttribute(method, McpExposeAttributeFullName);
                 string? customToolName = null;
                 string? customTitle = null;
                 string? customDescription = null;
@@ -78,23 +92,17 @@ namespace Api.ToMcp.Generator.Parsing
                     ? GetRequiredScope(httpInfo.Value.Method)
                     : declaredScope.Value;
 
-                if (mcpExposeAttr != null)
+                // Like scope and hints, exposure, tool name, description and title follow the nearest action-level
+                // [McpExpose], an overridden base action's included; a controller's title is never read, because one
+                // title cannot name all its actions.
+                if (actionMcpExposeAttr != null)
                 {
-                    foreach (var namedArg in mcpExposeAttr.NamedArguments)
+                    foreach (var namedArg in actionMcpExposeAttr.NamedArguments)
                     {
                         if (namedArg.Key == ToolNamePropertyName && namedArg.Value.Value is string tn)
                             customToolName = tn;
                         if (namedArg.Key == DescriptionPropertyName && namedArg.Value.Value is string desc)
                             customDescription = desc;
-                    }
-                }
-
-                // Like scope and hints, the title follows the nearest action-level [McpExpose], an overridden base
-                // action's included; a controller's is never read, because one title cannot name all its actions.
-                if (actionMcpExposeAttr != null)
-                {
-                    foreach (var namedArg in actionMcpExposeAttr.NamedArguments)
-                    {
                         if (namedArg.Key == TitlePropertyName && namedArg.Value.Value is string title && !string.IsNullOrWhiteSpace(title))
                             customTitle = title;
                     }
@@ -108,8 +116,8 @@ namespace Api.ToMcp.Generator.Parsing
                     RouteTemplate = fullRoute,
                     Parameters = parameters,
                     ReturnType = returnType,
-                    HasMcpExposeAttribute = mcpExposeAttr != null,
-                    HasMcpIgnoreAttribute = ControllerScanner.HasAttribute(method, McpIgnoreAttributeFullName),
+                    HasMcpExposeAttribute = actionMcpExposeAttr != null,
+                    HasMcpIgnoreAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpIgnoreAttribute) != null,
                     XmlDocSummary = GetXmlDocSummary(method),
                     CustomToolName = customToolName,
                     Title = customTitle ?? ToolTitleBuilder.Build(customToolName, TrimSuffix(method.Name, AsyncSuffix)),
@@ -120,29 +128,133 @@ namespace Api.ToMcp.Generator.Parsing
                     OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType),
                     IsOutputNullable = responseType.SuccessType is null ||
                         responseType.HasBodylessSuccess ||
-                        EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct)
+                        EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct),
+                    SourceLocation = SourceLocationModel.From(method.Locations.FirstOrDefault(x => x.IsInSource))
                 });
             }
 
             return builder.ToImmutable();
         }
 
+        /// <summary>
+        /// The public methods MVC lists for a controller, as reflection's <c>GetMethods()</c> lists them: the class's own,
+        /// then those of each base class up to the framework's <c>ControllerBase</c>, whose own are never actions. A
+        /// method an override replaces is listed once, as the most derived override; one hidden with <c>new</c> is
+        /// listed beside the method that hides it, as reflection lists it.
+        /// </summary>
+        private static IEnumerable<IMethodSymbol> GetPublicMethods(INamedTypeSymbol controller)
+        {
+            var overriddenMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+
+            for (var type = controller; type != null && !IsFrameworkBaseType(type); type = type.BaseType)
+            {
+                foreach (var method in type.GetMembers().OfType<IMethodSymbol>())
+                {
+                    if (overriddenMethods.Contains(method))
+                        continue;
+
+                    for (var overriddenMethod = method.OverriddenMethod; overriddenMethod != null; overriddenMethod = overriddenMethod.OverriddenMethod)
+                        overriddenMethods.Add(overriddenMethod);
+
+                    if (method.DeclaredAccessibility == Accessibility.Public)
+                        yield return method;
+                }
+            }
+        }
+
+        private static bool IsFrameworkBaseType(INamedTypeSymbol type)
+        {
+            return type.SpecialType == SpecialType.System_Object ||
+                type.ToDisplayString() is KnownTypeNames.ControllerBase or KnownTypeNames.Controller;
+        }
+
+        /// <summary>
+        /// MVC's rule for which public methods of a controller are actions (<c>DefaultApplicationModelProvider.IsAction</c>):
+        /// an ordinary instance method without type parameters and without <c>[NonAction]</c>, which an override inherits
+        /// from the method it replaces, that was not first declared on <c>object</c>, such as an override of
+        /// <c>ToString()</c>, and does not implement <c>IDisposable.Dispose</c>.
+        /// </summary>
+        private static bool IsAction(IMethodSymbol method)
+        {
+            var baseDefinition = GetBaseDefinition(method);
+
+            return method.MethodKind == MethodKind.Ordinary &&
+                !method.IsStatic &&
+                !method.IsAbstract &&
+                !method.IsGenericMethod &&
+                baseDefinition.ContainingType.SpecialType != SpecialType.System_Object &&
+                !IsDisposeImplementation(baseDefinition) &&
+                FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.ToDisplayString() == NonActionAttributeFullName) is null;
+        }
+
+        /// <summary>
+        /// Whether the method, as first declared, is how its class implements <c>IDisposable.Dispose</c>. MVC checks the
+        /// first declaration, so an override of it is no action either, while a method hiding it with <c>new</c> is one.
+        /// </summary>
+        private static bool IsDisposeImplementation(IMethodSymbol baseDefinition)
+        {
+            var declaringType = baseDefinition.ContainingType;
+            var dispose = declaringType.AllInterfaces
+                .FirstOrDefault(x => x.SpecialType == SpecialType.System_IDisposable)?
+                .GetMembers(nameof(IDisposable.Dispose))
+                .FirstOrDefault();
+
+            return dispose != null &&
+                SymbolEqualityComparer.Default.Equals(declaringType.FindImplementationForInterfaceMember(dispose), baseDefinition);
+        }
+
+        /// <summary>
+        /// The HTTP method and template of the action's route attributes, taken as MVC takes them, as a whole: from the
+        /// action if it declares any (<c>[Route]</c>, an <c>[Http*]</c> or another route template provider), else from the
+        /// method it overrides as first declared, skipping the overrides in between, as reflection's
+        /// <c>GetBaseDefinition()</c> does. Null when those attributes name no HTTP method the generator calls, such as a
+        /// <c>[Route]</c> alone, which MVC serves for every method.
+        /// </summary>
         private static (string Method, string? Template)? GetHttpMethodInfo(IMethodSymbol method)
+        {
+            var routedMethod = method.GetAttributes().Any(IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
+
+            return GetDeclaredHttpMethodInfo(routedMethod);
+        }
+
+        private static IMethodSymbol GetBaseDefinition(IMethodSymbol method)
+        {
+            var definition = method;
+            while (definition.OverriddenMethod != null)
+                definition = definition.OverriddenMethod;
+
+            return definition;
+        }
+
+        /// <summary>
+        /// An attribute MVC reads an action's route from: one implementing <c>IRouteTemplateProvider</c>, which also covers
+        /// <c>[HttpHead]</c>, <c>[AcceptVerbs]</c> and custom ones, or one the generator knows by name, as it does elsewhere.
+        /// </summary>
+        private static bool IsRouteTemplateProvider(AttributeData attribute)
+        {
+            var attributeClass = attribute.AttributeClass;
+
+            return attributeClass != null &&
+                (attributeClass.Name == RouteAttributeName ||
+                    HttpMethodAttributes.ContainsKey(attributeClass.Name) ||
+                    attributeClass.AllInterfaces.Any(x => x.ToDisplayString() == RouteTemplateProviderFullName));
+        }
+
+        private static (string Method, string? Template)? GetDeclaredHttpMethodInfo(IMethodSymbol method)
         {
             // A method-level [Route("...")] supplies the template when the HTTP verb
             // attribute carries none (e.g. [HttpGet] + [Route("search")]).
             var routeAttrTemplate = method.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.Name == "RouteAttribute" &&
+                .FirstOrDefault(attr => attr.AttributeClass?.Name == RouteAttributeName &&
                                         attr.ConstructorArguments.Length > 0)
                 ?.ConstructorArguments[0].Value?.ToString();
 
             foreach (var attr in method.GetAttributes())
             {
                 var attrName = attr.AttributeClass?.Name;
-                if (attrName == null || !HttpMethodAttributes.Contains(attrName))
+                if (attrName == null || !HttpMethodAttributes.TryGetValue(attrName, out var httpMethod))
                     continue;
 
-                var httpMethod = attrName.Replace("Attribute", "").Replace("Http", "").ToUpperInvariant();
                 var template = attr.ConstructorArguments.Length > 0
                     ? attr.ConstructorArguments[0].Value?.ToString()
                     : null;
@@ -166,7 +278,8 @@ namespace Api.ToMcp.Generator.Parsing
 
             foreach (var param in method.Parameters)
             {
-                var declaredSource = GetDeclaredParameterSource(param);
+                var bindingAttributes = GetBindingAttributes(param);
+                var declaredSource = GetDeclaredParameterSource(bindingAttributes);
 
                 // Skip service-injected parameters
                 if (declaredSource == ParameterSourceModel.Services)
@@ -197,16 +310,36 @@ namespace Api.ToMcp.Generator.Parsing
                     IsSimpleType = isSimpleType,
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
-                    QueryName = GetFromQueryName(param)
+                    QueryName = GetFromQueryName(bindingAttributes)
                 });
             }
 
             return builder.ToImmutable();
         }
 
-        private static string? GetFromQueryName(IParameterSymbol param)
+        /// <summary>
+        /// The attributes MVC reads a parameter's binding source and the name it binds under from: the parameter's own, then
+        /// those of the parameter at its position in each method the action overrides, nearest first. MVC reads them as
+        /// reflection inherits them, so an override without <c>[FromQuery]</c> binds as its base action declares, even
+        /// under another parameter name, while a nearer attribute replaces a base one of the same class whole: an
+        /// override's bare <c>[FromQuery]</c> drops the base's <c>[FromQuery(Name = "c")]</c>, name included.
+        /// </summary>
+        private static List<AttributeData> GetBindingAttributes(IParameterSymbol parameter)
         {
-            return param.GetAttributes()
+            var attributes = new List<AttributeData>(parameter.GetAttributes());
+            for (var method = (parameter.ContainingSymbol as IMethodSymbol)?.OverriddenMethod; method != null; method = method.OverriddenMethod)
+            {
+                var nearerClasses = attributes.Select(x => x.AttributeClass).ToList();
+                attributes.AddRange(method.Parameters[parameter.Ordinal].GetAttributes()
+                    .Where(x => !nearerClasses.Contains(x.AttributeClass, SymbolEqualityComparer.Default)));
+            }
+
+            return attributes;
+        }
+
+        private static string? GetFromQueryName(IEnumerable<AttributeData> attributes)
+        {
+            return attributes
                 .Where(x => x.AttributeClass?.Name == BindingAttributeNames.FromQuery)
                 .Select(GetModelName)
                 .FirstOrDefault(x => x is not null);
@@ -388,9 +521,9 @@ namespace Api.ToMcp.Generator.Parsing
                 attribute.NamedArguments.Any(x => x.Key == BindingAttributeNames.BinderTypePropertyName && x.Value.Value is not null);
         }
 
-        private static ParameterSourceModel? GetDeclaredParameterSource(IParameterSymbol param)
+        private static ParameterSourceModel? GetDeclaredParameterSource(IEnumerable<AttributeData> attributes)
         {
-            foreach (var attr in param.GetAttributes())
+            foreach (var attr in attributes)
             {
                 var attrName = attr.AttributeClass?.Name;
                 switch (attrName)
@@ -524,7 +657,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static string GetRouteActionName(IMethodSymbol method)
         {
-            var actionNameAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.Name == "ActionNameAttribute");
+            var actionNameAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.Name == ActionNameAttributeName);
             var explicitActionName = actionNameAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
 
             return string.IsNullOrEmpty(explicitActionName)
@@ -539,17 +672,34 @@ namespace Api.ToMcp.Generator.Parsing
                 : name;
         }
 
+        /// <summary>
+        /// The action's XML <c>&lt;summary&gt;</c>, else that of the method it overrides, and so on up: an override
+        /// without one of its own, or with only <c>&lt;inheritdoc/&gt;</c>, means the description of the action it replaces.
+        /// </summary>
         private static string? GetXmlDocSummary(IMethodSymbol method)
+        {
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                var summary = GetDeclaredXmlDocSummary(current);
+                if (!string.IsNullOrEmpty(summary))
+                    return summary;
+            }
+
+            return null;
+        }
+
+        private static string? GetDeclaredXmlDocSummary(IMethodSymbol method)
         {
             var xml = method.GetDocumentationCommentXml();
             if (string.IsNullOrEmpty(xml))
                 return null;
 
-            var start = xml!.IndexOf("<summary>");
-            var end = xml.IndexOf("</summary>");
+            var start = xml!.IndexOf(XmlDocSummaryStartTag);
+            var end = xml.IndexOf(XmlDocSummaryEndTag);
             if (start >= 0 && end > start)
             {
-                var summary = xml.Substring(start + 9, end - start - 9).Trim();
+                var contentStart = start + XmlDocSummaryStartTag.Length;
+                var summary = xml.Substring(contentStart, end - contentStart).Trim();
                 // Clean up whitespace
                 summary = string.Join(" ", summary.Split(new[] { '\r', '\n', ' ' }, StringSplitOptions.RemoveEmptyEntries));
                 return summary;
@@ -576,7 +726,7 @@ namespace Api.ToMcp.Generator.Parsing
         private static string? GetApiVersion(ISymbol symbol)
         {
             var attribute = symbol.GetAttributes()
-                .LastOrDefault(a => a.AttributeClass?.Name == "ApiVersionAttribute");
+                .LastOrDefault(a => a.AttributeClass?.Name == ApiVersionAttributeName);
 
             if (attribute == null || attribute.ConstructorArguments.Length == 0)
                 return null;
@@ -598,7 +748,29 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
+        /// <summary>
+        /// The XML <c>&lt;param&gt;</c> docs of the action's parameters, by name. A parameter the action leaves undocumented
+        /// takes the docs of the method it overrides, and so on up, matched by position, as an override may rename it.
+        /// </summary>
         private static Dictionary<string, string> GetXmlDocParams(IMethodSymbol method)
+        {
+            var result = new Dictionary<string, string>();
+
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                var declaredDocs = GetDeclaredXmlDocParams(current);
+                for (var i = 0; i < method.Parameters.Length; i++)
+                {
+                    var name = method.Parameters[i].Name;
+                    if (!result.ContainsKey(name) && declaredDocs.TryGetValue(current.Parameters[i].Name, out var text))
+                        result[name] = text;
+                }
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, string> GetDeclaredXmlDocParams(IMethodSymbol method)
         {
             var result = new Dictionary<string, string>();
 
@@ -607,7 +779,7 @@ namespace Api.ToMcp.Generator.Parsing
                 return result;
 
             var matches = System.Text.RegularExpressions.Regex.Matches(
-                xml!, "<param name=\"([^\"]+)\">(.*?)</param>",
+                xml!, XmlDocParamPattern,
                 System.Text.RegularExpressions.RegexOptions.Singleline);
 
             foreach (System.Text.RegularExpressions.Match match in matches)
@@ -636,7 +808,7 @@ namespace Api.ToMcp.Generator.Parsing
             foreach (var namedArgument in mcpExposeAttribute.NamedArguments)
             {
                 // An enum argument arrives as its underlying value; McpScopeModel mirrors McpScope's values.
-                if (namedArgument.Key == "Scope" && namedArgument.Value.Value is int scopeValue)
+                if (namedArgument.Key == ScopePropertyName && namedArgument.Value.Value is int scopeValue)
                 {
                     return (McpScopeModel)scopeValue;
                 }
@@ -726,6 +898,11 @@ namespace Api.ToMcp.Generator.Parsing
         private static bool IsMcpExposeAttribute(AttributeData attribute)
         {
             return attribute.AttributeClass?.ToDisplayString() == McpExposeAttributeFullName;
+        }
+
+        private static bool IsMcpIgnoreAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass?.ToDisplayString() == McpIgnoreAttributeFullName;
         }
 
         /// <summary>

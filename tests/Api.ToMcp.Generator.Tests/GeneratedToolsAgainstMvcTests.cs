@@ -134,6 +134,39 @@ namespace TestApi
         [HttpGet(""record-query-id/{id}"")]
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
     }
+
+    // Actions a concrete controller inherits from a generic base, with the base's type arguments substituted.
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public abstract class EchoListController<TId, TFilter> : ControllerBase where TFilter : class
+    {
+        [HttpGet(""by-id"")]
+        public object GetById(TId id) => new { id };
+
+        [HttpPost(""search"")]
+        public object PostSearch(TFilter filter) => filter;
+
+        [HttpGet(""find"")]
+        public virtual object Find([FromQuery] TFilter filter) => filter;
+
+        [HttpGet(""named"")]
+        public virtual object FindNamed([FromQuery(Name = ""c"")] string city) => new { city };
+
+        [HttpGet(""mask"")]
+        public virtual object Mask([FromQuery(Name = ""c"")] string city) => new { city };
+    }
+
+    // MVC reads a parameter's binding attributes through its model metadata, which inherits them from the parameter
+    // at the same position in the method an override replaces.
+    public class OrderEchoController : EchoListController<OrderId, ProductFilter>
+    {
+        public override object Find(ProductFilter filter) => new { filter.City, overridden = true };
+
+        public override object FindNamed(string town) => new { town, overridden = true };
+
+        // Its own [FromQuery] replaces the base's whole, Name included, so MVC binds it as city.
+        public override object Mask([FromQuery] string city) => new { city };
+    }
 }
 ";
 
@@ -176,6 +209,11 @@ namespace TestApi
     [InlineData("PlainEchoController_GetRecordNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
     [InlineData("PlainEchoController_GetRecordPropertyNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
     [InlineData("PlainEchoController_GetRecordQueryIdTool", @"{""id"":7,""filter"":{""id"":9,""city"":""Brno""}}", @"{""id"":7,""filterId"":9,""city"":""Brno""}")]
+    [InlineData("OrderEchoController_GetByIdTool", @"{""id"":{""value"":""" + OrderGuid + @"""}}", @"{""id"":{""value"":""" + OrderGuid + @"""}}")]
+    [InlineData("OrderEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
+    [InlineData("OrderEchoController_FindTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""overridden"":true}")]
+    [InlineData("OrderEchoController_FindNamedTool", @"{""town"":""Brno""}", @"{""town"":""Brno"",""overridden"":true}")]
+    [InlineData("OrderEchoController_MaskTool", @"{""city"":""Brno""}", @"{""city"":""Brno""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
