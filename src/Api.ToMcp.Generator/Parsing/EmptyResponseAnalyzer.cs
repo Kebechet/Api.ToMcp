@@ -60,6 +60,12 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static readonly string[] ErrorHelperNames = { "Problem", "ValidationProblem" };
 
+        /// <summary>
+        /// Whether the body of each method declaration can return a result without a body, by the declaration as it is
+        /// written, with a generic base's type parameters unsubstituted.
+        /// </summary>
+        private static readonly CompilationCache<IMethodSymbol, bool> BodyResults = new CompilationCache<IMethodSymbol, bool>(SymbolEqualityComparer.Default);
+
         public static bool CanSucceedWithoutBody(IMethodSymbol method, Compilation compilation, CancellationToken ct)
         {
             var returnedType = UnwrapTask(method.ReturnType);
@@ -69,6 +75,14 @@ namespace Api.ToMcp.Generator.Parsing
             if (!IsActionResult(returnedType) && !IsNonNullable(returnedType))
                 return true;
 
+            // The return type above is the controller's, with its type arguments: a value of T can be null for int? but not
+            // for int. The body is the declaration's, the same for every controller that inherits the action, so its flow
+            // analysis runs once per compilation instead of once per controller.
+            return BodyResults.GetOrAdd(compilation, method.OriginalDefinition, x => CanBodySucceedWithoutBody(x, compilation, ct));
+        }
+
+        private static bool CanBodySucceedWithoutBody(IMethodSymbol method, Compilation compilation, CancellationToken ct)
+        {
             var declaration = method.DeclaringSyntaxReferences
                 .Select(x => x.GetSyntax(ct))
                 .OfType<MethodDeclarationSyntax>()
