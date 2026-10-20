@@ -254,7 +254,7 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The type a <c>[Produces]</c> names, through <c>[Produces(typeof(T))]</c>, its <c>Type</c> property or
-        /// <c>[Produces&lt;T&gt;]</c>, or null when it names only content types.
+        /// <c>[Produces&lt;T&gt;]</c>, or null when it names only content types or sets <c>Type = null</c>.
         /// </summary>
         private static ITypeSymbol? GetProducesType(AttributeData attribute)
         {
@@ -271,10 +271,11 @@ namespace Api.ToMcp.Generator.Parsing
                 type = arguments[0].Value as ITypeSymbol;
             }
 
+            // Type = null clears the constructor's type, and with it the 200: ApiExplorer adds no response for a null type.
             foreach (var namedArgument in attribute.NamedArguments)
             {
-                if (namedArgument.Key == TypePropertyName && namedArgument.Value.Value is ITypeSymbol namedType)
-                    type = namedType;
+                if (namedArgument.Key == TypePropertyName)
+                    type = namedArgument.Value.Value as ITypeSymbol;
             }
 
             return type;
