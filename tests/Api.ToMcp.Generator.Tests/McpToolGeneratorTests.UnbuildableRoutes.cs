@@ -59,6 +59,24 @@ namespace TestApi
 }
 ";
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("// A comment long enough for the span of the warning to lie inside this file as well as in the other one,\n// where alone it holds the name of the action, so a location made of the path and the span would be wrong.")]
+    public void Generator_PointsAWarningIntoTheRightFile_OfTwoThatShareAPath(string filler)
+    {
+        // A test compilation, or a generator-produced tree, can give two files the same path, here none. A location in the
+        // first file whose span lies past its end made Roslyn throw, and drop the whole output (CS8785).
+        var compilation = CreateCompilation(Usings + filler + "\nnamespace TestApi { public static class Filler { } }", Usings + UnroutableController);
+
+        var runResult = CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation).GetRunResult();
+        var warning = Assert.Single(runResult.Diagnostics, x => x.Id == UnbuildableRouteId);
+
+        // CS8785: the generator failed and contributes nothing.
+        Assert.DoesNotContain(runResult.Diagnostics, x => x.Id == "CS8785");
+        Assert.Same(compilation.SyntaxTrees.Last(), warning.Location.SourceTree);
+        Assert.Equal("Z", warning.Location.SourceTree!.GetText().ToString(warning.Location.SourceSpan));
+    }
+
     [Fact]
     public void Generator_WarnsThatNoToolsAreGenerated_WhenTheIncludeSelectsOnlyActionsWithoutARoute()
     {

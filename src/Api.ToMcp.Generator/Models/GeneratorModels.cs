@@ -190,6 +190,11 @@ namespace Api.ToMcp.Generator.Models
         public LinePositionSpan LineSpan { get; init; }
 
         /// <summary>
+        /// The source text the location spans, such as an action's name, which tells apart two files with the same path.
+        /// </summary>
+        public string Text { get; init; } = "";
+
+        /// <summary>
         /// The place of a source location, or null for one outside source, such as in a referenced assembly.
         /// </summary>
         public static SourceLocationModel? From(Location? location)
@@ -204,18 +209,24 @@ namespace Api.ToMcp.Generator.Models
             {
                 FilePath = lineSpan.Path,
                 TextSpan = location.SourceSpan,
-                LineSpan = lineSpan.Span
+                LineSpan = lineSpan.Span,
+                Text = location.SourceTree.GetText().ToString(location.SourceSpan)
             };
         }
 
         /// <summary>
         /// The location in the compilation's syntax tree of the file: the compiler applies the file's
         /// <c>#pragma warning</c> and <c>.editorconfig</c> severities to a diagnostic through that tree, and to one
-        /// pointing at a bare file path it applies neither. A file location only when no tree has the file's path.
+        /// pointing at a bare file path it applies neither. Several trees can share a path, as files without one do, so
+        /// it is the tree whose text at the span is the location's; a span past a tree's end would make Roslyn throw and
+        /// drop the generator's output. A file location only when no tree of the path holds the span.
         /// </summary>
         public Location ToLocation(Compilation compilation)
         {
-            var tree = compilation.SyntaxTrees.FirstOrDefault(x => x.FilePath == FilePath);
+            var trees = compilation.SyntaxTrees
+                .Where(x => x.FilePath == FilePath && TextSpan.End <= x.Length)
+                .ToList();
+            var tree = trees.FirstOrDefault(x => x.GetText().ToString(TextSpan) == Text) ?? trees.FirstOrDefault();
 
             return tree is null
                 ? Location.Create(FilePath, TextSpan, LineSpan)
