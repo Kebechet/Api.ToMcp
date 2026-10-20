@@ -254,7 +254,7 @@ public static class McpRequestValueFormatter
             .FirstOrDefault(x => !string.IsNullOrEmpty(x)) ?? property.Name;
     }
 
-    private static bool IsNotBoundFromTheQuery(Type type)
+    internal static bool IsNotBoundFromTheQuery(Type type)
     {
         return TypesNotBoundFromTheQuery.Any(x => x.IsAssignableFrom(type));
     }

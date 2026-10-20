@@ -16,6 +16,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Moq;
 using Xunit;
@@ -36,7 +37,7 @@ public class McpExtensionsTests
         var expectedTools = BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly)).Where(x => !IsGenerated(x));
         var actualTools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false)).Where(x => !IsGenerated(x)).ToList();
 
-        Assert.Equal(4, actualTools.Count);
+        Assert.Equal(5, actualTools.Count);
         Assert.Equal(expectedTools.Select(ToJson).OrderBy(x => x), actualTools.Select(ToJson).OrderBy(x => x));
     }
 
@@ -130,6 +131,51 @@ public class McpExtensionsTests
 
         Assert.Equal(JsonValueKind.True, inputTotal.ValueKind);
         Assert.Equal(JsonValueKind.True, outputTotal.ValueKind);
+    }
+
+    [Fact]
+    public void AddMcpTools_LeavesTheArgumentPropertiesAGeneratedToolNeverSends_OutOfItsInputSchema()
+    {
+        // The query string carries none of them, and a JSON body none without a public getter.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+
+        var request = GetToolInputProperty(tools, "generated_unsent", "request");
+
+        Assert.Equal(["city", "note"], request.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+        Assert.Equal(["city"], request.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+        var upload = GetToolInputProperty(tools, "generated_unsent", "upload");
+        Assert.Equal(["name"], upload.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+    }
+
+    [Fact]
+    public void AddMcpTools_LeavesAHandWrittenToolsInputSchema_ToTheSdk()
+    {
+        // A hand-written tool gets the request object itself, so a property without a public getter can matter to it.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+
+        var request = GetToolInputProperty(tools, "handwritten_unsent", "request");
+
+        Assert.Contains("secret", request.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+        Assert.Contains("file", request.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+    }
+
+    [Fact]
+    public async Task AddMcpTools_IgnoresAnArgumentPropertyAGeneratedToolNeverSends_WhenTheClientSendsItAnyway()
+    {
+        // The SDK cannot read an IFormFile at all, so the call failed with "An error occurred invoking".
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_unsent");
+        await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions());
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+            """{"request":{"city":"Brno","secret":"s1","file":{"fileName":"a.txt"},"files":[{"fileName":"b.txt"}],"token":{"isCancellationRequested":true}},"upload":{"name":"n1","file":{"fileName":"c.txt"},"token":{}}}""")!;
+        var context = new RequestContext<CallToolRequestParams>(
+            server,
+            new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+            new CallToolRequestParams { Name = "generated_unsent", Arguments = arguments });
+
+        var result = await tool.InvokeAsync(context, CancellationToken.None);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal("Brno:default-secret:n1", Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text);
     }
 
     [Fact]
@@ -389,6 +435,11 @@ public class McpExtensionsTests
     private static bool IsGenerated(McpServerTool tool)
     {
         return tool.ProtocolTool.Name.StartsWith("generated_", StringComparison.Ordinal);
+    }
+
+    private static JsonElement GetToolInputProperty(IEnumerable<McpServerTool> tools, string toolName, string argumentName)
+    {
+        return tools.Single(x => x.ProtocolTool.Name == toolName).ProtocolTool.InputSchema.GetProperty("properties").GetProperty(argumentName);
     }
 
     private static JsonElement GetOutputSchema(IEnumerable<McpServerTool> tools, string toolName)
