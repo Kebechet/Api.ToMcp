@@ -166,6 +166,9 @@ namespace TestApi
         [HttpGet(""required-default"")]
         public object GetRequiredDefault([FromQuery, System.ComponentModel.DataAnnotations.Required] int size = 1) => new { size, query = Request.QueryString.Value };
 
+        [HttpGet(""must-bind"")]
+        public object GetMustBind([FromQuery, MustBind] int page = 1) => new { page, query = Request.QueryString.Value };
+
         [HttpGet(""names/{name}.{ext?}"")]
         public object GetFileName(string name, string ext = ""txt"") => new { name, ext, path = Request.Path.Value };
 
@@ -211,6 +214,13 @@ namespace TestApi
 
         [HttpGet(""record-query-id/{id}"")]
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
+    }
+
+    public sealed class MustBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public MustBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)
+        {
+        }
     }
 
     // Route attributes an app derives from MVC's or implements itself, which MVC reads by their interfaces.
@@ -398,6 +408,7 @@ namespace TestApi
     [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":1,""page"":3}", @"{""unknown"":1,""page"":3,""text"":""x"",""query"":""?unknown=Closed&page=3""}")]
     [InlineData("EchoController_GetBindRequiredTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
     [InlineData("EchoController_GetRequiredDefaultTool", @"{}", @"{""size"":1,""query"":""?size=1""}")]
+    [InlineData("EchoController_GetMustBindTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
     [InlineData("EchoController_GetFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":""txt"",""path"":""/api/names/report.txt""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{}", @"{""status"":99,""path"":""/api/default-route/""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{""status"":1}", @"{""status"":1,""path"":""/api/default-route/Closed""}")]

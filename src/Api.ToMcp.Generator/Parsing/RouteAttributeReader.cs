@@ -148,11 +148,71 @@ namespace Api.ToMcp.Generator.Parsing
         {
             var name = attribute.NamedArguments.FirstOrDefault(x => x.Key == RoutingAttributeNames.NamePropertyName).Value.Value;
             var order = attribute.NamedArguments.Any(x => x.Key == RoutingAttributeNames.OrderPropertyName) ? (object)true : null;
+            var (typeName, arguments, failure) = FollowConstructors(
+                attribute,
+                x => x is RoutingAttributeNames.Route or RoutingAttributeNames.HttpMethod or RoutingAttributeNames.AcceptVerbs || HttpMethodByAttribute.ContainsKey(x),
+                compilation,
+                ct);
 
+            if (failure != null)
+            {
+                return (failure, failure, name, order);
+            }
+
+            if (typeName == RoutingAttributeNames.Route)
+            {
+                return (GetArgument(arguments, RouteTemplateArgument), null, name, order);
+            }
+
+            if (HttpMethodByAttribute.TryGetValue(typeName!, out var httpMethod))
+            {
+                return (arguments.Length > HttpVerbTemplateArgument ? arguments[HttpVerbTemplateArgument] : null, new object?[] { httpMethod }, name, order);
+            }
+
+            if (typeName == RoutingAttributeNames.HttpMethod)
+            {
+                return (arguments.Length > HttpMethodTemplateArgument ? arguments[HttpMethodTemplateArgument] : null, GetArgument(arguments, HttpMethodsArgument), name, order);
+            }
+
+            // AcceptVerbsAttribute is sealed, so applied as itself, and its template is a property.
+            var route = attribute.NamedArguments.FirstOrDefault(x => x.Key == RoutingAttributeNames.AcceptVerbsRoutePropertyName).Value.Value;
+            return (route, GetArgument(arguments, AcceptVerbsMethodsArgument), name, order);
+        }
+
+        /// <summary>
+        /// Whether the constructors of the attribute, followed from the one it is applied with, pass a constant at the
+        /// position to the constructor of the type named, and which: an enum value as its number. Not when the generator
+        /// cannot tell, as for a constructor of a referenced assembly, whose code metadata does not hold.
+        /// </summary>
+        public static bool TryReadArgumentPassedTo(
+            AttributeData attribute,
+            string typeName,
+            int position,
+            Compilation compilation,
+            CancellationToken ct,
+            out object? value)
+        {
+            var (_, arguments, failure) = FollowConstructors(attribute, x => x == typeName, compilation, ct);
+            var argument = failure ?? GetArgument(arguments, position);
+            value = argument is EnumValue enumValue ? enumValue.Value : argument;
+
+            return !(value is UnknownValue);
+        }
+
+        /// <summary>
+        /// The arguments the constructor the attribute is applied with, and each constructor it calls, pass on to the
+        /// first constructor of a type the name of which is a target, with that name; or why the generator cannot tell.
+        /// </summary>
+        private static (string? TypeName, object?[] Arguments, UnknownValue? Failure) FollowConstructors(
+            AttributeData attribute,
+            Func<string, bool> isTarget,
+            Compilation compilation,
+            CancellationToken ct)
+        {
             // Roslyn finds no constructor for an application whose arguments do not compile.
             if (attribute.AttributeConstructor is null)
             {
-                return (ArgumentDoesNotCompile, ArgumentDoesNotCompile, name, order);
+                return (null, Array.Empty<object?>(), ArgumentDoesNotCompile);
             }
 
             var constructor = attribute.AttributeConstructor;
@@ -160,38 +220,20 @@ namespace Api.ToMcp.Generator.Parsing
             for (var i = 0; i < MaxConstructorChainLength && constructor is { } current; i++)
             {
                 var typeName = current.ContainingType.OriginalDefinition.ToDisplayString();
-                if (typeName == RoutingAttributeNames.Route)
+                if (isTarget(typeName))
                 {
-                    return (GetArgument(arguments, RouteTemplateArgument), null, name, order);
-                }
-
-                if (HttpMethodByAttribute.TryGetValue(typeName, out var httpMethod))
-                {
-                    return (arguments.Length > HttpVerbTemplateArgument ? arguments[HttpVerbTemplateArgument] : null, new object?[] { httpMethod }, name, order);
-                }
-
-                if (typeName == RoutingAttributeNames.HttpMethod)
-                {
-                    return (arguments.Length > HttpMethodTemplateArgument ? arguments[HttpMethodTemplateArgument] : null, GetArgument(arguments, HttpMethodsArgument), name, order);
-                }
-
-                if (typeName == RoutingAttributeNames.AcceptVerbs)
-                {
-                    // Sealed, so applied as itself, and its template is a property.
-                    var route = attribute.NamedArguments.FirstOrDefault(x => x.Key == RoutingAttributeNames.AcceptVerbsRoutePropertyName).Value.Value;
-                    return (route, GetArgument(arguments, AcceptVerbsMethodsArgument), name, order);
+                    return (typeName, arguments, null);
                 }
 
                 UnknownValue? failure;
                 (constructor, arguments, failure) = ReadBaseConstructorCall(current, arguments, compilation, ct);
                 if (failure != null)
                 {
-                    return (failure, failure, name, order);
+                    return (null, arguments, failure);
                 }
             }
 
-            var tooLong = new UnknownValue("its constructors call each other further than the generator follows them");
-            return (tooLong, tooLong, name, order);
+            return (null, Array.Empty<object?>(), new UnknownValue("its constructors call each other further than the generator follows them"));
         }
 
         /// <summary>

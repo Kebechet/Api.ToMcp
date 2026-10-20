@@ -101,7 +101,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var routeProblem = httpInfo.Value.Problem ??
                     (IsAbsoluteTemplate(httpInfo.Value.Template) ? null : routePrefixProblem);
 
-                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation);
+                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation, ct);
                 var returnType = AnalyzeReturnType(method);
                 var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
@@ -388,7 +388,8 @@ namespace Api.ToMcp.Generator.Parsing
             IMethodSymbol method,
             string httpMethod,
             bool isApiController,
-            Compilation compilation)
+            Compilation compilation,
+            CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
             var paramDocs = XmlDocParams.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocParams);
@@ -428,7 +429,7 @@ namespace Api.ToMcp.Generator.Parsing
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
                     Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
-                    IsBindingRequired = IsBindingRequired(bindingAttributes),
+                    IsBindingRequired = IsBindingRequired(bindingAttributes, compilation, ct),
                     IsSimpleType = isSimpleType,
                     IsCollection = IsCollection(param.Type),
                     Properties = properties,
@@ -702,19 +703,46 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether MVC requires a value for the parameter: its first binding behavior attribute is <c>[BindRequired]</c> or
-        /// <c>[BindingBehavior(BindingBehavior.Required)]</c>, or it is <c>[Required]</c>. MVC reads the binding behavior of
-        /// a parameter from the parameter's own attributes alone (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>).
+        /// Whether MVC requires a value for the parameter: its first binding behavior attribute is <c>[BindRequired]</c>,
+        /// or passes <c>BindingBehavior.Required</c> to the constructor of <c>BindingBehaviorAttribute</c>, or it is
+        /// <c>[Required]</c>. MVC reads the binding behavior of a parameter from the parameter's own attributes alone
+        /// (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>).
         /// </summary>
-        private static bool IsBindingRequired(IEnumerable<AttributeData> attributes)
+        private static bool IsBindingRequired(IEnumerable<AttributeData> attributes, Compilation compilation, CancellationToken ct)
         {
             var attributeList = attributes.Where(x => x.AttributeClass != null).ToList();
             var bindingBehavior = attributeList.FirstOrDefault(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.BindingBehavior));
-            var isBindRequired = bindingBehavior != null &&
-                (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired) ||
-                    bindingBehavior.ConstructorArguments.FirstOrDefault().Value is BindingAttributeNames.BindingBehaviorRequired);
 
-            return isBindRequired || attributeList.Any(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.Required));
+            return (bindingBehavior != null && IsRequiredBehavior(bindingBehavior, compilation, ct)) ||
+                attributeList.Any(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.Required));
+        }
+
+        /// <summary>
+        /// Whether a binding behavior attribute requires a value. One whose constructors the generator cannot follow, as
+        /// those of a referenced assembly, counts as requiring one: the tool then sends the default, which MVC binds as it
+        /// would apply it, where a value MVC requires and does not get answers 400.
+        /// </summary>
+        private static bool IsRequiredBehavior(AttributeData bindingBehavior, Compilation compilation, CancellationToken ct)
+        {
+            // Both are sealed, and their constructors, in MVC's assembly, pass a behavior of their own.
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired))
+            {
+                return true;
+            }
+
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindNever))
+            {
+                return false;
+            }
+
+            return !RouteAttributeReader.TryReadArgumentPassedTo(
+                    bindingBehavior,
+                    BindingAttributeNames.BindingBehavior,
+                    BindingAttributeNames.BindingBehaviorArgument,
+                    compilation,
+                    ct,
+                    out var behavior) ||
+                behavior is BindingAttributeNames.BindingBehaviorRequired;
         }
 
         private static bool IsCollection(ITypeSymbol type)

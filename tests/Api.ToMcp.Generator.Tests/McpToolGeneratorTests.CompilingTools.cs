@@ -175,6 +175,91 @@ namespace TestApi
         Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
     }
 
+    private const string BindingBehaviorAttributes = @"
+    public sealed class MustBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public MustBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)
+        {
+        }
+    }
+
+    public sealed class BehavesAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public BehavesAttribute(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior behavior) : base(behavior)
+        {
+        }
+    }
+
+    public sealed class MayBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public MayBindAttribute(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior ignored) : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Optional)
+        {
+        }
+    }
+";
+
+    [Theory]
+    [InlineData("[FromQuery, MustBind] int page = 1", "page")]
+    [InlineData("[FromQuery, Behaves(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)] int page = 1", "page")]
+    [InlineData("[FromQuery, Behaves(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Optional)] int page = 1", "page == 1 ? null : page")]
+    [InlineData("[FromQuery, MayBind(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)] int page = 1", "page == 1 ? null : page")]
+    [InlineData("[FromQuery, Microsoft.AspNetCore.Mvc.ModelBinding.BindNever] int page = 1", "page == 1 ? null : page")]
+    public void Generator_ReadsTheBindingBehavior_ThatTheConstructorsOfAnAttributeInTheProjectPassOn(string parameter, string sentValue)
+    {
+        // MVC reads the behavior the attribute's constructors pass to BindingBehaviorAttribute's, whatever its own take.
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[HttpGet] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
+            BindingBehaviorAttributes + ApiControllerDeclaration);
+
+        Assert.Contains($"AddQueryValue(queryParts, \"page\", {sentValue});", tool);
+    }
+
+    [Fact]
+    public void Generator_SendsTheDefault_OfAParameterWithABindingBehaviorAttributeFromAReferencedAssembly()
+    {
+        // Metadata holds no constructor code, so the behavior stays unknown; a value MVC does not require is sent harmlessly,
+        // while one it requires and does not get answers 400.
+        const string referenced = SimpleTypeSources.Usings + @"
+namespace Shared
+{
+    public sealed class SharedMayBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public SharedMayBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Optional)
+        {
+        }
+    }
+
+    public sealed class SharedMustBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public SharedMustBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)
+        {
+        }
+    }
+}
+";
+        const string source = SimpleTypeSources.Usings + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class OrdersController : ControllerBase
+    {
+        [HttpGet]
+        public Task<string> Find([FromQuery, Shared.SharedMayBind] int page = 1, [FromQuery, Shared.SharedMustBind] int size = 1) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var compilation = CreateCompilation(source).AddReferences(CompileToReference(referenced, "Shared"));
+
+        CreateDriver(AllExceptExcludedConfig).RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var diagnostics);
+        var errors = diagnostics.Concat(outputCompilation.GetDiagnostics()).Where(x => x.Severity == DiagnosticSeverity.Error);
+        var generated = string.Join("\n", outputCompilation.SyntaxTrees.Skip(1).Select(x => x.ToString()));
+
+        Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
+        Assert.Contains("AddQueryValue(queryParts, \"page\", page);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"size\", size);", generated);
+    }
+
     [Theory]
     [InlineData("p/{page}")]
     [InlineData("p/{name}.{page?}")]

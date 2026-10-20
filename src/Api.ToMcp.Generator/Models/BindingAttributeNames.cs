@@ -27,7 +27,14 @@ internal static class BindingAttributeNames
     /// </summary>
     public const string BindingBehavior = "Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute";
 
+    /// <summary>
+    /// The position of the behavior among the constructor arguments of <c>BindingBehaviorAttribute(behavior)</c>.
+    /// </summary>
+    public const int BindingBehaviorArgument = 0;
+
     public const string BindRequired = "Microsoft.AspNetCore.Mvc.ModelBinding.BindRequiredAttribute";
+
+    public const string BindNever = "Microsoft.AspNetCore.Mvc.ModelBinding.BindNeverAttribute";
 
     /// <summary>
     /// <c>BindingBehavior.Required</c>, as Roslyn gives an enum argument: its number.
