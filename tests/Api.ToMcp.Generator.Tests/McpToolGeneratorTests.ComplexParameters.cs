@@ -180,4 +180,18 @@ public partial class McpToolGeneratorTests
         Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
         Assert.DoesNotContain("\"Note\"", tool);
     }
+
+    [Fact]
+    public void Generator_EscapesNamesThatAreCSharpKeywords_WhereverItWritesThemAsIdentifiers()
+    {
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpPost(\"kw/{namespace}/{id}\")] public Task<string> Find(string @namespace, KeywordQuery q, [FromBody] ProductFilter @object, [FromQuery] string? @class, [FromQuery] int? @await) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routenamespace = System.Uri.EscapeDataString({Formatter}.Format(@namespace));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"event\", q.@event);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"class\", @class);", tool);
+        // await is a keyword only inside an async method, which the tool is.
+        Assert.Contains("AddQueryValue(queryParts, \"await\", @await);", tool);
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(@object);", tool);
+    }
 }

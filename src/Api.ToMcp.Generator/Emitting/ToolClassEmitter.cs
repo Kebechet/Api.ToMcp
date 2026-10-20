@@ -134,7 +134,7 @@ namespace Api.ToMcp.Generator.Emitting
 
                 if (directParam != null)
                 {
-                    placeholderSources[placeholder] = (directParam.Name, directParam.Type, directParam.IsNullable, directParam.Name);
+                    placeholderSources[placeholder] = (EscapeIdentifier(directParam.Name), directParam.Type, directParam.IsNullable, directParam.Name);
                 }
                 else
                 {
@@ -202,7 +202,7 @@ namespace Api.ToMcp.Generator.Emitting
                 if (param.Source == ParameterSourceModel.Query ||
                     (param.Source == ParameterSourceModel.Auto && !RouteContainsParameter(route, param.Name) && param.IsSimpleType))
                 {
-                    queryValues.Add((param.QueryName ?? param.Name, param.Name));
+                    queryValues.Add((param.QueryName ?? param.Name, EscapeIdentifier(param.Name)));
                 }
                 else if (param.Source == ParameterSourceModel.Auto && !RouteContainsParameter(route, param.Name) && IsBoundFromValueProviders(param, action))
                 {
@@ -247,7 +247,7 @@ namespace Api.ToMcp.Generator.Emitting
         {
             if (!parameter.Properties.Any(routeProperties.Contains))
             {
-                return new[] { (parameter.Name, parameter.Name) };
+                return new[] { (parameter.Name, EscapeIdentifier(parameter.Name)) };
             }
 
             return parameter.Properties
@@ -266,8 +266,19 @@ namespace Api.ToMcp.Generator.Emitting
         private static string GetPropertyAccess(ParameterInfoModel parameter, PropertyInfoModel property)
         {
             return parameter.IsNullable
-                ? $"{parameter.Name}?.{property.Name}"
-                : $"{parameter.Name}.{property.Name}";
+                ? $"{EscapeIdentifier(parameter.Name)}?.{EscapeIdentifier(property.Name)}"
+                : $"{EscapeIdentifier(parameter.Name)}.{EscapeIdentifier(property.Name)}";
+        }
+
+        /// <summary>
+        /// A parameter or property name as a C# identifier. A keyword such as <c>event</c>, which a C# name declares as
+        /// <c>@event</c>, gets the <c>@</c> back, as does <c>await</c>, a keyword inside the async method a tool is.
+        /// </summary>
+        private static string EscapeIdentifier(string name)
+        {
+            return SyntaxFacts.GetKeywordKind(name) != SyntaxKind.None || SyntaxFacts.GetContextualKeywordKind(name) == SyntaxKind.AwaitKeyword
+                ? "@" + name
+                : name;
         }
 
         private static string GetBinderModelName(PropertyInfoModel property)
@@ -297,7 +308,7 @@ namespace Api.ToMcp.Generator.Emitting
                     var invokerMethod = action.HttpMethod == HttpMethodNames.Post ? "PostAsync" : action.HttpMethod == HttpMethodNames.Put ? "PutAsync" : "PatchAsync";
                     if (bodyParam != null)
                     {
-                        sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({bodyParam.Name});");
+                        sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({EscapeIdentifier(bodyParam.Name)});");
                     }
                     invokerCall = $"await invoker.{invokerMethod}(route, {(bodyParam != null ? "bodyJson" : "null")}, cancellationToken)";
                     break;
@@ -465,7 +476,7 @@ namespace Api.ToMcp.Generator.Emitting
                 ? $"Parameter: {param.Name}"
                 : param.Description!;
             var descAttr = $"[Description(\"{EscapeString(description)}\")] ";
-            return $"{descAttr}{type} {param.Name}{defaultPart}";
+            return $"{descAttr}{type} {EscapeIdentifier(param.Name)}{defaultPart}";
         }
 
         internal static bool RouteContainsParameter(string route, string paramName)
