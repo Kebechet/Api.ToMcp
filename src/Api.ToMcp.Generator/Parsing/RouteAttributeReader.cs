@@ -599,7 +599,7 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Whether code of the attribute's class, or of a class between it and the one that first declares the property or
-        /// field, assigns it outside the places allowed, as a constructor may: the value the generator would read from its
+        /// field, sets it outside the places allowed, as a constructor may: the value the generator would read from its
         /// initializer is then not the one MVC reads. A property counts with the ones it overrides, through which code of
         /// a base class sets it. Else the first of those classes that a referenced assembly declares, whose code metadata
         /// does not hold, if any.
@@ -607,7 +607,7 @@ namespace Api.ToMcp.Generator.Parsing
         private static (bool IsAssigned, INamedTypeSymbol? ClassWithoutCode) FindAssignments(
             ISymbol symbol,
             INamedTypeSymbol attributeClass,
-            Func<AssignmentExpressionSyntax, bool> isAllowed,
+            Func<SyntaxNode, bool> isAllowed,
             Compilation compilation,
             CancellationToken ct)
         {
@@ -631,8 +631,10 @@ namespace Api.ToMcp.Generator.Parsing
                     var declaration = reference.GetSyntax(ct);
                     var semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
                     var isAssigned = declaration.DescendantNodes()
-                        .OfType<AssignmentExpressionSyntax>()
-                        .Any(x => semanticModel.GetSymbolInfo(x.Left, ct).Symbol?.OriginalDefinition is { } assigned &&
+                        .OfType<IdentifierNameSyntax>()
+                        .Where(x => x.Identifier.ValueText == symbol.Name)
+                        .Any(x => IsWritten(GetReferenceExpression(x)) &&
+                            semanticModel.GetSymbolInfo(x, ct).Symbol?.OriginalDefinition is { } assigned &&
                             assignedSymbols.Contains(assigned) &&
                             !isAllowed(x));
                     if (isAssigned)
@@ -648,6 +650,50 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return (false, null);
+        }
+
+        /// <summary>
+        /// The whole expression a name refers to a member by, with the instance before it, <c>this.Template</c> say, and the
+        /// parentheses and null-forgiving operators around it.
+        /// </summary>
+        private static ExpressionSyntax GetReferenceExpression(IdentifierNameSyntax name)
+        {
+            ExpressionSyntax expression = name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name ? memberAccess : name;
+            while (expression.Parent is ParenthesizedExpressionSyntax ||
+                expression.Parent is PostfixUnaryExpressionSyntax suppressed && suppressed.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+            {
+                expression = (ExpressionSyntax)expression.Parent;
+            }
+
+            return expression;
+        }
+
+        /// <summary>
+        /// Whether code may write the variable an expression refers to: the target of an assignment, compound ones
+        /// included, an element of a tuple that a deconstruction assigns, a <c>ref</c> or <c>out</c> argument, a
+        /// <c>ref</c> taken of it, or the operand of <c>++</c> or <c>--</c>.
+        /// </summary>
+        private static bool IsWritten(ExpressionSyntax expression)
+        {
+            switch (expression.Parent)
+            {
+                case AssignmentExpressionSyntax assignment:
+                    return assignment.Left == expression;
+                case ArgumentSyntax argument when argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword):
+                    return true;
+                case ArgumentSyntax { Parent: TupleExpressionSyntax tuple }:
+                    return IsWritten(tuple);
+                case ForEachVariableStatementSyntax forEach:
+                    return forEach.Variable == expression;
+                case RefExpressionSyntax:
+                    return true;
+                case PrefixUnaryExpressionSyntax prefix:
+                    return prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression);
+                case PostfixUnaryExpressionSyntax postfix:
+                    return postfix.IsKind(SyntaxKind.PostIncrementExpression) || postfix.IsKind(SyntaxKind.PostDecrementExpression);
+                default:
+                    return false;
+            }
         }
 
         /// <summary>

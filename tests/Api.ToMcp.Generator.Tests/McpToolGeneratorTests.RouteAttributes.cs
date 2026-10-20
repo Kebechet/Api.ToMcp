@@ -395,6 +395,42 @@ namespace TestApi
         public override string? Template { get; set; } = ""init"";
     }
 
+    // Code sets a property or field in other forms than a plain assignment as well.
+    public sealed class TupleCtorGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public TupleCtorGetAttribute()
+        {
+            (Template, Extra) = (""from-tuple"", 1);
+        }
+
+        public string? Template { get; set; } = ""init"";
+
+        public int Extra { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class RefSideGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template;
+
+        public string? Template { get => _template; set => _template = value; }
+
+        public string? Area { get => null; set => Prefix(value, ref _template); }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+
+        private static void Prefix(string? area, ref string? template) => template = area + ""/"" + template;
+    }
+
     public class InitBaseGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
     {
         public virtual string? Template { get; set; } = ""base"";
@@ -560,6 +596,7 @@ namespace TestApi
     [Theory]
     [InlineData("[AssignedGet(\"actual\")]", "the generator cannot read the route template of its [AssignedGet] attribute, as AssignedGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
     [InlineData("[DerivedInitGet]", "the generator cannot read the route template of its [DerivedInitGet] attribute, as DerivedInitGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
+    [InlineData("[TupleCtorGet]", "the generator cannot read the route template of its [TupleCtorGet] attribute, as TupleCtorGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
     public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttribute_ThatCodeOtherThanItsInitializerSets(string attribute, string reason)
     {
         // A constructor overwrites the initializer, so the initializer is not the template MVC reads; a base class's
@@ -586,6 +623,7 @@ namespace TestApi
     [InlineData("[PrefixedGet(Template = \"items\")]", "the generator cannot read the route template of its [PrefixedGet] attribute, as the setter of PrefixedGetAttribute.Template does more than store the value for its getter to return, which the generator does not follow")]
     [InlineData("[SideSetGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideSetGet] attribute, as the value SideSetGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[SideDerivedGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideDerivedGet] attribute, as the value SideDerivedGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    [InlineData("[RefSideGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [RefSideGet] attribute, as the value RefSideGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     public void Generator_SaysWhyItCannotReadTheTemplateANamedArgumentSets_WhenThePropertyMayNotKeepIt(string attribute, string reason)
     {
         // MVC serves the template the getter returns, which a setter that adds to its value, say, makes /v1/items.
