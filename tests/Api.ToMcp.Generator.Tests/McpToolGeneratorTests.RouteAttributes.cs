@@ -289,6 +289,7 @@ namespace TestApi
     [InlineData("[PaddedRoute(2)]", "the generator cannot read the route template of the [PaddedRoute] attribute on OrdersController, as it is computed by 'version.ToString(\"D2\")', which the generator cannot evaluate")]
     [InlineData("[RatioRoute(1.5)]", "the generator cannot read the route template of the [RatioRoute] attribute on OrdersController, as it is computed from 'ratio', a double, which C# writes in the culture the app runs under")]
     [InlineData("[NumberedRoute(-1)]", "the generator cannot read the route template of the [NumberedRoute] attribute on OrdersController, as it is computed from 'version', a negative number, which C# writes with the minus sign of the culture the app runs under")]
+    [InlineData("[ApiRoute(42)]", "the generator cannot read the route template of the [ApiRoute] attribute on OrdersController, as an argument of the attribute does not compile")]
     [InlineData("[NarrowedRoute(300)]", "the generator cannot read the route template of the [NarrowedRoute] attribute on OrdersController, as it is computed by '(byte)version', which the generator cannot evaluate")]
     [InlineData("[LetterRoute(65)]", "the generator cannot read the route template of the [LetterRoute] attribute on OrdersController, as it is computed by '(char)code', which the generator cannot evaluate")]
     [InlineData("[EnumRoute((ApiVersion)7)]", "the generator cannot read the route template of the [EnumRoute] attribute on OrdersController, as it is computed from 'version', a value of ApiVersion that no member has alone")]

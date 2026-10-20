@@ -48,6 +48,8 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static readonly UnknownValue NoArgument = new UnknownValue("the generator finds no argument for a parameter of its constructor");
 
+        private static readonly UnknownValue ArgumentDoesNotCompile = new UnknownValue("an argument of the attribute does not compile");
+
         /// <summary>
         /// Whether MVC reads a route template from the attribute. MVC's own attributes are also matched by their names, as
         /// a project may declare stand-ins for them.
@@ -122,6 +124,12 @@ namespace Api.ToMcp.Generator.Parsing
         {
             var name = attribute.NamedArguments.FirstOrDefault(x => x.Key == RoutingAttributeNames.NamePropertyName).Value.Value;
             var order = attribute.NamedArguments.Any(x => x.Key == RoutingAttributeNames.OrderPropertyName) ? (object)true : null;
+
+            // Roslyn finds no constructor for an application whose arguments do not compile.
+            if (attribute.AttributeConstructor is null)
+            {
+                return (ArgumentDoesNotCompile, ArgumentDoesNotCompile, name, order);
+            }
 
             var constructor = attribute.AttributeConstructor;
             var arguments = attribute.ConstructorArguments.Select(ToValue).ToArray();
@@ -532,7 +540,7 @@ namespace Api.ToMcp.Generator.Parsing
             return constant.Kind switch
             {
                 TypedConstantKind.Array => constant.IsNull ? null : constant.Values.Select(ToValue).ToArray(),
-                TypedConstantKind.Error => new UnknownValue("an argument of the attribute does not compile"),
+                TypedConstantKind.Error => ArgumentDoesNotCompile,
                 TypedConstantKind.Enum => ToEnumValue(constant.Type, constant.Value),
                 _ => constant.Value
             };
