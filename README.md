@@ -31,6 +31,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 - **Customizable Naming** - Configure tool naming format via `generator.json`
 - **Loop Prevention** - Built-in middleware prevents infinite recursion when MCP tools call back to the API
 - **Auth Forwarding** - Authentication headers from MCP requests are forwarded to API calls
+- **Request Correlation** - A tool call and the API request it makes share one W3C trace, so their log entries and OpenTelemetry spans can be matched by trace ID
 
 ## Quick Start
 
@@ -416,11 +417,11 @@ Every generated tool depends on `IMcpHttpInvoker`, the contract that actually pe
 ```csharp
 public interface IMcpHttpInvoker
 {
-    Task<string> GetAsync(string route, CancellationToken ct = default);
-    Task<string> PostAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> PutAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> PatchAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> DeleteAsync(string route, CancellationToken ct = default);
+    Task<CallToolResult> GetAsync(string route, CancellationToken ct = default);
+    Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default);
 
     // Called by each generated tool before the HTTP call.
     // Validates scope only when a scope mapper is configured (see Scope-Based Access Control).
@@ -433,6 +434,108 @@ You rarely need to implement this yourself, but you can substitute it — for ex
 ### Error handling
 
 The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. Genuine transport failures (network errors, timeouts) still surface as exceptions, which the MCP server likewise reports as `isError: true`.
+
+## Correlating Tool Calls with API Logs
+
+A tool call reaches your API as two HTTP requests: the MCP client's `POST /mcp`, and the request the tool makes to your controller, such as `GET /api/products/{id}`. Each has its own `HttpContext.TraceIdentifier`, logged as `RequestId`, but both belong to one W3C trace, with nothing to switch on: .NET's `HttpClient` sends the current `Activity` as a `traceparent` header with every request, the invoker's included, and ASP.NET Core continues that trace for the internal request. Because the internal request goes through your real pipeline, it is logged and traced like any other request, and no correlation ID has to be built by hand.
+
+### What the internal request carries
+
+| Header | Where it comes from |
+|---|---|
+| `traceparent`, and `tracestate` when the MCP request has one | .NET's `HttpClient`, from the current `Activity`: the trace of the MCP request, which continues the client's trace when the MCP request came with a `traceparent` |
+| `baggage` when the MCP request has one (`Correlation-Context` on .NET 8 and 9) | .NET's `HttpClient`, from the current `Activity`'s baggage, the same way as `traceparent` |
+| `Authorization` | Copied from the MCP request, when it parses as an authentication header |
+| `X-MCP-Internal-Call: true` | Added by the invoker, so that `UseMcpLoopPrevention` refuses the request if it targets `/mcp` |
+
+No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent` or `X-Forwarded-For`. If your API logs a correlation ID taken from a header of its own, the internal request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it on both requests.
+
+`X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only `/mcp` refuses it), so never let it skip authentication or authorization.
+
+### Logs
+
+The default host already puts `TraceId`, `SpanId` and `ParentId` on the scope of every log entry, and ASP.NET Core adds `RequestPath` and `RequestId`. Two defaults get in the way: the console logger leaves scopes out, and the templates' `"Microsoft.AspNetCore": "Warning"` drops ASP.NET Core's request log, so the internal request writes nothing unless your controller logs. In `appsettings.json`:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Microsoft.AspNetCore.Hosting.Diagnostics": "Information"
+    },
+    "Console": {
+      "FormatterName": "simple",
+      "FormatterOptions": { "IncludeScopes": true }
+    }
+  }
+}
+```
+
+Keep `FormatterName`: without it, `FormatterOptions:IncludeScopes` has no effect. `builder.Logging.AddSimpleConsole(o => o.IncludeScopes = true)` does what the `Console` part does, in code, and `"FormatterName": "json"` writes `TraceId`, `SpanId` and `RequestId` as fields of the entries in each log entry's `Scopes` array instead.
+
+A failed call of the demo's `Products_GetById`, abridged: the `ConnectionId` scope and some entries are left out.
+
+```
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      Request starting HTTP/1.1 POST http://localhost:5344/mcp - application/json 141
+info: System.Net.Http.HttpClient.IMcpHttpInvoker.LogicalHandler[100]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001 => HTTP GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000
+      Start processing HTTP request GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      => SpanId:d819f4bb92caee09, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:3cbedd64401d9593 => RequestPath:/api/products/d0000000-0000-0000-0000-000000000000 RequestId:0HNPE2I2L3D84:00000001
+      Request finished HTTP/1.1 GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000 - 404 - application/problem+json;+charset=utf-8 12.0592ms
+warn: Api.ToMcp.Runtime.Services.McpHttpInvoker[0]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      MCP HTTP call failed with status 404: {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404,"traceId":"00-bbefb1c82eadb8adb003f3616f63f5ba-d819f4bb92caee09-00"}
+info: ModelContextProtocol.Server.McpServer[2065726448]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      "Products_GetById" completed. IsError = True.
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      Request finished HTTP/1.1 POST http://localhost:5344/mcp - 200 - text/event-stream 149.0195ms
+```
+
+To find the internal request of a tool call:
+
+1. Find the call by its tool name. The MCP SDK logs `"<tool name>" completed. IsError = <True|False>.` (category `ModelContextProtocol.Server.McpServer`, with `ToolName` and `IsError` as fields), and the invoker's `HttpClient` logs the URL, status and duration of its request (category `System.Net.Http.HttpClient.IMcpHttpInvoker.LogicalHandler`). Both log at `Information`, which the templates keep, in the scope of the `POST /mcp` request.
+2. Take the `TraceId` of that entry.
+3. Search for it. The entries whose `RequestPath` is your API route, under a `RequestId` other than the MCP request's, are the internal request, your controller's own log entries included.
+
+Code that wants the trace ID itself, to put it in its own messages or responses, reads `Activity.Current?.TraceId` from `System.Diagnostics`; it is the same in the MCP request and the internal one.
+
+Match on `TraceId`, not on `ParentId`: without a tracing listener, .NET's `HttpClient` still starts an `Activity` of its own for the outgoing request, so the internal request's `ParentId` is that activity (`3cbedd64401d9593` above), not the `SpanId` of the MCP request.
+
+`POST /mcp` finishes with `200` even when the tool failed, because the failure is `isError: true` inside the JSON-RPC result. Look for `IsError = True` and the invoker's `MCP HTTP call failed with status ...` warning instead. When the API answers with a ProblemDetails body, as `[ApiController]` does for `NotFound()` or `Problem()`, its `traceId` is the internal request's `00-<trace ID>-<span ID>-<flags>`, and it reaches the MCP client in the error text: a user who reports a failed call can hand you the trace ID.
+
+### OpenTelemetry
+
+With tracing on, the link shows as one trace. Add the packages `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Instrumentation.AspNetCore`, `OpenTelemetry.Instrumentation.Http` and an exporter, such as `OpenTelemetry.Exporter.OpenTelemetryProtocol`:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddSource("Experimental.ModelContextProtocol") // optional: a span per MCP request, named after the tool
+        .AddOtlpExporter());
+```
+
+A call of `Products_GetById` is then one trace:
+
+```
+POST mcp/                              server   the MCP request
+└─ tools/call Products_GetById         server   only with AddSource("Experimental.ModelContextProtocol")
+   └─ GET                              client   the invoker's HttpClient
+      └─ GET api/Products/{id:guid}    server   the internal request to the controller
+```
+
+`Experimental.ModelContextProtocol` is the MCP SDK's `ActivitySource`, and its name says the SDK may still change it. With that `AddSource`, when the request's `params._meta` carries a `traceparent`, the `tools/call` span continues that trace context instead, and is only linked to the `POST mcp/` span. A client that sends it in the same trace as its `traceparent` header still gets all four spans in one trace. A client that sends only `_meta.traceparent` gets the tool call and the internal request in its own trace and `POST mcp/` in another, joined by that link; the tool call's log entries follow the `tools/call` span, so their `TraceId` still matches the internal request's.
+
+### When the link breaks
+
+With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The internal request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. No `Authorization` header is forwarded at all, because that request's `HttpContext` is gone by then, so scope checks fail too. Leave the option at its default, `false`.
+
+Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivityPropagation` switch set to `false` or `DOTNET_SYSTEM_NET_HTTP_ENABLEACTIVITYPROPAGATION=0`, stops `HttpClient` from sending `traceparent` and `baggage`, so the internal request starts a trace of its own.
 
 ## Limitations
 
