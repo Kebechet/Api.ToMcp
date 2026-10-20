@@ -151,6 +151,9 @@ namespace TestApi
 
         [HttpGet(""named"")]
         public virtual object FindNamed([FromQuery(Name = ""c"")] string city) => new { city };
+
+        [HttpGet(""mask"")]
+        public virtual object Mask([FromQuery(Name = ""c"")] string city) => new { city };
     }
 
     // MVC reads a parameter's binding attributes through its model metadata, which inherits them from the parameter
@@ -160,6 +163,9 @@ namespace TestApi
         public override object Find(ProductFilter filter) => new { filter.City, overridden = true };
 
         public override object FindNamed(string town) => new { town, overridden = true };
+
+        // Its own [FromQuery] replaces the base's whole, Name included, so MVC binds it as city.
+        public override object Mask([FromQuery] string city) => new { city };
     }
 }
 ";
@@ -207,6 +213,7 @@ namespace TestApi
     [InlineData("OrderEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("OrderEchoController_FindTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""overridden"":true}")]
     [InlineData("OrderEchoController_FindNamedTool", @"{""town"":""Brno""}", @"{""town"":""Brno"",""overridden"":true}")]
+    [InlineData("OrderEchoController_MaskTool", @"{""city"":""Brno""}", @"{""city"":""Brno""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);

@@ -278,8 +278,8 @@ namespace Api.ToMcp.Generator.Parsing
 
             foreach (var param in method.Parameters)
             {
-                var bindingParameters = GetBindingParameters(param);
-                var declaredSource = bindingParameters.Select(GetDeclaredParameterSource).FirstOrDefault(x => x != null);
+                var bindingAttributes = GetBindingAttributes(param);
+                var declaredSource = GetDeclaredParameterSource(bindingAttributes);
 
                 // Skip service-injected parameters
                 if (declaredSource == ParameterSourceModel.Services)
@@ -310,7 +310,7 @@ namespace Api.ToMcp.Generator.Parsing
                     IsSimpleType = isSimpleType,
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
-                    QueryName = bindingParameters.Select(GetFromQueryName).FirstOrDefault(x => x != null)
+                    QueryName = GetFromQueryName(bindingAttributes)
                 });
             }
 
@@ -318,23 +318,28 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The parameter, then the one at its position in each method the action overrides, nearest first. MVC reads a
-        /// parameter's binding source and the name it binds under from its model metadata, which inherits the binding
-        /// attributes of those parameters, so an override without <c>[FromQuery]</c> binds as its base action declares,
-        /// even under another parameter name.
+        /// The attributes MVC reads a parameter's binding source and the name it binds under from: the parameter's own, then
+        /// those of the parameter at its position in each method the action overrides, nearest first. MVC reads them as
+        /// reflection inherits them, so an override without <c>[FromQuery]</c> binds as its base action declares, even
+        /// under another parameter name, while a nearer attribute replaces a base one of the same class whole: an
+        /// override's bare <c>[FromQuery]</c> drops the base's <c>[FromQuery(Name = "c")]</c>, name included.
         /// </summary>
-        private static List<IParameterSymbol> GetBindingParameters(IParameterSymbol parameter)
+        private static List<AttributeData> GetBindingAttributes(IParameterSymbol parameter)
         {
-            var parameters = new List<IParameterSymbol> { parameter };
+            var attributes = new List<AttributeData>(parameter.GetAttributes());
             for (var method = (parameter.ContainingSymbol as IMethodSymbol)?.OverriddenMethod; method != null; method = method.OverriddenMethod)
-                parameters.Add(method.Parameters[parameter.Ordinal]);
+            {
+                var nearerClasses = attributes.Select(x => x.AttributeClass).ToList();
+                attributes.AddRange(method.Parameters[parameter.Ordinal].GetAttributes()
+                    .Where(x => !nearerClasses.Contains(x.AttributeClass, SymbolEqualityComparer.Default)));
+            }
 
-            return parameters;
+            return attributes;
         }
 
-        private static string? GetFromQueryName(IParameterSymbol param)
+        private static string? GetFromQueryName(IEnumerable<AttributeData> attributes)
         {
-            return param.GetAttributes()
+            return attributes
                 .Where(x => x.AttributeClass?.Name == BindingAttributeNames.FromQuery)
                 .Select(GetModelName)
                 .FirstOrDefault(x => x is not null);
@@ -516,9 +521,9 @@ namespace Api.ToMcp.Generator.Parsing
                 attribute.NamedArguments.Any(x => x.Key == BindingAttributeNames.BinderTypePropertyName && x.Value.Value is not null);
         }
 
-        private static ParameterSourceModel? GetDeclaredParameterSource(IParameterSymbol param)
+        private static ParameterSourceModel? GetDeclaredParameterSource(IEnumerable<AttributeData> attributes)
         {
-            foreach (var attr in param.GetAttributes())
+            foreach (var attr in attributes)
             {
                 var attrName = attr.AttributeClass?.Name;
                 switch (attrName)
