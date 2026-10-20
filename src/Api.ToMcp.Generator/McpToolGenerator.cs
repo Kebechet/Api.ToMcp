@@ -73,6 +73,7 @@ namespace Api.ToMcp.Generator
 
                 // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
                 ReportUnmatchedEntries(ctx, controllers, config, compilation, entryNames);
+                selectedActions = SkipActionsWithoutARoute(ctx, selectedActions, compilation);
                 ReportDuplicateToolNames(ctx, selectedActions, config, compilation);
 
                 // Track seen tool class names to handle overloads
@@ -137,6 +138,36 @@ namespace Api.ToMcp.Generator
                     duplicate.Count(),
                     producers));
             }
+        }
+
+        /// <summary>
+        /// Leaves out each action whose route a tool cannot build, and warns about it at the action (MCP009): its tool would
+        /// not compile or would call an endpoint MVC does not serve it at.
+        /// </summary>
+        private static ImmutableArray<ActionInfoModel> SkipActionsWithoutARoute(
+            SourceProductionContext ctx,
+            ImmutableArray<ActionInfoModel> actions,
+            Compilation compilation)
+        {
+            var routableActions = ImmutableArray.CreateBuilder<ActionInfoModel>();
+            foreach (var action in actions)
+            {
+                var reason = ToolClassEmitter.GetUnbuildableRouteReason(action);
+                if (reason is null)
+                {
+                    routableActions.Add(action);
+                    continue;
+                }
+
+                ctx.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.UnbuildableRoute,
+                    action.SourceLocation?.ToLocation(compilation) ?? Location.None,
+                    action.ControllerName,
+                    action.Name,
+                    reason));
+            }
+
+            return routableActions.ToImmutable();
         }
 
         private static ImmutableArray<ActionInfoModel> SelectActions(

@@ -79,5 +79,18 @@ namespace Api.ToMcp.Generator.Diagnostics
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
+
+        /// <summary>
+        /// The generator cannot build the request MVC serves the action at, so it leaves the tool out rather than generate
+        /// one that would not compile or would call another endpoint. The build still succeeds, with the other tools.
+        /// </summary>
+        public static readonly DiagnosticDescriptor UnbuildableRoute = new DiagnosticDescriptor(
+            id: "MCP009",
+            title: "Tool route cannot be built",
+            messageFormat: "No MCP tool is generated for action '{0}.{1}': {2}",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Give the action a parameter, or a property of one, for every required route value, or mark it [McpIgnore] to keep it from MCP without the warning.");
     }
 }

@@ -110,6 +110,15 @@ namespace TestApi
         [HttpPost(""clash/{route}"")]
         public object PostClash(string route, string invoker, string queryParts, [FromBody] ProductFilter bodyJson, string cancellationToken, string routeroute, string System, string JsonSerializer, string McpScope)
             => new { route, invoker, queryParts, bodyJson.City, cancellationToken, routeroute, System, JsonSerializer, McpScope };
+
+        [HttpGet(""files/{**path}"")]
+        public object GetFile(string path) => new { path };
+
+        [HttpGet(""star/{*path}"")]
+        public object GetStar(string path) => new { path };
+
+        [HttpGet(""optional/{id?}"")]
+        public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
 
     [Route(""plain"")]
@@ -210,6 +219,9 @@ namespace TestApi
     [InlineData("EchoController_PostUpperTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("EchoController_GetOrderedTool", @"{""name"":""a"",""count"":2,""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""name"":""a"",""count"":2,""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostClashTool", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""bodyJson"":{""city"":""Brno""},""cancellationToken"":""c1"",""routeroute"":""rr"",""System"":""s1"",""JsonSerializer"":""j1"",""McpScope"":""m1""}", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""city"":""Brno"",""cancellationToken"":""c1"",""routeroute"":""rr"",""system"":""s1"",""jsonSerializer"":""j1"",""mcpScope"":""m1""}")]
+    [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
+    [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
+    [InlineData("EchoController_GetOptionalTool", @"{}", @"{""id"":null,""path"":""/api/optional""}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]
