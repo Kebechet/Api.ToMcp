@@ -152,7 +152,11 @@ namespace Api.ToMcp.Generator.Emitting
             foreach (var param in parameters)
             {
                 var isNamedByRoute = routeValues.Template.HasParameter(param.Name);
-                if (param.Source == ParameterSourceModel.Query ||
+                if (param.Source == ParameterSourceModel.Query && param.Properties.Any(routeValues.RouteProperties.Contains))
+                {
+                    queryValues.AddRange(GetQueryValues(param, routeValues.RouteProperties));
+                }
+                else if (param.Source == ParameterSourceModel.Query ||
                     (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && param.IsSimpleType))
                 {
                     queryValues.Add((param.QueryName ?? param.Name, EscapeIdentifier(param.Name)));
@@ -222,9 +226,11 @@ namespace Api.ToMcp.Generator.Emitting
             // value. An unattributed property it reads from that route value without the prefix too, but from its prefixed
             // key in the query string with it, so its parameter keeps the prefix unless that property fills the route
             // value. A property in this set is sent only in the route, and the other properties of its parameter under
-            // their own names.
+            // their own names. A [FromQuery] parameter that names no prefix of its own MVC binds the same way from the query
+            // string, where only a [FromRoute] property reads the route.
             var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action)).ToList();
-            var routeProperties = new HashSet<PropertyInfoModel>(valueProviderParams
+            var unprefixableParams = parameters.Where(p => FallsBackToNoPrefix(p, action)).ToList();
+            var routeProperties = new HashSet<PropertyInfoModel>(unprefixableParams
                 .SelectMany(p => p.Properties)
                 .Where(prop => prop.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(prop, placeholder))));
 
@@ -246,7 +252,7 @@ namespace Api.ToMcp.Generator.Emitting
                     var propertySource = parameters
                         .Where(p => p.Source is ParameterSourceModel.Route or ParameterSourceModel.Body)
                         .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => FillsPlaceholder(p, prop, placeholder))))
-                        .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                        .Concat(unprefixableParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
                             prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
                         .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
                             prop.Source == ParameterSourceModel.Auto && ReadsRouteValue(prop, placeholder)))))
@@ -336,7 +342,18 @@ namespace Api.ToMcp.Generator.Emitting
         }
 
         /// <summary>
-        /// The query values of a parameter bound from the route, query and form values. MVC reads its properties under the
+        /// Whether MVC binds a complex parameter under its name as a prefix only when a value carries it, and under the
+        /// names of its properties otherwise (<c>ParameterBinder</c>): one bound from the route, query and form values, and a
+        /// <c>[FromQuery]</c> one without a <c>Name</c>, which it always binds under that name.
+        /// </summary>
+        private static bool FallsBackToNoPrefix(ParameterInfoModel parameter, ActionInfoModel action)
+        {
+            return IsBoundFromValueProviders(parameter, action) ||
+                (parameter.Source == ParameterSourceModel.Query && parameter.QueryName is null && !parameter.IsSimpleType);
+        }
+
+        /// <summary>
+        /// The query values of a parameter bound from the route, query and form values, or from the query string alone. MVC reads its properties under the
         /// parameter's name as a prefix (<c>filter.City</c>) when a value carries it, and under their own names otherwise.
         /// Only the latter lets a property fill a route value, as no route value is named <c>filter.Id</c>, so a parameter
         /// with such a property sends the others under their own names, each where MVC reads it: a <c>[FromQuery]</c> one

@@ -157,6 +157,30 @@ public partial class McpToolGeneratorTests
     }
 
     [Theory]
+    [InlineData("RecordRouteOrder", "c")]
+    [InlineData("AliasedRouteQuery", "c")]
+    public void Generator_SendsAFromQueryParameterWithARouteProperty_WithoutItsPrefix(string type, string cityKey)
+    {
+        // MVC reads a [FromQuery] parameter's [FromRoute] property from the route value of its name only when no query
+        // value carries the prefix: ?q.orderId= is no route value, so under it Order stays Guid.Empty.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"ord/{{orderId}}\")] public Task<string> Find([FromQuery] {type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains($"AddQueryValue(queryParts, \"{cityKey}\", q.City);", tool);
+        Assert.DoesNotContain("\"q\"", tool);
+    }
+
+    [Fact]
+    public void Generator_KeepsTheNameOfAFromQueryParameter_ThatNamesItsPrefix()
+    {
+        // MVC binds a [FromQuery(Name = "f")] parameter under f whatever the query holds, so f.orderId, never a route value.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"ord/{orderId}\")] public Task<string> Find([FromQuery(Name = \"f\")] RecordRouteOrder q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"f\", q);", tool);
+    }
+
+    [Theory]
     [InlineData("TypedBinderQuery")]
     [InlineData("FileQuery")]
     [InlineData("FileListQuery")]

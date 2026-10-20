@@ -117,6 +117,15 @@ namespace TestApi
         [HttpGet(""star/{*path}"")]
         public object GetStar(string path) => new { path };
 
+        [HttpGet(""query-record/{orderId}"")]
+        public object GetQueryRecord([FromQuery] RecordRouteOrder q) => q;
+
+        [HttpGet(""query-aliased/{orderId}"")]
+        public object GetQueryAliased([FromQuery] AliasedRouteQuery q) => q;
+
+        [HttpGet(""query-named/{orderId}"")]
+        public object GetQueryNamed([FromQuery(Name = ""f"")] RecordRouteOrder q) => q;
+
         [HttpPost(""typed-binder"")]
         public object PostTypedBinder(TypedBinderQuery q) => q;
 
@@ -273,6 +282,10 @@ namespace TestApi
     [InlineData("EchoController_PostUpperTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("EchoController_GetOrderedTool", @"{""name"":""a"",""count"":2,""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""name"":""a"",""count"":2,""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostClashTool", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""bodyJson"":{""city"":""Brno""},""cancellationToken"":""c1"",""routeroute"":""rr"",""System"":""s1"",""JsonSerializer"":""j1"",""McpScope"":""m1""}", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""city"":""Brno"",""cancellationToken"":""c1"",""routeroute"":""rr"",""system"":""s1"",""jsonSerializer"":""j1"",""mcpScope"":""m1""}")]
+    [InlineData("EchoController_GetQueryRecordTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}}", @"{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}")]
+    [InlineData("EchoController_GetQueryAliasedTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno""}}", @"{""order"":""" + OrderGuid + @""",""city"":""Brno""}")]
+    // MVC binds a parameter with a name of its own under that prefix, so never from the route.
+    [InlineData("EchoController_GetQueryNamedTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}}", @"{""order"":""00000000-0000-0000-0000-000000000000"",""city"":""Brno"",""page"":3}")]
     [InlineData("EchoController_PostTypedBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_PostFileQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno"",""hasAttachment"":false}")]
