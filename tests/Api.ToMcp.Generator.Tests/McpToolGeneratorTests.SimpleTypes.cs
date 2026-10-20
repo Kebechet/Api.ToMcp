@@ -28,6 +28,7 @@ public partial class McpToolGeneratorTests
     [InlineData("Sku? sku")]
     [InlineData("Slug slug")]
     [InlineData("TicketId ticketId")]
+    [InlineData("IfaceId ifaceId")]
     [InlineData("OrderStatus status")]
     [InlineData("Version version")]
     [InlineData("Uri link")]

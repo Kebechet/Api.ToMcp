@@ -44,14 +44,18 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether <c>TypeDescriptor</c> gives the type a converter that reads a string: the one the nearest
-        /// <c>[TypeConverter]</c> of the type or a base type names, else a built-in one.
+        /// Whether <c>TypeDescriptor</c> gives the type a converter that reads a string: the one the first
+        /// <c>[TypeConverter]</c> names in the order it merges attributes in, the type's, its base classes' and then its
+        /// public interfaces', else a built-in one. An interface's converter thus applies only when no class names one,
+        /// and that of an interface that is not public never.
         /// </summary>
         private static bool HasConverterFromString(ITypeSymbol type)
         {
             var selfAndBaseTypes = GetSelfAndBaseTypes(type).ToList();
+            var publicInterfaces = type.AllInterfaces.Where(x => x.DeclaredAccessibility == Accessibility.Public);
 
             var converterAttribute = selfAndBaseTypes
+                .Concat(publicInterfaces)
                 .Select(x => x.GetAttributes().FirstOrDefault(IsTypeConverterAttribute))
                 .FirstOrDefault(x => x is not null);
             if (converterAttribute is not null)

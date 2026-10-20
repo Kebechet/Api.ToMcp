@@ -64,6 +64,38 @@ namespace TestApi
             => sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
     }
 
+    // TypeDescriptor takes the converter of a public interface too, after any of the type and its base classes.
+    [TypeConverter(typeof(IfaceIdConverter))]
+    public interface IIfaceId
+    {
+    }
+
+    public sealed class IfaceIdConverter : TypeConverter
+    {
+        public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
+            => sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
+
+        public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)
+            => value is string text ? new IfaceId(int.Parse(text, CultureInfo.InvariantCulture)) : base.ConvertFrom(context, culture, value);
+    }
+
+    public readonly record struct IfaceId(int Value) : IIfaceId;
+
+    // Its own converter, which reads no string, wins over the interface's.
+    [TypeConverter(typeof(ExpandableObjectConverter))]
+    public sealed class ExpandableIfaceFilter : IIfaceId
+    {
+        public string? City { get; set; }
+    }
+
+    // TypeDescriptor skips the attributes of an interface that is not public.
+    [TypeConverter(typeof(IfaceIdConverter))]
+    internal interface IHiddenIfaceId
+    {
+    }
+
+    public readonly record struct HiddenIfaceId(int Value) : IHiddenIfaceId;
+
     public readonly record struct Sku(string Code)
     {
         public static bool TryParse(string? text, out Sku sku)
