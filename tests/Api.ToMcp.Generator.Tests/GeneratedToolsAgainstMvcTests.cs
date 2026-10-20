@@ -141,6 +141,10 @@ namespace TestApi
         [HttpPost(""file-list-query"")]
         public object PostFileListQuery(FileListQuery q) => new { q.City };
 
+        [HttpGet(""nan"")]
+        public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
+            => new { isNaN = double.IsNaN(value), inf = float.IsPositiveInfinity(inf), negInf = double.IsNegativeInfinity(negInf), query = Request.QueryString.Value };
+
         [HttpGet(""optional/{id?}"")]
         public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
@@ -306,6 +310,8 @@ namespace TestApi
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetOptionalTool", @"{}", @"{""id"":null,""path"":""/api/optional""}")]
+    [InlineData("EchoController_GetNanTool", @"{}", @"{""isNaN"":true,""inf"":true,""negInf"":true,""query"":""""}")]
+    [InlineData("EchoController_GetNanTool", @"{""value"":1.5}", @"{""isNaN"":false,""inf"":true,""negInf"":true,""query"":""?value=1.5""}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]
@@ -336,6 +342,24 @@ namespace TestApi
 
         Assert.Equal(["name", "orderId"], inputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
         Assert.Equal(["count", "name", "orderId"], inputSchema.GetProperty("properties").EnumerateObject().Select(x => x.Name).Order());
+    }
+
+    [Fact]
+    public void Tool_OfAnActionWithANaNOrInfiniteDefault_HasAnInputSchemaTheSdkCanWrite()
+    {
+        // JSON has no NaN or infinity, so the MCP SDK throws writing such a default into the schema, and the host with it.
+        var properties = _host.GetInputSchema("EchoController_GetNanTool").GetProperty("properties");
+
+        Assert.Equal(["inf", "negInf", "value"], properties.EnumerateObject().Select(x => x.Name).Order());
+    }
+
+    [Fact]
+    public void EveryGeneratedTool_IsBuiltByTheMcpSdk()
+    {
+        var toolClassNames = _host.ToolClassNames;
+
+        Assert.NotEmpty(toolClassNames);
+        Assert.All(toolClassNames, x => _host.GetInputSchema(x));
     }
 
     /// <summary>
@@ -386,13 +410,19 @@ namespace TestApi
                 .GetParameters()
                 .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? _invoker
                     : x.ParameterType == typeof(CancellationToken) ? CancellationToken.None
-                    : argumentValues[x.Name!]?.Deserialize(x.ParameterType, ArgumentOptions))
+                    : argumentValues.TryGetPropertyValue(x.Name!, out var argument) ? argument?.Deserialize(x.ParameterType, ArgumentOptions)
+                    : GetDefaultArgument(x))
                 .ToArray();
 
             await (Task)toolMethod.Invoke(null, parameterValues)!;
 
             return _invoker.LastResponse;
         }
+
+        public IReadOnlyList<string> ToolClassNames => _assembly.GetTypes()
+            .Where(x => x.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .Select(x => x.Name)
+            .ToList();
 
         /// <summary>
         /// The input schema the MCP SDK gives a generated tool, with the invoker bound from the services, as in the app.
@@ -403,6 +433,19 @@ namespace TestApi
             using var services = new ServiceCollection().AddSingleton<IMcpHttpInvoker>(_invoker).BuildServiceProvider();
 
             return McpServerTool.Create(toolMethod, options: new McpServerToolCreateOptions { Services = services }).ProtocolTool.InputSchema;
+        }
+
+        /// <summary>
+        /// The value the MCP SDK passes for an argument the call leaves out: the parameter's default, which reflection gives
+        /// an enum's as its number.
+        /// </summary>
+        private static object? GetDefaultArgument(ParameterInfo parameter)
+        {
+            var type = Nullable.GetUnderlyingType(parameter.ParameterType) ?? parameter.ParameterType;
+
+            return !parameter.HasDefaultValue ? null
+                : parameter.DefaultValue is { } value && type.IsEnum ? Enum.ToObject(type, value)
+                : parameter.DefaultValue;
         }
 
         private static Assembly CompileWithGeneratedTools(string source)

@@ -10,7 +10,9 @@ namespace Api.ToMcp.Generator.Parsing
     /// Writes a parameter's default value, which Roslyn gives as a plain constant, back as a C# expression of the
     /// parameter's type for the tool method to declare. The constant alone would not compile everywhere: a <c>1.5</c> is a
     /// double that no <c>float</c> or <c>decimal</c> takes, an enum's constant is its underlying number, and the current
-    /// culture can write a decimal comma.
+    /// culture can write a decimal comma. A NaN or infinite default becomes <c>null</c>: the MCP SDK writes the default
+    /// into the tool's input schema, as JSON, which has neither, and throws at startup; a tool sends nothing for null, so
+    /// MVC still applies the action's own default.
     /// </summary>
     internal static class DefaultValueExpressionBuilder
     {
@@ -94,26 +96,16 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static string BuildFloat(float number)
         {
-            if (float.IsNaN(number))
-                return "float.NaN";
-            if (float.IsPositiveInfinity(number))
-                return "float.PositiveInfinity";
-            if (float.IsNegativeInfinity(number))
-                return "float.NegativeInfinity";
-
-            return number.ToString(RoundTripFormat, CultureInfo.InvariantCulture) + FloatSuffix;
+            return float.IsNaN(number) || float.IsInfinity(number)
+                ? NullLiteral
+                : number.ToString(RoundTripFormat, CultureInfo.InvariantCulture) + FloatSuffix;
         }
 
         private static string BuildDouble(double number)
         {
-            if (double.IsNaN(number))
-                return "double.NaN";
-            if (double.IsPositiveInfinity(number))
-                return "double.PositiveInfinity";
-            if (double.IsNegativeInfinity(number))
-                return "double.NegativeInfinity";
-
-            return number.ToString(RoundTripFormat, CultureInfo.InvariantCulture) + DoubleSuffix;
+            return double.IsNaN(number) || double.IsInfinity(number)
+                ? NullLiteral
+                : number.ToString(RoundTripFormat, CultureInfo.InvariantCulture) + DoubleSuffix;
         }
 
         private static string FormatNumber(object value)
