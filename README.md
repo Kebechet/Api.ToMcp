@@ -31,6 +31,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and ge
 - **Customizable Naming** - Configure tool naming format via `generator.json`
 - **Loop Prevention** - Built-in middleware prevents infinite recursion when MCP tools call back to the API
 - **Auth Forwarding** - Authentication headers from MCP requests are forwarded to API calls
+- **Request Correlation** - A tool call and the API request it makes share one W3C trace, so their log entries and OpenTelemetry spans can be matched by trace ID
 
 ## Quick Start
 
@@ -67,6 +68,8 @@ Add it to your `.csproj`:
   <AdditionalFiles Include="Mcp\generator.json" />
 </ItemGroup>
 ```
+
+If the project has no config when it builds, the build creates a starter `Mcp/generator.json` and warns that it did (`MCP100`). That starter config is in `SelectedOnly` mode with an empty `include`, so no tools are generated until you list controllers or actions in it, and every compile warns with `MCP006` until then. See [Config file location](#config-file-location).
 
 ### 3. Wire up in Program.cs
 
@@ -140,6 +143,17 @@ Run the app and point MCP Inspector at its MCP endpoint to see the generated too
 
 - `"ProductsController"` - Include/exclude entire controller
 - `"ProductsController.GetById"` - Include/exclude specific action
+
+Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`, and one the generator cannot use as written, such as malformed JSON or an unknown `mode`, with `MCP001`; see [Troubleshooting](#troubleshooting). The file may contain comments, but not trailing commas.
+
+### Config file location
+
+| MSBuild property | Default | Description |
+|------------------|---------|-------------|
+| `ApiToMcpConfigPath` | `Mcp\generator.json` in the project directory | The config the build adds to `AdditionalFiles`, and creates when it does not exist. |
+| `ApiToMcpAutoCreateConfig` | `true` | `false` stops the build from creating a starter config when there is none. |
+
+On Linux and other case-sensitive file systems the path is matched exactly, so a config in `mcp/` is not at the default `Mcp/generator.json`. When the build finds no config at `ApiToMcpConfigPath` but one whose folder or file name differs from it only in letter case, it gives the generator that file and warns with `MCP101`: set `ApiToMcpConfigPath` to it, or rename it to match. It does so whether or not `ApiToMcpAutoCreateConfig` is on, writes no starter config beside it, and puts it in place of an `AdditionalFiles` item that names the missing configured path.
 
 ### Structured Output
 
@@ -241,7 +255,7 @@ Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a gene
 
 ### Request fields: DTO properties, nested objects, array items
 
-The two rules above run at compile time. The fields *inside* an argument's type - a request DTO's properties, nested objects, array items - get their JSON schema at runtime from the MCP SDK, which reflects over the type and reads only `[Description]`. Api.ToMcp fills that gap: every such property without a `[Description]` gets its XML `<summary>` as its schema `description`, read from the `<AssemblyName>.xml` file next to the assembly that declares the property.
+The two rules above run at compile time. The fields *inside* an argument's type - a request DTO's properties, nested objects, array items - get their JSON schema at runtime from the MCP SDK, which reflects over the type and reads only `[Description]`. Api.ToMcp fills that gap: every such property without a `[Description]` gets its XML `<summary>` as its schema `description`, read from the `<AssemblyName>.xml` file next to the assembly that declares the property. That includes a property whose schema is the bare `true` (any value), which has no room for a description: one typed `object`, `JsonElement`, `JsonNode`, `JsonValue`, `JsonDocument` or `dynamic`, or a type written by a custom converter, whether from `[JsonConverter]` or one added to the serializer options. A documented one gets `{"description": "..."}` instead, which accepts the same values.
 
 ```csharp
 public class CreateWeatherForecastRequest
@@ -281,9 +295,10 @@ The type is decided the way ApiExplorer, and so Swagger, decides it:
 - The return type without `Task<T>` / `ValueTask<T>` and `ActionResult<T>`: `ActionResult<Product>`, `Task<Product>` and `Product` all mean `Product`.
 - A 2xx `[ProducesResponseType]` replaces the return type, which is how an `IActionResult` or `IResult` action names one: `[ProducesResponseType(typeof(Product), 200)]` or `[ProducesResponseType<Product>(200)]`. One without a type means the return type for 200 and 201, and no body for any other status, such as 204. Error statuses do not count.
 - A 2xx `[ProducesResponseType]` on the controller applies to every action and adds to its return type, or stands in for a return type that names no body (`IActionResult`, `ActionResult`, `IResult`); the action's own declaration of the same status replaces it. Both are inherited, from base controllers and from the action an override replaces.
+- A `[Produces]` that names a type declares a 200 of that type, on the action or on the controller, as a `[ProducesResponseType(typeof(Product), 200)]` in its place would: `[Produces(typeof(Product))]`, `[Produces<Product>]` or `[Produces("application/json", Type = typeof(Product))]`. `[Produces<Product>]` names no content type, which means JSON. An override's or a derived controller's `[Produces<Product>]` does not replace a base's `[Produces("text/csv")]`, though: they are different attribute classes, so MVC applies both, and such an action gets no schema.
 - When the success responses declare different types, the tool gets no schema.
 
-A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult`, `ActionResult` or `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type other than JSON, even next to JSON (`[Produces("application/json", "text/csv")]`), or a type the generated code cannot reference, such as a private nested class.
+A tool gets no schema, and returns text as before, when the success body is not reliably the JSON of a known type: `void` / `Task`, an untyped `IActionResult`, `ActionResult` or `IResult`, file results and streams, `string` (MVC writes it as `text/plain`), `object`, `JsonElement` / `JsonNode` / `JsonDocument`, `IAsyncEnumerable<T>`, a `[Produces]` or `[ProducesResponseType]` content type other than JSON, even next to JSON (`[Produces("application/json", "text/csv")]`), a `[Produces]` that sets `Order` or is a class derived from `ProducesAttribute` (the generator cannot tell which content types MVC then writes), or a type the generated code cannot reference, such as a private nested class.
 
 A content type counts as JSON when its subtype is `json` or ends in `+json` (`application/json`, `text/json`, `application/problem+json`), so `application/x-ndjson`, whose body is many JSON values, does not.
 
@@ -420,11 +435,11 @@ Every generated tool depends on `IMcpHttpInvoker`, the contract that actually pe
 ```csharp
 public interface IMcpHttpInvoker
 {
-    Task<string> GetAsync(string route, CancellationToken ct = default);
-    Task<string> PostAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> PutAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> PatchAsync(string route, string? jsonBody, CancellationToken ct = default);
-    Task<string> DeleteAsync(string route, CancellationToken ct = default);
+    Task<CallToolResult> GetAsync(string route, CancellationToken ct = default);
+    Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default);
+    Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default);
 
     // Called by each generated tool before the HTTP call.
     // Validates scope only when a scope mapper is configured (see Scope-Based Access Control).
@@ -437,6 +452,108 @@ You rarely need to implement this yourself, but you can substitute it — for ex
 ### Error handling
 
 The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. Genuine transport failures (network errors, timeouts) still surface as exceptions, which the MCP server likewise reports as `isError: true`.
+
+## Correlating Tool Calls with API Logs
+
+A tool call reaches your API as two HTTP requests: the MCP client's `POST /mcp`, and the request the tool makes to your controller, such as `GET /api/products/{id}`. Each has its own `HttpContext.TraceIdentifier`, logged as `RequestId`, but both belong to one W3C trace, with nothing to switch on: .NET's `HttpClient` sends the current `Activity` as a `traceparent` header with every request, the invoker's included, and ASP.NET Core continues that trace for the internal request. Because the internal request goes through your real pipeline, it is logged and traced like any other request, and no correlation ID has to be built by hand.
+
+### What the internal request carries
+
+| Header | Where it comes from |
+|---|---|
+| `traceparent`, and `tracestate` when the MCP request has one | .NET's `HttpClient`, from the current `Activity`: the trace of the MCP request, which continues the client's trace when the MCP request came with a `traceparent` |
+| `baggage` when the MCP request has one (`Correlation-Context` on .NET 8 and 9) | .NET's `HttpClient`, from the current `Activity`'s baggage, the same way as `traceparent` |
+| `Authorization` | Copied from the MCP request, when it parses as an authentication header |
+| `X-MCP-Internal-Call: true` | Added by the invoker, so that `UseMcpLoopPrevention` refuses the request if it targets `/mcp` |
+
+No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent` or `X-Forwarded-For`. If your API logs a correlation ID taken from a header of its own, the internal request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it on both requests.
+
+`X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only `/mcp` refuses it), so never let it skip authentication or authorization.
+
+### Logs
+
+The default host already puts `TraceId`, `SpanId` and `ParentId` on the scope of every log entry, and ASP.NET Core adds `RequestPath` and `RequestId`. Two defaults get in the way: the console logger leaves scopes out, and the templates' `"Microsoft.AspNetCore": "Warning"` drops ASP.NET Core's request log, so the internal request writes nothing unless your controller logs. In `appsettings.json`:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Microsoft.AspNetCore.Hosting.Diagnostics": "Information"
+    },
+    "Console": {
+      "FormatterName": "simple",
+      "FormatterOptions": { "IncludeScopes": true }
+    }
+  }
+}
+```
+
+Keep `FormatterName`: without it, `FormatterOptions:IncludeScopes` has no effect. `builder.Logging.AddSimpleConsole(o => o.IncludeScopes = true)` does what the `Console` part does, in code, and `"FormatterName": "json"` writes `TraceId`, `SpanId` and `RequestId` as fields of the entries in each log entry's `Scopes` array instead.
+
+A failed call of the demo's `Products_GetById`, abridged: the `ConnectionId` scope and some entries are left out.
+
+```
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      Request starting HTTP/1.1 POST http://localhost:5344/mcp - application/json 141
+info: System.Net.Http.HttpClient.IMcpHttpInvoker.LogicalHandler[100]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001 => HTTP GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000
+      Start processing HTTP request GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      => SpanId:d819f4bb92caee09, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:3cbedd64401d9593 => RequestPath:/api/products/d0000000-0000-0000-0000-000000000000 RequestId:0HNPE2I2L3D84:00000001
+      Request finished HTTP/1.1 GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000 - 404 - application/problem+json;+charset=utf-8 12.0592ms
+warn: Api.ToMcp.Runtime.Services.McpHttpInvoker[0]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      MCP HTTP call failed with status 404: {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404,"traceId":"00-bbefb1c82eadb8adb003f3616f63f5ba-d819f4bb92caee09-00"}
+info: ModelContextProtocol.Server.McpServer[2065726448]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      "Products_GetById" completed. IsError = True.
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      => SpanId:75222e282e0e7fb9, TraceId:bbefb1c82eadb8adb003f3616f63f5ba, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPE2I2L3D83:00000001
+      Request finished HTTP/1.1 POST http://localhost:5344/mcp - 200 - text/event-stream 149.0195ms
+```
+
+To find the internal request of a tool call:
+
+1. Find the call by its tool name. The MCP SDK logs `"<tool name>" completed. IsError = <True|False>.` (category `ModelContextProtocol.Server.McpServer`, with `ToolName` and `IsError` as fields), and the invoker's `HttpClient` logs the URL, status and duration of its request (category `System.Net.Http.HttpClient.IMcpHttpInvoker.LogicalHandler`). Both log at `Information`, which the templates keep, in the scope of the `POST /mcp` request.
+2. Take the `TraceId` of that entry.
+3. Search for it. The entries whose `RequestPath` is your API route, under a `RequestId` other than the MCP request's, are the internal request, your controller's own log entries included.
+
+Code that wants the trace ID itself, to put it in its own messages or responses, reads `Activity.Current?.TraceId` from `System.Diagnostics`; it is the same in the MCP request and the internal one.
+
+Match on `TraceId`, not on `ParentId`: without a tracing listener, .NET's `HttpClient` still starts an `Activity` of its own for the outgoing request, so the internal request's `ParentId` is that activity (`3cbedd64401d9593` above), not the `SpanId` of the MCP request.
+
+`POST /mcp` finishes with `200` even when the tool failed, because the failure is `isError: true` inside the JSON-RPC result. Look for `IsError = True` and the invoker's `MCP HTTP call failed with status ...` warning instead. When the API answers with a ProblemDetails body, as `[ApiController]` does for `NotFound()` or `Problem()`, its `traceId` is the internal request's `00-<trace ID>-<span ID>-<flags>`, and it reaches the MCP client in the error text: a user who reports a failed call can hand you the trace ID.
+
+### OpenTelemetry
+
+With tracing on, the link shows as one trace. Add the packages `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Instrumentation.AspNetCore`, `OpenTelemetry.Instrumentation.Http` and an exporter, such as `OpenTelemetry.Exporter.OpenTelemetryProtocol`:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddSource("Experimental.ModelContextProtocol") // optional: a span per MCP request, named after the tool
+        .AddOtlpExporter());
+```
+
+A call of `Products_GetById` is then one trace:
+
+```
+POST mcp/                              server   the MCP request
+└─ tools/call Products_GetById         server   only with AddSource("Experimental.ModelContextProtocol")
+   └─ GET                              client   the invoker's HttpClient
+      └─ GET api/Products/{id:guid}    server   the internal request to the controller
+```
+
+`Experimental.ModelContextProtocol` is the MCP SDK's `ActivitySource`, and its name says the SDK may still change it. With that `AddSource`, when the request's `params._meta` carries a `traceparent`, the `tools/call` span continues that trace context instead, and is only linked to the `POST mcp/` span. A client that sends it in the same trace as its `traceparent` header still gets all four spans in one trace. A client that sends only `_meta.traceparent` gets the tool call and the internal request in its own trace and `POST mcp/` in another, joined by that link; the tool call's log entries follow the `tools/call` span, so their `TraceId` still matches the internal request's.
+
+### When the link breaks
+
+With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The internal request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. No `Authorization` header is forwarded at all, because that request's `HttpContext` is gone by then, so scope checks fail too. Leave the option at its default, `false`.
+
+Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivityPropagation` switch set to `false` or `DOTNET_SYSTEM_NET_HTTP_ENABLEACTIVITYPROPAGATION=0`, stops `HttpClient` from sending `traceparent` and `baggage`, so the internal request starts a trace of its own.
 
 ## Limitations
 
@@ -537,10 +654,35 @@ To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerG
 
 ## Troubleshooting
 
+The build reports these warnings:
+
+| Code | From | When |
+|------|------|------|
+| `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, an empty file, or an unreadable one |
+| `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
+| `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
+| `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
+
+Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning while `TreatWarningsAsErrors` or `-warnaserror` turns warnings into errors, list it in `<WarningsNotAsErrors>`.
+
 **No tools are generated.**
+- Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. A `generator.json` the generator cannot use as written gets `MCP001` instead (see below). `MCP006` points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
-- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`.
+- In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case.
 - Ensure the endpoint lives on a `ControllerBase`-derived class (or one with `[ApiController]`); minimal APIs are not supported.
+- With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
+
+**Build warning `MCP001`: `generator.json cannot be used as written`.**
+- The file is not valid JSON (a missing bracket, a trailing comma), has a value of the wrong type (a string where `include` expects a list), names a `mode` other than `SelectedOnly` or `AllExceptExcluded`, is empty or holds only `null`, or could not be read. The warning quotes the parser's error and points at where the parser stopped, or at the unknown `mode`.
+- The generator falls back as the warning says: to the default config, `SelectedOnly` mode with an empty `include`, so only `[McpExpose]` actions become tools; or, for an unknown `mode`, to `SelectedOnly` mode with the file's lists. `MCP006` is not reported as well, as its advice would describe the fallback rather than your file.
+
+**Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**
+- No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning points at that file, and comes only from the build that writes it. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.
+- If your config is somewhere else, set `ApiToMcpConfigPath` to it and delete the created file. See [Config file location](#config-file-location).
+
+**Build warning `MCP101`: `Api.ToMcp found no config at ... but found ...`.**
+- On a case-sensitive file system, the config is at a path that differs from `ApiToMcpConfigPath` only in the letter case of its folder or file name, such as `mcp/generator.json` for the default `Mcp/generator.json`. The build gives the generator that file, and the warning points at it. The build writes no starter config, and replaces an `AdditionalFiles` item that names the missing configured path. It generates the same tools as on Windows or macOS.
+- Set `ApiToMcpConfigPath` to that file, or rename it to match, and the warning goes away.
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).

@@ -33,4 +33,10 @@
     <None Update="Snapshots\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Both copies of the build targets, which the BuildTargets tests run through MSBuild -->
+  <ItemGroup>
+    <None Include="..\..\src\Api.ToMcp\build\Kebechet.Api.ToMcp.targets" Link="BuildTargets\Kebechet.Api.ToMcp.targets" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Api.ToMcp.Generator\build\Api.ToMcp.Generator.targets" Link="BuildTargets\Api.ToMcp.Generator.targets" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
