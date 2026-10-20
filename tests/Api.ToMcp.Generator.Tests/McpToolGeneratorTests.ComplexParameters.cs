@@ -3,12 +3,120 @@ using Xunit;
 namespace Api.ToMcp.Generator.Tests;
 
 /// <summary>
-/// Route values: MVC matches a route value to a parameter or property ignoring case, and a placeholder no
-/// parameter names is filled from a property of a <c>[FromRoute]</c> or <c>[FromBody]</c> parameter.
+/// Complex parameters MVC binds property by property from the route, query and form values instead of the body: every
+/// one in a controller without <c>[ApiController]</c>, and in an <c>[ApiController]</c> one whose type has a property with
+/// a binding source of its own. MVC reads the properties under the parameter's name as a prefix (<c>q.City</c>) when a
+/// value carries it, and under their own names otherwise; a property filled from the route binds only without the
+/// prefix, since no route value is named <c>q.Id</c>.
 /// </summary>
 public partial class McpToolGeneratorTests
 {
     private const string Formatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
+
+    [Theory]
+    [InlineData("HttpGet", "await invoker.GetAsync(route, cancellationToken)")]
+    [InlineData("HttpPost", "await invoker.PostAsync(route, null, cancellationToken)")]
+    [InlineData("HttpPut", "await invoker.PutAsync(route, null, cancellationToken)")]
+    [InlineData("HttpPatch", "await invoker.PatchAsync(route, null, cancellationToken)")]
+    [InlineData("HttpDelete", "await invoker.DeleteAsync(route, cancellationToken)")]
+    public void Generator_FillsTheRouteFromARouteProperty_AndSendsTheQueryPropertiesUnprefixed(string httpAttribute, string invokerCall)
+    {
+        // MVC answers /attr/7?City=Brno with Id 7, and /attr/7?q.City=Brno with Id 0; a JSON body it ignores.
+        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"attr/{{id:int}}\")] public Task<string> Find(AttributedQuery q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+        Assert.Contains("var route = $\"/api/orders/attr/{routeq_Id}\";", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", q.City);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"Note\", q.Note);", tool);
+        // A [FromHeader] property is read from a header, which the tool does not send.
+        Assert.DoesNotContain("\"Tenant\"", tool);
+        Assert.DoesNotContain("\"Id\"", tool);
+        Assert.DoesNotContain("\"q\"", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+        Assert.Contains(invokerCall, tool);
+    }
+
+    [Fact]
+    public void Generator_ReadsThePropertiesOfANullableParameter_WithoutDereferencingNull()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"attr/{id:int}\")] public Task<string> Find(AttributedQuery? q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q?.Id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", q?.City);", tool);
+    }
+
+    [Fact]
+    public void Generator_FillsTheRouteFromAnUnattributedPropertyNamedLikeThePlaceholder()
+    {
+        // Without the prefix MVC finds an unattributed property among the route values too.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"byname/{id:int}\")] public Task<string> Find(RouteByNameQuery q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", q.City);", tool);
+        Assert.DoesNotContain("\"Id\"", tool);
+    }
+
+    [Fact]
+    public void Generator_MatchesAPropertyByTheNameItsBindingAttributeGives()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"aliased/{orderId}\")] public Task<string> Find(AliasedRouteQuery q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"c\", q.City);", tool);
+    }
+
+    [Theory]
+    [InlineData("HttpGet", "QueryOnlyFilter")]
+    [InlineData("HttpPost", "QueryOnlyFilter")]
+    [InlineData("HttpDelete", "QueryOnlyFilter")]
+    [InlineData("HttpPost", "DerivedQuery")]
+    public void Generator_ExpandsAParameterWithPropertyBindingSourcesButNoRouteProperty_UnderItsName(string httpAttribute, string type)
+    {
+        // A [FromQuery] property, an inherited one included, keeps MVC off the body; q.City and q.Note both bind.
+        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"search\")] public Task<string> Find({type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("AddQueryValue(queryParts, \"q\", q);", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
+    [Theory]
+    [InlineData("HttpPost", "await invoker.PostAsync(route, null, cancellationToken)")]
+    [InlineData("HttpPut", "await invoker.PutAsync(route, null, cancellationToken)")]
+    [InlineData("HttpPatch", "await invoker.PatchAsync(route, null, cancellationToken)")]
+    public void Generator_ExpandsAComplexParameter_OnEveryMethod_OfAControllerWithoutApiController(string httpAttribute, string invokerCall)
+    {
+        // Without [ApiController] MVC ignores a JSON body here and binds ?filter.City=Brno.
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[{httpAttribute}(\"search\")] public Task<string> Find(ProductFilter filter) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        Assert.Contains("AddQueryValue(queryParts, \"filter\", filter);", tool);
+        Assert.Contains(invokerCall, tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
+    [Fact]
+    public void Generator_FillsTheRouteFromAPropertyOfAComplexParameter_OfAControllerWithoutApiController()
+    {
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpPut(\"shipments/{id:int}\")] public Task<string> Find(Shipment shipment) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        Assert.Contains($"var routeshipment_Id = System.Uri.EscapeDataString({Formatter}.Format(shipment.Id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"Note\", shipment.Note);", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
+    [Theory]
+    [InlineData("[FromBody]")]
+    [InlineData("[FromRoute]")]
+    public void Generator_FillsARoutePlaceholderFromAPropertyOfASimpleTypeBoundByAnAttribute(string bindingAttribute)
+    {
+        // Left unfilled, {value} names no variable in the emitted string and the tool does not compile.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"{{value}}\")] public Task<string> Find({bindingAttribute} OrderId id) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeid_Value = System.Uri.EscapeDataString({Formatter}.Format(id.Value));", tool);
+    }
 
     [Theory]
     [InlineData("HttpGet")]
@@ -23,13 +131,17 @@ public partial class McpToolGeneratorTests
     }
 
     [Theory]
-    [InlineData("[FromBody]")]
-    [InlineData("[FromRoute]")]
-    public void Generator_FillsARoutePlaceholderFromAPropertyOfASimpleTypeBoundByAnAttribute(string bindingAttribute)
+    [InlineData("string name")]
+    [InlineData("int? count")]
+    [InlineData("OrderId orderId")]
+    public void Generator_SendsAParameterOfASimpleType_OnPost_OfAControllerWithoutApiController_AsAQueryValue(string parameter)
     {
-        // Left unfilled, {value} names no variable in the emitted string and the tool does not compile.
-        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"{{value}}\")] public Task<string> Find({bindingAttribute} OrderId id) => Task.FromResult(string.Empty);");
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[HttpPost(\"search\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
 
-        Assert.Contains($"var routeid_Value = System.Uri.EscapeDataString({Formatter}.Format(id.Value));", tool);
+        var name = parameter.Split(' ')[1];
+        Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
+        Assert.DoesNotContain("bodyJson", tool);
     }
 }

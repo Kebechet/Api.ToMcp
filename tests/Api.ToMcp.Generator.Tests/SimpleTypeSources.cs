@@ -194,6 +194,69 @@ namespace TestApi
         public string? City { get; set; }
     }
 
+    // A property with a binding source of its own keeps [ApiController] from reading the type from the body.
+    public sealed class AttributedQuery
+    {
+        [FromRoute]
+        public int Id { get; set; }
+
+        [FromQuery]
+        public string? City { get; set; }
+
+        public string? Note { get; set; }
+
+        [FromHeader]
+        public string? Tenant { get; set; }
+    }
+
+    public sealed class QueryOnlyFilter
+    {
+        [FromQuery]
+        public string? City { get; set; }
+
+        public string? Note { get; set; }
+    }
+
+    public sealed class AliasedRouteQuery
+    {
+        [FromRoute(Name = ""orderId"")]
+        public Guid Order { get; set; }
+
+        [FromQuery(Name = ""c"")]
+        public string? City { get; set; }
+    }
+
+    public sealed class RouteByNameQuery
+    {
+        public int Id { get; set; }
+
+        [FromQuery]
+        public string? City { get; set; }
+    }
+
+    public sealed class Shipment
+    {
+        public int Id { get; set; }
+
+        public string? Note { get; set; }
+    }
+
+    public class BaseQuery
+    {
+        [FromQuery]
+        public string? City { get; set; }
+    }
+
+    public sealed class DerivedQuery : BaseQuery
+    {
+        public string? Note { get; set; }
+    }
+
+    // MVC applies the [ApiController] conventions for any attribute implementing IApiBehaviorMetadata.
+    public sealed class ApiBehaviorAttribute : Attribute, Microsoft.AspNetCore.Mvc.Infrastructure.IApiBehaviorMetadata
+    {
+    }
+
     // A property grid's converter, which never reads a string.
     [TypeConverter(typeof(ExpandableObjectConverter))]
     public sealed class ExpandableFilter

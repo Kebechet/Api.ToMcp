@@ -123,6 +123,9 @@ namespace Api.ToMcp.Generator.Emitting
             // Build mapping from placeholder to source expression
             var placeholderSources = new Dictionary<string, (string expression, string type, bool isNullable, string varName)>();
 
+            // The properties of parameters bound from the route, query and form values that fill a route value
+            var routeProperties = new HashSet<PropertyInfoModel>();
+
             foreach (var placeholder in routePlaceholders)
             {
                 // Check if direct parameter match (case-insensitive)
@@ -145,12 +148,25 @@ namespace Api.ToMcp.Generator.Emitting
                         var matchingProperty = complexParam.Properties.First(prop =>
                             string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase));
 
-                        var varName = $"{complexParam.Name}_{matchingProperty.Name}";
-                        placeholderSources[placeholder] = (
-                            $"{complexParam.Name}.{matchingProperty.Name}",
-                            matchingProperty.Type,
-                            matchingProperty.IsNullable,
-                            varName);
+                        placeholderSources[placeholder] = GetRouteValueSource(complexParam, matchingProperty);
+                    }
+                    else
+                    {
+                        // A property MVC reads from the route values under the name it binds by: a [FromRoute] one, or one
+                        // without a binding attribute, which reads every value provider.
+                        var routeProperty = parameters
+                            .Where(p => IsBoundFromValueProviders(p, action))
+                            .SelectMany(p => p.Properties
+                                .Where(prop => prop.Source is ParameterSourceModel.Auto or ParameterSourceModel.Route &&
+                                    string.Equals(GetBinderModelName(prop), placeholder, StringComparison.OrdinalIgnoreCase))
+                                .Select(prop => (Parameter: p, Property: prop)))
+                            .FirstOrDefault();
+
+                        if (routeProperty.Property != null)
+                        {
+                            placeholderSources[placeholder] = GetRouteValueSource(routeProperty.Parameter, routeProperty.Property);
+                            routeProperties.Add(routeProperty.Property);
+                        }
                     }
                 }
             }
@@ -178,29 +194,85 @@ namespace Api.ToMcp.Generator.Emitting
 
             // Build query string. MVC binds a simple type that names no route value from the query string on every
             // HTTP method: [ApiController] infers [FromQuery] for it, and in a controller without [ApiController] the
-            // query string is one of the value providers. A complex type [ApiController] binds from the body, which a GET
-            // or DELETE does not send. A controller without it binds one property by property from the value providers
-            // too, so on a GET or DELETE it is expanded into the query string, as [FromQuery] would be.
-            var isComplexTypeBoundFromQuery = !action.IsApiController &&
-                action.HttpMethod is HttpMethodNames.Get or HttpMethodNames.Delete;
-            var queryParams = parameters.Where(p =>
-                p.Source == ParameterSourceModel.Query ||
-                (p.Source == ParameterSourceModel.Auto &&
-                 !RouteContainsParameter(route, p.Name) &&
-                 (p.IsSimpleType || isComplexTypeBoundFromQuery))).ToList();
+            // query string is one of the value providers. A complex type bound from those value providers is expanded
+            // into it as [FromQuery] would expand it.
+            var queryValues = new List<(string Key, string Expression)>();
+            foreach (var param in parameters)
+            {
+                if (param.Source == ParameterSourceModel.Query ||
+                    (param.Source == ParameterSourceModel.Auto && !RouteContainsParameter(route, param.Name) && param.IsSimpleType))
+                {
+                    queryValues.Add((param.QueryName ?? param.Name, param.Name));
+                }
+                else if (param.Source == ParameterSourceModel.Auto && !RouteContainsParameter(route, param.Name) && IsBoundFromValueProviders(param, action))
+                {
+                    queryValues.AddRange(GetQueryValues(param, routeProperties));
+                }
+            }
 
-            if (queryParams.Any())
+            if (queryValues.Any())
             {
                 sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
-                foreach (var param in queryParams)
+                foreach (var (key, expression) in queryValues)
                 {
                     // A [FromQuery(Name)] alias is any string, so it is written as an escaped C# literal.
-                    var queryKeyLiteral = SymbolDisplay.FormatLiteral(param.QueryName ?? param.Name, quote: true);
-                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, {queryKeyLiteral}, {param.Name});");
+                    var queryKeyLiteral = SymbolDisplay.FormatLiteral(key, quote: true);
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, {queryKeyLiteral}, {expression});");
                 }
                 sb.AppendLine("            if (queryParts.Count > 0)");
                 sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");
             }
+        }
+
+        /// <summary>
+        /// Whether MVC binds a complex parameter property by property from the route, query and form values: in a
+        /// controller without <c>[ApiController]</c> it does for every one, and in an <c>[ApiController]</c> for one whose
+        /// type has a property with a binding source of its own, which keeps it from inferring the body.
+        /// </summary>
+        private static bool IsBoundFromValueProviders(ParameterInfoModel parameter, ActionInfoModel action)
+        {
+            return parameter.Source == ParameterSourceModel.Auto &&
+                !parameter.IsSimpleType &&
+                (!action.IsApiController || parameter.HasBindingSourceProperties);
+        }
+
+        /// <summary>
+        /// The query values of a parameter bound from the route, query and form values. MVC reads its properties under the
+        /// parameter's name as a prefix (<c>filter.City</c>) when a value carries it, and under their own names otherwise.
+        /// Only the latter lets a property fill a route value, as no route value is named <c>filter.Id</c>, so a parameter
+        /// with such a property sends the others under their own names, each where MVC reads it: a <c>[FromQuery]</c> one
+        /// or one without a binding attribute in the query string, any other not at all.
+        /// </summary>
+        private static IEnumerable<(string Key, string Expression)> GetQueryValues(ParameterInfoModel parameter, HashSet<PropertyInfoModel> routeProperties)
+        {
+            if (!parameter.Properties.Any(routeProperties.Contains))
+            {
+                return new[] { (parameter.Name, parameter.Name) };
+            }
+
+            return parameter.Properties
+                .Where(x => x.Source is ParameterSourceModel.Auto or ParameterSourceModel.Query && !routeProperties.Contains(x))
+                .Select(x => (GetBinderModelName(x), GetPropertyAccess(parameter, x)));
+        }
+
+        private static (string expression, string type, bool isNullable, string varName) GetRouteValueSource(ParameterInfoModel parameter, PropertyInfoModel property)
+        {
+            return (GetPropertyAccess(parameter, property), property.Type, property.IsNullable, $"{parameter.Name}_{property.Name}");
+        }
+
+        /// <summary>
+        /// A nullable parameter's property is read with <c>?.</c>, which the formatter takes as no value.
+        /// </summary>
+        private static string GetPropertyAccess(ParameterInfoModel parameter, PropertyInfoModel property)
+        {
+            return parameter.IsNullable
+                ? $"{parameter.Name}?.{property.Name}"
+                : $"{parameter.Name}.{property.Name}";
+        }
+
+        private static string GetBinderModelName(PropertyInfoModel property)
+        {
+            return property.ModelName ?? property.Name;
         }
 
         private static void EmitHttpCall(

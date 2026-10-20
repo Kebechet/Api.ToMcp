@@ -60,7 +60,7 @@ namespace Api.ToMcp.Generator.Parsing
                 if (httpInfo == null)
                     continue;
 
-                var parameters = AnalyzeParameters(method, httpInfo.Value.Method);
+                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController);
                 var returnType = AnalyzeReturnType(method);
                 var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
@@ -159,31 +159,32 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static ImmutableArray<ParameterInfoModel> AnalyzeParameters(
             IMethodSymbol method,
-            string httpMethod)
+            string httpMethod,
+            bool isApiController)
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
             var paramDocs = GetXmlDocParams(method);
 
             foreach (var param in method.Parameters)
             {
-                var source = DetermineParameterSource(param, httpMethod);
+                var declaredSource = GetDeclaredParameterSource(param);
 
                 // Skip service-injected parameters
-                if (source == ParameterSourceModel.Services)
+                if (declaredSource == ParameterSourceModel.Services)
                     continue;
 
                 // Skip CancellationToken
                 if (param.Type.ToDisplayString() == KnownTypeNames.CancellationToken)
                     continue;
 
-                var properties = ImmutableArray<PropertyInfoModel>.Empty;
+                var isSimpleType = SimpleTypeClassifier.IsSimpleType(param.Type);
 
                 // A [FromRoute] or [FromBody] parameter's properties fill route values whatever its type, as a body is JSON
-                // even for a type MVC reads from one string.
-                if (source == ParameterSourceModel.Route || source == ParameterSourceModel.Body)
-                {
-                    properties = ExtractProperties(param.Type);
-                }
+                // even for a type MVC reads from one string. A complex parameter's also decide whether MVC reads it from
+                // the body, and which of them fill the route or the query string when it does not.
+                var properties = isSimpleType && declaredSource is not (ParameterSourceModel.Route or ParameterSourceModel.Body)
+                    ? ImmutableArray<PropertyInfoModel>.Empty
+                    : ExtractProperties(param.Type);
 
                 builder.Add(new ParameterInfoModel
                 {
@@ -193,8 +194,8 @@ namespace Api.ToMcp.Generator.Parsing
                                  param.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
-                    Source = source,
-                    IsSimpleType = SimpleTypeClassifier.IsSimpleType(param.Type),
+                    Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
+                    IsSimpleType = isSimpleType,
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
                     QueryName = GetFromQueryName(param)
@@ -207,67 +208,140 @@ namespace Api.ToMcp.Generator.Parsing
         private static string? GetFromQueryName(IParameterSymbol param)
         {
             return param.GetAttributes()
-                .Where(x => x.AttributeClass?.Name == "FromQueryAttribute")
-                .SelectMany(x => x.NamedArguments)
-                .Where(x => x.Key == "Name")
-                .Select(x => x.Value.Value as string)
-                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+                .Where(x => x.AttributeClass?.Name == BindingAttributeNames.FromQuery)
+                .Select(GetModelName)
+                .FirstOrDefault(x => x is not null);
         }
 
+        /// <summary>
+        /// The public properties MVC binds a type through, those it inherits included; a property hides a base one of
+        /// the same name, as it does from MVC.
+        /// </summary>
         private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type)
         {
             var builder = ImmutableArray.CreateBuilder<PropertyInfoModel>();
 
-            foreach (var member in type.GetMembers())
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
             {
-                if (!(member is IPropertySymbol property))
-                    continue;
+                type = nullable.TypeArguments[0];
+            }
 
-                if (property.DeclaredAccessibility != Accessibility.Public)
-                    continue;
+            if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct))
+            {
+                return builder.ToImmutable();
+            }
 
-                if (property.GetMethod == null)
-                    continue;
-
-                builder.Add(new PropertyInfoModel
+            var propertyNames = new HashSet<string>(StringComparer.Ordinal);
+            for (var current = type; current is not null && current.SpecialType != SpecialType.System_Object; current = current.BaseType)
+            {
+                foreach (var member in current.GetMembers())
                 {
-                    Name = property.Name,
-                    Type = property.Type.ToDisplayString(),
-                    IsNullable = property.Type.NullableAnnotation == NullableAnnotation.Annotated ||
-                                 property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T
-                });
+                    if (!(member is IPropertySymbol property))
+                        continue;
+
+                    if (property.DeclaredAccessibility != Accessibility.Public || property.IsStatic || property.IsIndexer)
+                        continue;
+
+                    if (property.GetMethod == null)
+                        continue;
+
+                    if (!propertyNames.Add(property.Name))
+                        continue;
+
+                    builder.Add(new PropertyInfoModel
+                    {
+                        Name = property.Name,
+                        Type = property.Type.ToDisplayString(),
+                        IsNullable = property.Type.NullableAnnotation == NullableAnnotation.Annotated ||
+                                     property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
+                        ModelName = property.GetAttributes().Select(GetModelName).FirstOrDefault(x => x is not null),
+                        Source = GetPropertySource(property)
+                    });
+                }
             }
 
             return builder.ToImmutable();
         }
 
-        private static ParameterSourceModel DetermineParameterSource(
-            IParameterSymbol param,
-            string httpMethod)
+        /// <summary>
+        /// The name an attribute such as <c>[FromQuery(Name = "q")]</c> makes MVC bind a value under, or null when it names
+        /// none. Every attribute that renames the key implements <c>IModelNameProvider</c>; <c>[FromQuery]</c> is also
+        /// matched by name, as the test stubs do not implement it.
+        /// </summary>
+        private static string? GetModelName(AttributeData attribute)
+        {
+            if (attribute.AttributeClass?.Name != BindingAttributeNames.FromQuery &&
+                !Implements(attribute, BindingAttributeNames.ModelNameProvider))
+            {
+                return null;
+            }
+
+            return attribute.NamedArguments
+                .Where(x => x.Key == BindingAttributeNames.ModelNamePropertyName)
+                .Select(x => x.Value.Value as string)
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+        }
+
+        private static ParameterSourceModel GetPropertySource(IPropertySymbol property)
+        {
+            var attributes = property.GetAttributes();
+            foreach (var attribute in attributes)
+            {
+                switch (attribute.AttributeClass?.Name)
+                {
+                    case BindingAttributeNames.FromRoute:
+                        return ParameterSourceModel.Route;
+                    case BindingAttributeNames.FromQuery:
+                        return ParameterSourceModel.Query;
+                }
+            }
+
+            return attributes.Any(x => Implements(x, BindingAttributeNames.BindingSourceMetadata))
+                ? ParameterSourceModel.Other
+                : ParameterSourceModel.Auto;
+        }
+
+        private static ParameterSourceModel? GetDeclaredParameterSource(IParameterSymbol param)
         {
             foreach (var attr in param.GetAttributes())
             {
                 var attrName = attr.AttributeClass?.Name;
                 switch (attrName)
                 {
-                    case "FromRouteAttribute":
+                    case BindingAttributeNames.FromRoute:
                         return ParameterSourceModel.Route;
-                    case "FromQueryAttribute":
+                    case BindingAttributeNames.FromQuery:
                         return ParameterSourceModel.Query;
-                    case "FromBodyAttribute":
+                    case BindingAttributeNames.FromBody:
                         return ParameterSourceModel.Body;
-                    case "FromHeaderAttribute":
+                    case BindingAttributeNames.FromHeader:
                         return ParameterSourceModel.Header;
-                    case "FromServicesAttribute":
+                    case BindingAttributeNames.FromServices:
                         return ParameterSourceModel.Services;
                 }
             }
 
-            // Auto-infer based on HTTP method and type
-            if ((httpMethod == HttpMethodNames.Post || httpMethod == HttpMethodNames.Put || httpMethod == HttpMethodNames.Patch) && IsComplexType(param.Type))
-                return ParameterSourceModel.Body;
+            return null;
+        }
 
-            return ParameterSourceModel.Auto;
+        /// <summary>
+        /// The body for a complex type <c>[ApiController]</c> reads from it, on the methods a tool sends a body with. MVC
+        /// infers no source for a type one of whose properties names a binding source of its own, and none at all without
+        /// <c>[ApiController]</c>; such a parameter, like a simple one, is bound from the route, query and form values,
+        /// which the emitter tells apart.
+        /// </summary>
+        private static ParameterSourceModel InferParameterSource(
+            ITypeSymbol type,
+            string httpMethod,
+            bool isApiController,
+            ImmutableArray<PropertyInfoModel> properties)
+        {
+            var isBodyMethod = httpMethod is HttpMethodNames.Post or HttpMethodNames.Put or HttpMethodNames.Patch;
+            var hasBindingSourceProperties = properties.Any(x => x.Source != ParameterSourceModel.Auto);
+
+            return isApiController && isBodyMethod && IsComplexType(type) && !hasBindingSourceProperties
+                ? ParameterSourceModel.Body
+                : ParameterSourceModel.Auto;
         }
 
         private static bool IsComplexType(ITypeSymbol type)
@@ -580,7 +654,12 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static bool IsApiBehaviorAttribute(AttributeData attribute)
         {
-            return attribute.AttributeClass?.AllInterfaces.Any(x => x.ToDisplayString() == ApiBehaviorMetadataFullName) == true;
+            return Implements(attribute, ApiBehaviorMetadataFullName);
+        }
+
+        private static bool Implements(AttributeData attribute, string interfaceFullName)
+        {
+            return attribute.AttributeClass?.AllInterfaces.Any(x => x.ToDisplayString() == interfaceFullName) == true;
         }
 
         private static McpScopeModel GetRequiredScope(string httpMethod)

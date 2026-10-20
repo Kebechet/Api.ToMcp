@@ -111,6 +111,13 @@ namespace Api.ToMcp.Generator.Models
         public bool IsSimpleType { get; set; }
 
         public ImmutableArray<PropertyInfoModel> Properties { get; set; } = ImmutableArray<PropertyInfoModel>.Empty;
+
+        /// <summary>
+        /// Whether a property of the parameter's type names a binding source of its own. <c>[ApiController]</c> then
+        /// infers no source for the parameter, so MVC binds it from the route, query and form values, not the body.
+        /// </summary>
+        public bool HasBindingSourceProperties => Properties.Any(x => x.Source != ParameterSourceModel.Auto);
+
         public string? Description { get; set; }
 
         /// <summary>
@@ -124,6 +131,19 @@ namespace Api.ToMcp.Generator.Models
         public string Name { get; set; } = "";
         public string Type { get; set; } = "";
         public bool IsNullable { get; set; }
+
+        /// <summary>
+        /// The key a binding attribute such as <c>[FromQuery(Name = "...")]</c> makes MVC bind the property from, or null
+        /// when it names none.
+        /// </summary>
+        public string? ModelName { get; set; }
+
+        /// <summary>
+        /// Where the property's own binding attribute makes MVC read it from: <see cref="ParameterSourceModel.Route"/> or
+        /// <see cref="ParameterSourceModel.Query"/>, <see cref="ParameterSourceModel.Other"/> for any other source, and
+        /// <see cref="ParameterSourceModel.Auto"/> when it has none and is read wherever its parameter is.
+        /// </summary>
+        public ParameterSourceModel Source { get; set; }
     }
 
     internal enum ParameterSourceModel
@@ -133,7 +153,12 @@ namespace Api.ToMcp.Generator.Models
         Query,
         Body,
         Header,
-        Services
+        Services,
+
+        /// <summary>
+        /// A binding source a tool does not send, such as a header, a form field or a service, of a property.
+        /// </summary>
+        Other
     }
 
     internal sealed class ReturnTypeInfoModel

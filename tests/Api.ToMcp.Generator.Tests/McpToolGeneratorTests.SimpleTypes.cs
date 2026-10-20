@@ -106,7 +106,8 @@ public partial class McpToolGeneratorTests
     [InlineData("HttpDelete", "ProductFilter? filter")]
     public void Generator_DoesNotSendAParameterOfAComplexType_OnGetOrDelete_OfAnApiController(string httpAttribute, string parameter)
     {
-        // [ApiController] binds it from the body, which the tool cannot send on GET or DELETE; MVC answers 415 either way.
+        // [ApiController] binds such a type, none of whose properties names a binding source, from the body, which the
+        // tool cannot send on GET or DELETE; MVC answers 415 either way.
         var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"search\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
 
         Assert.DoesNotContain("queryParts", tool);
@@ -131,9 +132,11 @@ public partial class McpToolGeneratorTests
     [Theory]
     [InlineData("", "[ApiController] public abstract class ApiControllerBase : ControllerBase { } [Route(\"api/[controller]\")] public class OrdersController : ApiControllerBase")]
     [InlineData("[assembly: ApiController]", PlainControllerDeclaration)]
+    [InlineData("", "[ApiBehavior] [Route(\"api/[controller]\")] public class OrdersController : ControllerBase")]
     public void Generator_TreatsAControllerAsAnApiController_WhenABaseClassOrItsAssemblyHasTheAttribute(string assemblyAttributes, string controllerDeclaration)
     {
-        // MVC reads [ApiController] from base classes, since it is inherited, and from the assembly.
+        // MVC reads [ApiController] from base classes, since it is inherited, and from the assembly, and takes any
+        // attribute implementing IApiBehaviorMetadata for it.
         var tool = GenerateCompilingSimpleTypeTool(
             "[HttpGet(\"search\")] public Task<string> Find(ProductFilter filter) => Task.FromResult(string.Empty);",
             controllerDeclaration,
