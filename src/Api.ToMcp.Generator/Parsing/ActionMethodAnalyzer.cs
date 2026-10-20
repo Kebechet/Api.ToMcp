@@ -147,7 +147,10 @@ namespace Api.ToMcp.Generator.Parsing
                     IsOutputNullable = responseType.SuccessType is null ||
                         responseType.HasBodylessSuccess ||
                         EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct),
-                    SourceLocation = SourceLocationModel.From(method.Locations.FirstOrDefault(x => x.IsInSource))
+                    // An action of a referenced assembly has no place in source, so its warnings point at the controller
+                    // that inherits it, where a #pragma or an .editorconfig section can suppress them.
+                    SourceLocation = SourceLocationModel.From(
+                        method.Locations.FirstOrDefault(x => x.IsInSource) ?? controller.Locations.FirstOrDefault(x => x.IsInSource))
                 });
             }
 

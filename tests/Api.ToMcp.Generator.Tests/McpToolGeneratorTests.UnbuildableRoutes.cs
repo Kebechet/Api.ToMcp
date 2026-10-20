@@ -77,6 +77,52 @@ namespace TestApi
         Assert.Equal("Z", warning.Location.SourceTree!.GetText().ToString(warning.Location.SourceSpan));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("#pragma warning disable MCP009\n")]
+    public void Generator_WarnsAboutAnActionOfAReferencedBaseController_AtTheControllerThatInheritsIt(string pragma)
+    {
+        // Metadata holds no place for the action, and a warning without a place no #pragma can suppress.
+        const string referencedBase = @"
+using Microsoft.AspNetCore.Mvc;
+
+namespace Shared
+{
+    public abstract class ComputedController : ControllerBase
+    {
+        [HttpGet(""z/{id}"")]
+        public IActionResult Z() => Ok();
+    }
+}
+";
+        var source = pragma + Usings + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class OrdersController : Shared.ComputedController
+    {
+        [HttpGet(""ok"")]
+        public IActionResult Find() => Ok();
+    }
+}
+";
+        var compilation = CreateCompilation(source).AddReferences(CompileToReference(Usings + referencedBase, "Shared"));
+
+        var warnings = CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation).GetRunResult().Diagnostics
+            .Where(x => x.Id == UnbuildableRouteId)
+            .ToList();
+
+        if (pragma.Length > 0)
+        {
+            Assert.DoesNotContain(warnings, x => !x.IsSuppressed);
+        }
+        else
+        {
+            Assert.Equal("OrdersController", GetLocatedText(Assert.Single(warnings).Location, source));
+        }
+    }
+
     [Fact]
     public void Generator_WarnsThatNoToolsAreGenerated_WhenTheIncludeSelectsOnlyActionsWithoutARoute()
     {

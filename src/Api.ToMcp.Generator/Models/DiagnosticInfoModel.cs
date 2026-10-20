@@ -33,8 +33,7 @@ namespace Api.ToMcp.Generator.Models
         public EquatableArray<object?> MessageArguments { get; }
 
         /// <summary>
-        /// A diagnostic at the places in source, or at none when no place is given, as for an action of a referenced
-        /// assembly.
+        /// A diagnostic at the places in source, or at none when no place is given.
         /// </summary>
         public static DiagnosticInfoModel InSource(DiagnosticDescriptor descriptor, IEnumerable<SourceLocationModel?> locations, params object?[] messageArguments)
         {

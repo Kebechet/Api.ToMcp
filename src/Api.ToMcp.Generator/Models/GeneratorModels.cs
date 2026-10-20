@@ -155,7 +155,7 @@ namespace Api.ToMcp.Generator.Models
 
         /// <summary>
         /// Where the action is declared in source, which an inherited action shares with every controller that inherits
-        /// it, or null for an action declared in a referenced assembly.
+        /// it; for an action declared in a referenced assembly, the controller's name.
         /// </summary>
         public SourceLocationModel? SourceLocation { get; init; }
 

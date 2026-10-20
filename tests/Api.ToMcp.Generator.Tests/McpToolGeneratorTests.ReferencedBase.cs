@@ -89,16 +89,18 @@ namespace TestApi
 
         Assert.DoesNotMatch(@"\bCrudController_", generated);
 
-        // The inherited name collides. Of the two actions, only the override is declared in this compilation.
+        // The inherited name collides. Of the two actions, only the override is declared in this compilation; the one
+        // ProductsController inherits from metadata is pointed at through the controller.
         var warning = Assert.Single(diagnostics, x => x.Id == DuplicateToolNameId);
         Assert.Contains("ProductsController.Get (GET /api/products/{id}), OrdersController.Get (GET /api/orders/{id})", warning.GetMessage());
-        Assert.Equal("Get", GetLocatedText(warning.Location, source));
-        Assert.Equal(source.IndexOf("Get(Guid id)", StringComparison.Ordinal), warning.Location.SourceSpan.Start);
-        Assert.Empty(warning.AdditionalLocations);
+        Assert.Equal("ProductsController", GetLocatedText(warning.Location, source));
+        var additionalLocation = Assert.Single(warning.AdditionalLocations);
+        Assert.Equal("Get", GetLocatedText(additionalLocation, source));
+        Assert.Equal(source.IndexOf("Get(Guid id)", StringComparison.Ordinal), additionalLocation.SourceSpan.Start);
     }
 
     [Fact]
-    public void Generator_ReportsADuplicateToolName_WithoutALocation_WhenOnlyAReferencedAssemblyDeclaresIt()
+    public void Generator_ReportsADuplicateToolName_AtTheControllers_WhenOnlyAReferencedAssemblyDeclaresIt()
     {
         const string source = StructuredOutputUsings + StructuredOutputModels + @"
 namespace TestApi
@@ -118,8 +120,10 @@ namespace TestApi
 
         var warning = Assert.Single(diagnostics, x => x.Id == DuplicateToolNameId);
         Assert.Contains("Tool name 'get_item' is given to 2 tools: ProductsController.Get (GET /api/products/{id}), OrdersController.Get (GET /api/orders/{id}).", warning.GetMessage());
-        Assert.Equal(Location.None, warning.Location);
-        Assert.Empty(warning.AdditionalLocations);
+        // Metadata holds no place for the action, so the warning points at the controllers that inherit it, where a
+        // #pragma can suppress it.
+        Assert.Equal("ProductsController", GetLocatedText(warning.Location, source));
+        Assert.Equal("OrdersController", GetLocatedText(Assert.Single(warning.AdditionalLocations), source));
     }
 
     /// <summary>
