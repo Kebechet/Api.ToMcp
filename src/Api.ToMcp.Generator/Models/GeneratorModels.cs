@@ -77,6 +77,25 @@ namespace Api.ToMcp.Generator.Models
         public bool HasMcpExposeAttribute { get; init; }
         public bool HasMcpIgnoreAttribute { get; init; }
         public EquatableArray<ActionInfoModel> Actions { get; init; } = EquatableArray<ActionInfoModel>.Empty;
+
+        /// <summary>
+        /// The classes the controller inherits actions from, nearest first, up to the framework's <c>ControllerBase</c>.
+        /// </summary>
+        public EquatableArray<BaseClassModel> BaseClasses { get; init; } = EquatableArray<BaseClassModel>.Empty;
+    }
+
+    /// <summary>
+    /// A class a controller inherits actions from, which MCP008 names when an include or exclude entry names the base
+    /// instead of the controllers that inherit from it.
+    /// </summary>
+    internal sealed record BaseClassModel
+    {
+        public string Name { get; init; } = "";
+
+        /// <summary>
+        /// The names of the methods the class declares, each once.
+        /// </summary>
+        public EquatableArray<string> MethodNames { get; init; } = EquatableArray<string>.Empty;
     }
 
     internal sealed record ActionInfoModel

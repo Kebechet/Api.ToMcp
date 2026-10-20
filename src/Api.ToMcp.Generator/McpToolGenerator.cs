@@ -69,7 +69,7 @@ namespace Api.ToMcp.Generator
                 }
 
                 // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
-                ReportUnmatchedEntries(ctx, controllers, config, compilation, entryNames);
+                ReportUnmatchedEntries(ctx, controllers, config, entryNames);
                 selectedActions = SkipActionsWithoutARoute(ctx, selectedActions, compilation);
                 ReportDuplicateToolNames(ctx, selectedActions, config, compilation);
 
@@ -352,14 +352,13 @@ namespace Api.ToMcp.Generator
             SourceProductionContext context,
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
-            Compilation compilation,
             HashSet<string> entryNames)
         {
             ReportUnmatchedEntries(
-                context, controllers, config, compilation, entryNames,
+                context, controllers, config, entryNames,
                 IncludeListName, config.Include, config.IncludeSpans, "selects nothing");
             ReportUnmatchedEntries(
-                context, controllers, config, compilation, entryNames,
+                context, controllers, config, entryNames,
                 ExcludeListName, config.Exclude, config.ExcludeSpans, "excludes nothing");
         }
 
@@ -367,7 +366,6 @@ namespace Api.ToMcp.Generator
             SourceProductionContext context,
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
-            Compilation compilation,
             HashSet<string> entryNames,
             string listName,
             EquatableArray<string> entries,
@@ -386,7 +384,7 @@ namespace Api.ToMcp.Generator
                     listName,
                     entry,
                     effect,
-                    GetUnmatchedEntryAdvice(entry, controllers, compilation, entryNames)));
+                    GetUnmatchedEntryAdvice(entry, controllers, entryNames)));
             }
         }
 
@@ -396,7 +394,6 @@ namespace Api.ToMcp.Generator
         private static string GetUnmatchedEntryAdvice(
             string entry,
             ImmutableArray<ControllerInfoModel> controllers,
-            Compilation compilation,
             HashSet<string> entryNames)
         {
             var separator = entry.IndexOf(EntryActionSeparator);
@@ -405,7 +402,7 @@ namespace Api.ToMcp.Generator
 
             if (!entryNames.Contains(controllerPart))
             {
-                var baseControllerAdvice = GetBaseControllerAdvice(controllerPart, actionPart, controllers, compilation);
+                var baseControllerAdvice = GetBaseControllerAdvice(controllerPart, actionPart, controllers);
                 if (baseControllerAdvice != null)
                     return baseControllerAdvice;
             }
@@ -433,29 +430,30 @@ namespace Api.ToMcp.Generator
         private static string? GetBaseControllerAdvice(
             string controllerPart,
             string? actionPart,
-            ImmutableArray<ControllerInfoModel> controllers,
-            Compilation compilation)
+            ImmutableArray<ControllerInfoModel> controllers)
         {
-            INamedTypeSymbol? baseClass = null;
+            (ControllerInfoModel Controller, int BaseClassIndex)? firstMatch = null;
             var derivedControllers = new List<ControllerInfoModel>();
 
             foreach (var controller in controllers)
             {
-                var matchingBase = GetBaseClasses(controller, compilation)
-                    .FirstOrDefault(x => x.Name == controllerPart || RemoveControllerSuffix(x.Name) == controllerPart);
-                if (matchingBase == null)
+                var baseClassIndex = IndexOfBaseClass(controller, controllerPart);
+                if (baseClassIndex < 0)
                     continue;
 
-                baseClass ??= matchingBase;
+                firstMatch ??= (controller, baseClassIndex);
                 derivedControllers.Add(controller);
             }
 
-            if (baseClass == null)
+            if (firstMatch == null)
                 return null;
+
+            var (matchingController, matchingIndex) = firstMatch.Value;
+            var baseClassName = matchingController.BaseClasses[matchingIndex].Name;
 
             // Written as the entry writes the base's name, with or without the suffix.
             var derivedNames = derivedControllers
-                .Select(x => controllerPart == baseClass.Name ? x.Name : RemoveControllerSuffix(x.Name))
+                .Select(x => controllerPart == baseClassName ? x.Name : RemoveControllerSuffix(x.Name))
                 .ToList();
 
             string replacement;
@@ -465,8 +463,9 @@ namespace Api.ToMcp.Generator
             }
             else
             {
+                // The methods of the base and of the classes it derives from, which the controllers inherit.
                 var baseMethodNames = new HashSet<string>(
-                    GetSelfAndBaseClasses(baseClass).SelectMany(x => x.GetMembers().OfType<IMethodSymbol>()).Select(x => x.Name),
+                    matchingController.BaseClasses.Skip(matchingIndex).SelectMany(x => x.MethodNames),
                     StringComparer.Ordinal);
                 var exampleAction = derivedControllers[0].Actions.FirstOrDefault(x => baseMethodNames.Contains(x.Name));
                 var example = exampleAction == null ? "" : $", such as '{derivedNames[0]}{EntryActionSeparator}{exampleAction.Name}'";
@@ -474,30 +473,23 @@ namespace Api.ToMcp.Generator
                 replacement = $"list the controllers that inherit from it, {QuoteAll(derivedNames)}, or their actions{example}";
             }
 
-            return $"{baseClass.Name} is a base class, and an inherited action is matched by the name of the controller that inherits it; {replacement}";
+            return $"{baseClassName} is a base class, and an inherited action is matched by the name of the controller that inherits it; {replacement}";
         }
 
         /// <summary>
-        /// The classes a controller inherits actions from, nearest first, up to the framework's <c>ControllerBase</c>.
+        /// The index in the controller's base classes, nearest first, of the one the entry's controller part names, with or
+        /// without the <c>Controller</c> suffix, or -1 when it names none.
         /// </summary>
-        private static IEnumerable<INamedTypeSymbol> GetBaseClasses(ControllerInfoModel controller, Compilation compilation)
+        private static int IndexOfBaseClass(ControllerInfoModel controller, string controllerPart)
         {
-            // The pipeline's models hold no symbols, so the controller is found again by name: a public, top-level,
-            // non-generic class of the project, as the scanner requires.
-            var type = compilation
-                .GetSymbolsWithName(controller.Name, SymbolFilter.Type)
-                .OfType<INamedTypeSymbol>()
-                .FirstOrDefault(x => x.ContainingType == null &&
-                    !x.IsGenericType &&
-                    (x.ContainingNamespace?.ToDisplayString() ?? "") == controller.Namespace);
+            for (var i = 0; i < controller.BaseClasses.Length; i++)
+            {
+                var name = controller.BaseClasses[i].Name;
+                if (name == controllerPart || RemoveControllerSuffix(name) == controllerPart)
+                    return i;
+            }
 
-            return type?.BaseType == null ? Enumerable.Empty<INamedTypeSymbol>() : GetSelfAndBaseClasses(type.BaseType);
-        }
-
-        private static IEnumerable<INamedTypeSymbol> GetSelfAndBaseClasses(INamedTypeSymbol type)
-        {
-            for (var current = type; current != null && !ActionMethodAnalyzer.IsFrameworkBaseType(current); current = current.BaseType)
-                yield return current;
+            return -1;
         }
 
         /// <summary>

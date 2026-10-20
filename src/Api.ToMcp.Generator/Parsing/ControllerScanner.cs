@@ -44,8 +44,28 @@ namespace Api.ToMcp.Generator.Parsing
                 RoutePrefix = routePrefix,
                 HasMcpExposeAttribute = hasMcpExpose,
                 HasMcpIgnoreAttribute = hasMcpIgnore,
-                Actions = actions
+                Actions = actions,
+                BaseClasses = GetBaseClasses(namedType)
             };
+        }
+
+        /// <summary>
+        /// The classes the controller inherits actions from, nearest first, up to the framework's <c>ControllerBase</c>, whose
+        /// own methods are never actions.
+        /// </summary>
+        private static ImmutableArray<BaseClassModel> GetBaseClasses(INamedTypeSymbol controller)
+        {
+            var baseClasses = ImmutableArray.CreateBuilder<BaseClassModel>();
+            for (var type = controller.BaseType; type != null && !ActionMethodAnalyzer.IsFrameworkBaseType(type); type = type.BaseType)
+            {
+                baseClasses.Add(new BaseClassModel
+                {
+                    Name = type.Name,
+                    MethodNames = type.GetMembers().OfType<IMethodSymbol>().Select(x => x.Name).Distinct(StringComparer.Ordinal).ToImmutableArray()
+                });
+            }
+
+            return baseClasses.ToImmutable();
         }
 
         /// <summary>

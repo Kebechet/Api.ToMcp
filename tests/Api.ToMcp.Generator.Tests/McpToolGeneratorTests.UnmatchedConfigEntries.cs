@@ -137,6 +137,50 @@ namespace TestApi
     }
 
     [Theory]
+    [InlineData("Crud", "CrudController", "Create")]
+    [InlineData("Read", "ReadController", "GetAll")]
+    public void Generator_WarnsAtAnEntryThatNamesABaseController_WithAnActionInheritedFromItOrItsBases(
+        string entry,
+        string baseClass,
+        string exampleAction)
+    {
+        // The example is the controller's first action declared by the base the entry names or a class it derives from:
+        // Count is the controller's own, Create is CrudController's, and GetAll is ReadController's.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class ReadController<T> : ControllerBase where T : class, new()
+    {
+        [HttpGet]
+        public ActionResult<List<T>> GetAll() => new List<T>();
+    }
+
+    public abstract class CrudController<T> : ReadController<T> where T : class, new()
+    {
+        [HttpPost]
+        public ActionResult<T> Create([FromBody] T item) => item;
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CrudController<Product>
+    {
+        [HttpGet(""count"")]
+        public ActionResult<int> Count() => 0;
+    }
+}
+";
+        var config = $@"{{ ""mode"": ""AllExceptExcluded"", ""exclude"": [""{entry}""] }}";
+
+        var diagnostic = Assert.Single(GetGeneratorDiagnostics(source, config));
+
+        Assert.Equal(UnmatchedConfigEntryId, diagnostic.Id);
+        Assert.Equal(
+            $"The exclude entry '{entry}' {NamesNothing}, so it excludes nothing: {baseClass} is a base class, and an inherited action is matched by the name of the controller that inherits it; list the controllers that inherit from it, 'Products', or their actions, such as 'Products.{exampleAction}'",
+            diagnostic.GetMessage());
+    }
+
+    [Theory]
     [InlineData("ProductsController")]
     [InlineData("Products")]
     [InlineData("ProductsController.GetById")]
