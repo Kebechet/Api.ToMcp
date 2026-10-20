@@ -13,6 +13,18 @@ namespace Api.ToMcp.Generator.Models
         public SelectionModeModel Mode { get; set; } = SelectionModeModel.SelectedOnly;
         public ImmutableArray<string> Include { get; set; } = ImmutableArray<string>.Empty;
         public ImmutableArray<string> Exclude { get; set; } = ImmutableArray<string>.Empty;
+
+        /// <summary>
+        /// Where each entry of <see cref="Include"/>, at the same index, is written in the file: the span of its string,
+        /// or an empty span at the file's start when the parser cannot place it. Empty when the list is.
+        /// </summary>
+        public ImmutableArray<LinePositionSpan> IncludeSpans { get; set; } = ImmutableArray<LinePositionSpan>.Empty;
+
+        /// <summary>
+        /// Where each entry of <see cref="Exclude"/> is written in the file, as <see cref="IncludeSpans"/> are.
+        /// </summary>
+        public ImmutableArray<LinePositionSpan> ExcludeSpans { get; set; } = ImmutableArray<LinePositionSpan>.Empty;
+
         public NamingConfigModel Naming { get; set; } = new NamingConfigModel();
         public bool StructuredOutput { get; set; } = true;
 

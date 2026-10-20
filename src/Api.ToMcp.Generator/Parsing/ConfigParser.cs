@@ -45,13 +45,17 @@ namespace Api.ToMcp.Generator.Parsing
                     return CreateDefaultConfig(NullFileReason, default);
 
                 var mode = ParseMode(dto.Mode);
+                var include = dto.Include != null ? dto.Include.ToImmutableArray() : ImmutableArray<string>.Empty;
+                var exclude = dto.Exclude != null ? dto.Exclude.ToImmutableArray() : ImmutableArray<string>.Empty;
 
                 return new GeneratorConfigModel
                 {
                     SchemaVersion = dto.SchemaVersion,
                     Mode = mode ?? SelectionModeModel.SelectedOnly,
-                    Include = dto.Include != null ? dto.Include.ToImmutableArray() : ImmutableArray<string>.Empty,
-                    Exclude = dto.Exclude != null ? dto.Exclude.ToImmutableArray() : ImmutableArray<string>.Empty,
+                    Include = include,
+                    Exclude = exclude,
+                    IncludeSpans = FindEntrySpans(json, nameof(ConfigDto.Include), include),
+                    ExcludeSpans = FindEntrySpans(json, nameof(ConfigDto.Exclude), exclude),
                     Naming = new NamingConfigModel
                     {
                         ToolNameFormat = dto.Naming?.ToolNameFormat ?? "{Controller}_{Action}",
@@ -113,16 +117,8 @@ namespace Api.ToMcp.Generator.Parsing
             {
                 while (reader.Read())
                 {
-                    if (reader.TokenType == JsonTokenType.PropertyName &&
-                        reader.CurrentDepth == 1 &&
-                        string.Equals(reader.GetString(), nameof(ConfigDto.Mode), StringComparison.OrdinalIgnoreCase) &&
-                        reader.Read())
-                    {
-                        var textBefore = Encoding.UTF8.GetString(utf8, 0, (int)reader.TokenStartIndex);
-                        var lineStart = textBefore.LastIndexOf('\n') + 1;
-
-                        return new LinePosition(textBefore.Count(x => x == '\n'), textBefore.Length - lineStart);
-                    }
+                    if (IsTopLevelProperty(ref reader, nameof(ConfigDto.Mode)) && reader.Read())
+                        return GetLinePosition(utf8, reader.TokenStartIndex);
                 }
             }
             catch (JsonException)
@@ -130,6 +126,68 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return default;
+        }
+
+        /// <summary>
+        /// Where each of the entries is written in the top-level list property, at the same index: the span of its
+        /// string, quotes included. Read from the file's last list of that name whose values equal the entries, as a
+        /// file may repeat the property; when no list does, each span is empty and at the file's start.
+        /// </summary>
+        private static ImmutableArray<LinePositionSpan> FindEntrySpans(string json, string propertyName, ImmutableArray<string> entries)
+        {
+            if (entries.IsEmpty)
+                return ImmutableArray<LinePositionSpan>.Empty;
+
+            var utf8 = Encoding.UTF8.GetBytes(json);
+            var reader = new Utf8JsonReader(utf8, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Skip });
+            var found = ImmutableArray.Create(new LinePositionSpan[entries.Length]);
+
+            try
+            {
+                while (reader.Read())
+                {
+                    if (!IsTopLevelProperty(ref reader, propertyName) || !reader.Read() || reader.TokenType != JsonTokenType.StartArray)
+                        continue;
+
+                    var values = new List<string?>();
+                    var spans = ImmutableArray.CreateBuilder<LinePositionSpan>();
+                    while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                    {
+                        var isString = reader.TokenType == JsonTokenType.String;
+                        // ValueSpan leaves out a string's quotes.
+                        var end = reader.TokenStartIndex + reader.ValueSpan.Length + (isString ? 2 : 0);
+
+                        values.Add(isString ? reader.GetString() : null);
+                        spans.Add(new LinePositionSpan(GetLinePosition(utf8, reader.TokenStartIndex), GetLinePosition(utf8, end)));
+                    }
+
+                    if (values.SequenceEqual(entries, StringComparer.Ordinal))
+                        found = spans.ToImmutable();
+                }
+            }
+            catch (JsonException)
+            {
+            }
+
+            return found;
+        }
+
+        private static bool IsTopLevelProperty(ref Utf8JsonReader reader, string propertyName)
+        {
+            return reader.TokenType == JsonTokenType.PropertyName &&
+                reader.CurrentDepth == 1 &&
+                string.Equals(reader.GetString(), propertyName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The line and character column of a UTF-8 byte offset into the file.
+        /// </summary>
+        private static LinePosition GetLinePosition(byte[] utf8, long byteOffset)
+        {
+            var textBefore = Encoding.UTF8.GetString(utf8, 0, (int)byteOffset);
+            var lineStart = textBefore.LastIndexOf('\n') + 1;
+
+            return new LinePosition(textBefore.Count(x => x == '\n'), textBefore.Length - lineStart);
         }
 
         private static GeneratorConfigModel CreateDefaultConfig(string reason, LinePosition position)

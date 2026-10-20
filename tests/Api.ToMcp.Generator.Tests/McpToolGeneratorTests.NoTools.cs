@@ -61,13 +61,14 @@ namespace TestApi
         // Matching is case-sensitive, so a wrongly cased action name selects nothing, just like a misspelled controller.
         const string config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""Prodcts"", ""ProductsController.getById""] }";
 
-        var diagnostic = Assert.Single(GetGeneratorDiagnostics(Usings + ProductsController, config));
+        var diagnostics = GetGeneratorDiagnostics(Usings + ProductsController, config);
+        var diagnostic = Assert.Single(diagnostics, x => x.Id == NoToolsGeneratedId);
 
-        Assert.Equal(NoToolsGeneratedId, diagnostic.Id);
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
         Assert.Equal(
             "No MCP tools are generated: SelectedOnly mode selects none of the project's HTTP actions. None of the include entries in generator.json ('Prodcts', 'ProductsController.getById') selects an action: entries are case-sensitive controller names such as 'ProductsController' or action names such as 'ProductsController.GetById'.",
             diagnostic.GetMessage());
+        Assert.Equal(2, diagnostics.Count(x => x.Id == UnmatchedConfigEntryId));
     }
 
     [Fact]

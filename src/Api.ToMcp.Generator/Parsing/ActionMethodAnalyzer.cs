@@ -162,7 +162,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
-        private static bool IsFrameworkBaseType(INamedTypeSymbol type)
+        internal static bool IsFrameworkBaseType(INamedTypeSymbol type)
         {
             return type.SpecialType == SpecialType.System_Object ||
                 type.ToDisplayString() is KnownTypeNames.ControllerBase or KnownTypeNames.Controller;
