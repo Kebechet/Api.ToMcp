@@ -458,8 +458,8 @@ namespace Api.ToMcp.Generator.Emitting
             var controller = action.ControllerName;
             var actionName = action.Name;
 
-            if (naming.RemoveControllerSuffix && controller.EndsWith("Controller"))
-                controller = controller.Substring(0, controller.Length - "Controller".Length);
+            if (naming.RemoveControllerSuffix && controller.EndsWith(ConventionNames.ControllerSuffix))
+                controller = controller.Substring(0, controller.Length - ConventionNames.ControllerSuffix.Length);
 
             return naming.ToolNameFormat
                 .Replace("{Controller}", controller)

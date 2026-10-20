@@ -507,7 +507,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static string ReplaceRouteTokens(string route, string controllerName, string actionName)
         {
-            var controllerToken = TrimSuffix(controllerName, "Controller").ToLowerInvariant();
+            var controllerToken = TrimSuffix(controllerName, ConventionNames.ControllerSuffix).ToLowerInvariant();
             var actionToken = actionName.ToLowerInvariant();
 
             // An evaluator inserts the token as text: as a replacement pattern, an [ActionName] holding "$&" would be

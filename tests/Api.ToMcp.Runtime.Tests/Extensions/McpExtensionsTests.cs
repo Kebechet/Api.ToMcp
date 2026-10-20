@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
+using Api.ToMcp.Tests.Shared;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -288,49 +289,5 @@ public class McpExtensionsTests
     private static string ToJson(McpServerTool tool)
     {
         return JsonSerializer.Serialize(tool.ProtocolTool, McpJsonUtilities.DefaultOptions);
-    }
-
-    private sealed class ListLoggerProvider : ILoggerProvider
-    {
-        private readonly List<(LogLevel Level, string Message)> _logs;
-
-        public ListLoggerProvider(List<(LogLevel Level, string Message)> logs)
-        {
-            _logs = logs;
-        }
-
-        public ILogger CreateLogger(string categoryName)
-        {
-            return new ListLogger(_logs);
-        }
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class ListLogger : ILogger
-    {
-        private readonly List<(LogLevel Level, string Message)> _logs;
-
-        public ListLogger(List<(LogLevel Level, string Message)> logs)
-        {
-            _logs = logs;
-        }
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
-        {
-            return null;
-        }
-
-        public bool IsEnabled(LogLevel logLevel)
-        {
-            return true;
-        }
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            _logs.Add((logLevel, formatter(state, exception)));
-        }
     }
 }
