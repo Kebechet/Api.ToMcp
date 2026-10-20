@@ -228,6 +228,27 @@ public partial class McpToolGeneratorTests
         Assert.Contains("AddQueryValue(queryParts, \"filter\", filter);", tool);
     }
 
+    [Theory]
+    [InlineData("[FromRoute] QueryIdFilter q")]
+    [InlineData("RecordRouteId q")]
+    [InlineData("Shipment q")]
+    public void Generator_FillsAPlaceholderFromASameNamedProperty_MvcDoesNotReadFromTheRoute_SoTheToolCompiles(string parameter)
+    {
+        // The URL needs the segment whether or not MVC binds the property from it: [FromRoute] QueryIdFilter.Id it reads
+        // from ?Id=, and the other two types an [ApiController] reads from the body.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"x/{{id}}\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+    }
+
+    [Fact]
+    public void Generator_SendsAQueryPropertyOfAFromRouteParameter_ThatAlsoFillsTheRoute_InTheQuery()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"x/{id}\")] public Task<string> Find([FromRoute] QueryIdFilter q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("AddQueryValue(queryParts, \"Id\", q.Id);", tool);
+    }
+
     [Fact]
     public void Generator_SendsAParameterWithAPropertyReadFromTheRoute_UnderItsOwnNames_WhenAParameterFillsTheRoute()
     {

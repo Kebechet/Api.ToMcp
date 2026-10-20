@@ -147,7 +147,8 @@ namespace Api.ToMcp.Generator.Emitting
                 else
                 {
                     // Else a property: of a [FromRoute] or [FromBody] parameter first, then of one bound from the route,
-                    // query and form values, a [FromRoute] one before an unattributed one.
+                    // query and form values, a [FromRoute] one before an unattributed one. Failing those, any property of
+                    // the placeholder's name fills it, which MVC reads from elsewhere but the URL needs a segment for.
                     var propertySource = parameters
                         .Where(p => p.Source is ParameterSourceModel.Route or ParameterSourceModel.Body)
                         .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => FillsPlaceholder(p, prop, placeholder))))
@@ -155,6 +156,7 @@ namespace Api.ToMcp.Generator.Emitting
                             prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
                         .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
                             prop.Source == ParameterSourceModel.Auto && ReadsRouteValue(prop, placeholder)))))
+                        .Concat(parameters.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => IsNamedBy(prop, placeholder)))))
                         .FirstOrDefault(x => x.Property != null);
 
                     if (propertySource.Property != null)
@@ -287,6 +289,12 @@ namespace Api.ToMcp.Generator.Emitting
         {
             return property.Source is ParameterSourceModel.Auto or ParameterSourceModel.Route &&
                 string.Equals(GetBinderModelName(property), placeholder, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsNamedBy(PropertyInfoModel property, string placeholder)
+        {
+            return string.Equals(GetBinderModelName(property), placeholder, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(property.Name, placeholder, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
