@@ -441,8 +441,14 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 
         using var client = factory.CreateClient();
 
-        Assert.Contains(logs, x => x.Level == LogLevel.Debug && x.Message.Contains("MCP tools"));
-        Assert.Empty(logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
+        List<(LogLevel Level, string Message)> entries;
+        lock (logs)
+        {
+            entries = logs.ToList();
+        }
+
+        Assert.Contains(entries, x => x.Level == LogLevel.Debug && x.Message.Contains("MCP tools"));
+        Assert.Empty(entries.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
     }
 
     private static JsonElement GetOutputSchema(IList<McpClientTool> tools, string toolName)
