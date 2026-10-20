@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -16,7 +17,8 @@ namespace Api.ToMcp.Generator.Parsing
     /// <c>IRouteTemplateProvider</c> and <c>IActionHttpMethodProvider</c>, so an app's own attribute counts as well as
     /// MVC's <c>[Route]</c>, <c>[Http*]</c> and <c>[AcceptVerbs]</c>. MVC instantiates the attribute and asks it; the
     /// generator follows its constructor down to the MVC attribute it derives from, or reads the properties of one that
-    /// implements the interfaces itself, as far as their code passes on constants and constructor parameters.
+    /// implements the interfaces itself, as far as their code passes on constants and constructor parameters, and strings
+    /// joined from them. A value it cannot work out carries the reason, for MCP009's message.
     /// </summary>
     internal static class RouteAttributeReader
     {
@@ -42,9 +44,9 @@ namespace Api.ToMcp.Generator.Parsing
         };
 
         /// <summary>
-        /// A value the generator cannot work out, as distinct from <c>null</c>.
+        /// The value of a constructor parameter no argument is passed for, which the compiler does not allow.
         /// </summary>
-        private static readonly object Unknown = new object();
+        private static readonly UnknownValue NoArgument = new UnknownValue("the generator finds no argument for a parameter of its constructor");
 
         /// <summary>
         /// Whether MVC reads a route template from the attribute. MVC's own attributes are also matched by their names, as
@@ -78,18 +80,21 @@ namespace Api.ToMcp.Generator.Parsing
                 ? ReadThroughConstructors(attribute, compilation, ct)
                 : ReadThroughProperties(attributeClass, isRouteTemplateProvider, isHttpMethodProvider, compilation, ct);
 
-            var isTemplateKnown = !isRouteTemplateProvider || template != Unknown;
+            var templateProblem = isRouteTemplateProvider ? (template as UnknownValue)?.Reason : null;
             var methods = ToHttpMethods(httpMethods);
+            var httpMethodsProblem = !isHttpMethodProvider || methods != null
+                ? null
+                : (httpMethods as UnknownValue)?.Reason ?? "it gives no list of method names";
 
             return new RouteAttributeInfo(
                 GetDisplayName(attributeClass),
                 isRouteTemplateProvider,
                 isHttpMethodProvider,
-                isTemplateKnown,
-                isTemplateKnown ? template as string : null,
+                templateProblem,
+                templateProblem is null ? template as string : null,
                 // MVC gives such an attribute a route of its own (a selector) when it sets a template, a name or an order.
-                isRouteTemplateProvider && (!isTemplateKnown || template != null || name != null || order != null),
-                !isHttpMethodProvider || methods != null,
+                isRouteTemplateProvider && (templateProblem != null || template != null || name != null || order != null),
+                httpMethodsProblem,
                 methods ?? new List<string>());
         }
 
@@ -145,17 +150,24 @@ namespace Api.ToMcp.Generator.Parsing
                     return (route, GetArgument(arguments, 0), name, order);
                 }
 
-                (constructor, arguments) = ReadBaseConstructorCall(current, arguments, compilation, ct);
+                UnknownValue? failure;
+                (constructor, arguments, failure) = ReadBaseConstructorCall(current, arguments, compilation, ct);
+                if (failure != null)
+                {
+                    return (failure, failure, name, order);
+                }
             }
 
-            return (Unknown, Unknown, name, order);
+            var tooLong = new UnknownValue("its constructors call each other further than the generator follows them");
+            return (tooLong, tooLong, name, order);
         }
 
         /// <summary>
-        /// The constructor the constructor calls, <c>base(...)</c> or <c>this(...)</c>, with the values it passes. Unknown
-        /// for a constructor without source, as of a referenced assembly, whose body metadata does not hold.
+        /// The constructor the constructor calls, <c>base(...)</c> or <c>this(...)</c>, with the values it passes, or why
+        /// the generator cannot tell, as for a constructor without source, of a referenced assembly, whose body metadata
+        /// does not hold.
         /// </summary>
-        private static (IMethodSymbol? Constructor, object?[] Arguments) ReadBaseConstructorCall(
+        private static (IMethodSymbol? Constructor, object?[] Arguments, UnknownValue? Failure) ReadBaseConstructorCall(
             IMethodSymbol constructor,
             object?[] arguments,
             Compilation compilation,
@@ -163,9 +175,14 @@ namespace Api.ToMcp.Generator.Parsing
         {
             if (constructor.DeclaringSyntaxReferences.IsEmpty)
             {
-                return constructor.IsImplicitlyDeclared && constructor.ContainingType.Locations.Any(x => x.IsInSource)
-                    ? GetImplicitBaseConstructorCall(constructor)
-                    : (null, Array.Empty<object?>());
+                if (constructor.IsImplicitlyDeclared && constructor.ContainingType.Locations.Any(x => x.IsInSource))
+                {
+                    var (baseConstructor, baseArguments) = GetImplicitBaseConstructorCall(constructor);
+                    return (baseConstructor, baseArguments, null);
+                }
+
+                return (null, Array.Empty<object?>(), new UnknownValue(
+                    $"the referenced assembly '{constructor.ContainingAssembly?.Name}' holds no code of the constructor of {constructor.ContainingType.Name}"));
             }
 
             var declaration = constructor.DeclaringSyntaxReferences[0].GetSyntax(ct);
@@ -173,7 +190,8 @@ namespace Api.ToMcp.Generator.Parsing
             var initializer = body?.Initializer is IExpressionStatementOperation statement ? statement.Operation : body?.Initializer;
             if (!(initializer is IInvocationOperation call))
             {
-                return (null, Array.Empty<object?>());
+                return (null, Array.Empty<object?>(), new UnknownValue(
+                    $"the generator finds no constructor call in the constructor of {constructor.ContainingType.Name}"));
             }
 
             var parameterValues = new Dictionary<IParameterSymbol, object?>(SymbolEqualityComparer.Default);
@@ -182,13 +200,13 @@ namespace Api.ToMcp.Generator.Parsing
                 parameterValues[constructor.Parameters[i]] = GetArgument(arguments, i);
             }
 
-            var calledArguments = Enumerable.Repeat<object?>(Unknown, call.TargetMethod.Parameters.Length).ToArray();
+            var calledArguments = Enumerable.Repeat<object?>(NoArgument, call.TargetMethod.Parameters.Length).ToArray();
             foreach (var argument in call.Arguments.Where(x => x.Parameter != null))
             {
                 calledArguments[argument.Parameter!.Ordinal] = Evaluate(argument.Value, parameterValues);
             }
 
-            return (call.TargetMethod, calledArguments);
+            return (call.TargetMethod, calledArguments, null);
         }
 
         /// <summary>
@@ -251,7 +269,9 @@ namespace Api.ToMcp.Generator.Parsing
                 .FirstOrDefault();
             var property = interfaceProperty is null ? null : attributeClass.FindImplementationForInterfaceMember(interfaceProperty) as IPropertySymbol;
 
-            return property is null ? Unknown : ReadPropertyValue(property, compilation, ct);
+            return property is null
+                ? new UnknownValue($"the generator finds no {propertyName} property of {attributeClass.Name}")
+                : ReadPropertyValue(property, compilation, ct);
         }
 
         /// <summary>
@@ -260,9 +280,12 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static object? ReadPropertyValue(IPropertySymbol property, Compilation compilation, CancellationToken ct)
         {
+            var propertyName = $"{property.ContainingType.Name}.{property.Name}";
             if (!(property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax declaration))
             {
-                return Unknown;
+                return new UnknownValue(property.Locations.Any(x => x.IsInSource)
+                    ? $"the generator cannot read {propertyName}"
+                    : $"the referenced assembly '{property.ContainingAssembly?.Name}' holds no code of {propertyName}");
             }
 
             var getter = declaration.AccessorList?.Accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.GetAccessorDeclaration));
@@ -273,17 +296,19 @@ namespace Api.ToMcp.Generator.Parsing
 
             if (returnedExpression is null)
             {
-                return Unknown;
+                return new UnknownValue($"{propertyName} returns it from more than one expression, of which the generator reads only one");
             }
 
             var operation = compilation.GetSemanticModel(declaration.SyntaxTree).GetOperation(returnedExpression, ct);
 
-            return operation is null ? Unknown : Evaluate(operation, new Dictionary<IParameterSymbol, object?>(SymbolEqualityComparer.Default));
+            return operation is null
+                ? new UnknownValue($"the generator cannot read {propertyName}")
+                : Evaluate(operation, new Dictionary<IParameterSymbol, object?>(SymbolEqualityComparer.Default));
         }
 
         /// <summary>
         /// The value of an expression made of constants, the calling constructor's parameters, string concatenation and
-        /// interpolation, and arrays of those; anything else is <see cref="Unknown"/>.
+        /// interpolation, and arrays of those; anything else is an <see cref="UnknownValue"/>.
         /// </summary>
         private static object? Evaluate(IOperation operation, Dictionary<IParameterSymbol, object?> parameterValues)
         {
@@ -294,28 +319,26 @@ namespace Api.ToMcp.Generator.Parsing
 
             switch (operation)
             {
-                case IParameterReferenceOperation parameterReference:
-                    return parameterValues.TryGetValue(parameterReference.Parameter, out var value) ? value : Unknown;
+                case IParameterReferenceOperation parameterReference when parameterValues.TryGetValue(parameterReference.Parameter, out var value):
+                    return value;
 
                 case IConversionOperation conversion when !conversion.Conversion.IsUserDefined:
                     return Evaluate(conversion.Operand, parameterValues);
 
                 case IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } addition when addition.Type?.SpecialType == SpecialType.System_String:
-                    var left = Evaluate(addition.LeftOperand, parameterValues);
-                    var right = Evaluate(addition.RightOperand, parameterValues);
-                    return left is string or null && right is string or null
-                        ? (string?)left + (string?)right
-                        : Unknown;
+                    var left = ToText(addition.LeftOperand, parameterValues);
+                    var right = ToText(addition.RightOperand, parameterValues);
+                    return left as UnknownValue ?? right as UnknownValue ?? (object)((string)left! + (string)right!);
 
                 case IInterpolatedStringOperation interpolatedString:
                     return EvaluateInterpolatedString(interpolatedString, parameterValues);
 
                 case IArrayCreationOperation { Initializer: { } initializer }:
                     var elements = initializer.ElementValues.Select(x => Evaluate(x, parameterValues)).ToArray();
-                    return elements.Any(x => x == Unknown) ? Unknown : elements;
+                    return elements.OfType<UnknownValue>().FirstOrDefault() ?? (object)elements;
 
                 default:
-                    return Unknown;
+                    return new UnknownValue($"it is computed by '{GetText(operation)}', which the generator cannot evaluate");
             }
         }
 
@@ -326,20 +349,75 @@ namespace Api.ToMcp.Generator.Parsing
             {
                 var value = part switch
                 {
-                    IInterpolatedStringTextOperation literal => Evaluate(literal.Text, parameterValues),
-                    IInterpolationOperation { Alignment: null, FormatString: null } interpolation => Evaluate(interpolation.Expression, parameterValues),
-                    _ => Unknown
+                    IInterpolatedStringTextOperation literal => ToText(literal.Text, parameterValues),
+                    IInterpolationOperation { Alignment: null, FormatString: null } interpolation => ToText(interpolation.Expression, parameterValues),
+                    _ => new UnknownValue($"it is computed by '{GetText(part)}', which the generator cannot evaluate")
                 };
 
-                if (!(value is string or null))
+                if (value is UnknownValue)
                 {
-                    return Unknown;
+                    return value;
                 }
 
-                text.Append((string?)value);
+                text.Append((string)value);
             }
 
             return text.ToString();
+        }
+
+        /// <summary>
+        /// The text C# makes of an operand of string concatenation or interpolation, as far as it is the same in every
+        /// culture. C# writes a number with the culture the app runs under, so the generator writes only an integer that
+        /// is not negative, whose digits no culture changes; a negative one takes the culture's minus sign, and a
+        /// fraction its decimal separator. <c>bool</c> and <c>char</c> are written alike everywhere.
+        /// </summary>
+        private static object ToText(IOperation operand, Dictionary<IParameterSymbol, object?> parameterValues)
+        {
+            var value = Evaluate(operand, parameterValues);
+            switch (value)
+            {
+                case UnknownValue:
+                    return value;
+                case null:
+                    return "";
+                case string text:
+                    return text;
+                case char character:
+                    return character.ToString();
+                case bool boolean:
+                    return boolean ? bool.TrueString : bool.FalseString;
+                case sbyte or byte or short or ushort or int or uint or long or ulong:
+                    return Convert.ToDecimal(value, CultureInfo.InvariantCulture) >= 0
+                        ? Convert.ToString(value, CultureInfo.InvariantCulture)!
+                        : new UnknownValue($"it is computed from '{GetText(operand)}', a negative number, which C# writes with the minus sign of the culture the app runs under");
+                case float or double or decimal:
+                    return new UnknownValue($"it is computed from '{GetText(operand)}', a {GetTypeName(operand)}, which C# writes in the culture the app runs under");
+                default:
+                    return new UnknownValue($"it is computed from '{GetText(operand)}', which the generator cannot write as text");
+            }
+        }
+
+        /// <summary>
+        /// The source of an operation, without the conversions the compiler adds around it.
+        /// </summary>
+        private static string GetText(IOperation operation)
+        {
+            while (operation is IConversionOperation { IsImplicit: true } conversion)
+            {
+                operation = conversion.Operand;
+            }
+
+            return operation.Syntax.ToString();
+        }
+
+        private static string GetTypeName(IOperation operation)
+        {
+            while (operation is IConversionOperation { IsImplicit: true } conversion)
+            {
+                operation = conversion.Operand;
+            }
+
+            return operation.Type?.ToDisplayString() ?? "";
         }
 
         private static object? ToValue(TypedConstant constant)
@@ -347,14 +425,28 @@ namespace Api.ToMcp.Generator.Parsing
             return constant.Kind switch
             {
                 TypedConstantKind.Array => constant.IsNull ? null : constant.Values.Select(ToValue).ToArray(),
-                TypedConstantKind.Error => Unknown,
+                TypedConstantKind.Error => new UnknownValue("an argument of the attribute does not compile"),
                 _ => constant.Value
             };
         }
 
         private static object? GetArgument(object?[] arguments, int index)
         {
-            return index < arguments.Length ? arguments[index] : Unknown;
+            return index < arguments.Length ? arguments[index] : NoArgument;
+        }
+
+        /// <summary>
+        /// A value the generator cannot work out, as distinct from <c>null</c>, with the reason, as the clause that ends
+        /// MCP009's "the generator cannot read the route template of its [...] attribute, as ...".
+        /// </summary>
+        private sealed class UnknownValue
+        {
+            public UnknownValue(string reason)
+            {
+                Reason = reason;
+            }
+
+            public string Reason { get; }
         }
 
         /// <summary>
@@ -394,19 +486,19 @@ namespace Api.ToMcp.Generator.Parsing
             string displayName,
             bool isRouteTemplateProvider,
             bool isHttpMethodProvider,
-            bool isTemplateKnown,
+            string? templateProblem,
             string? template,
             bool definesRoute,
-            bool areHttpMethodsKnown,
+            string? httpMethodsProblem,
             IReadOnlyList<string> httpMethods)
         {
             DisplayName = displayName;
             IsRouteTemplateProvider = isRouteTemplateProvider;
             IsHttpMethodProvider = isHttpMethodProvider;
-            IsTemplateKnown = isTemplateKnown;
+            TemplateProblem = templateProblem;
             Template = template;
             DefinesRoute = definesRoute;
-            AreHttpMethodsKnown = areHttpMethodsKnown;
+            HttpMethodsProblem = httpMethodsProblem;
             HttpMethods = httpMethods;
         }
 
@@ -417,7 +509,14 @@ namespace Api.ToMcp.Generator.Parsing
 
         public bool IsRouteTemplateProvider { get; }
         public bool IsHttpMethodProvider { get; }
-        public bool IsTemplateKnown { get; }
+
+        /// <summary>
+        /// Why the generator cannot read the template, as the clause that ends MCP009's "the generator cannot read the
+        /// route template of its [...] attribute, as ...", or null when it can.
+        /// </summary>
+        public string? TemplateProblem { get; }
+
+        public bool IsTemplateKnown => TemplateProblem is null;
         public string? Template { get; }
 
         /// <summary>
@@ -426,7 +525,12 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         public bool DefinesRoute { get; }
 
-        public bool AreHttpMethodsKnown { get; }
+        /// <summary>
+        /// Why the generator cannot read the HTTP methods, as <see cref="TemplateProblem"/> says it of the template.
+        /// </summary>
+        public string? HttpMethodsProblem { get; }
+
+        public bool AreHttpMethodsKnown => HttpMethodsProblem is null;
         public IReadOnlyList<string> HttpMethods { get; }
     }
 }

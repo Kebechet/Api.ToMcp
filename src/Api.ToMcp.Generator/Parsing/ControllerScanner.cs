@@ -152,7 +152,7 @@ namespace Api.ToMcp.Generator.Parsing
                     .FirstOrDefault(x => x.DefinesRoute);
 
                 return route is { IsTemplateKnown: false }
-                    ? (null, $"the route template of the [{route.DisplayName}] attribute on {type.Name} is set in code the generator cannot read, such as a constructor in a referenced assembly")
+                    ? (null, $"the generator cannot read the route template of the [{route.DisplayName}] attribute on {type.Name}, as {route.TemplateProblem}")
                     : (route?.Template, null);
             }
 

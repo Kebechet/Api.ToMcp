@@ -250,7 +250,7 @@ namespace Api.ToMcp.Generator.Parsing
             {
                 if (route is { IsTemplateKnown: false })
                 {
-                    problem ??= $"the route template of its [{route.DisplayName}] attribute is set in code the generator cannot read, such as a constructor in a referenced assembly";
+                    problem ??= $"the generator cannot read the route template of its [{route.DisplayName}] attribute, as {route.TemplateProblem}";
                     continue;
                 }
 
@@ -264,7 +264,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var unreadable = httpMethodProviders.FirstOrDefault(x => !x.AreHttpMethodsKnown);
                 if (unreadable != null)
                 {
-                    problem ??= $"the HTTP methods of its [{unreadable.DisplayName}] attribute are set in code the generator cannot read, such as a constructor in a referenced assembly";
+                    problem ??= $"the generator cannot read the HTTP methods of its [{unreadable.DisplayName}] attribute, as {unreadable.HttpMethodsProblem}";
                 }
             }
 

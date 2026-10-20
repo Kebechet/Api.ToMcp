@@ -209,6 +209,20 @@ namespace TestApi
         }
     }
 
+    public sealed class EchoVersionRouteAttribute : RouteAttribute
+    {
+        public EchoVersionRouteAttribute(int version) : base($""v{version}/[controller]"")
+        {
+        }
+    }
+
+    [EchoVersionRoute(2)]
+    public class VersionedEchoController : ControllerBase
+    {
+        [HttpGet(""ping"")]
+        public object Ping() => new { path = Request.Path.Value };
+    }
+
     public sealed class EchoDocsRouteAttribute : Attribute, Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider
     {
         public string Template => ""docs/{slug}"";
@@ -317,6 +331,7 @@ namespace TestApi
     [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
     [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
     [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
+    [InlineData("VersionedEchoController_PingTool", @"{}", @"{""path"":""/v2/versionedecho/ping""}")]
     [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]

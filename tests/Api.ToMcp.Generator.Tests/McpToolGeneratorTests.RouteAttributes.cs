@@ -34,6 +34,34 @@ namespace TestApi
 
     public class SectionRouteAttribute(string section) : RouteAttribute($""sections/{section}"");
 
+    public sealed class NumberedRouteAttribute : RouteAttribute
+    {
+        public NumberedRouteAttribute(int version) : base(""api/v"" + version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class InterpolatedRouteAttribute : RouteAttribute
+    {
+        public InterpolatedRouteAttribute(long version, char separator) : base($""api/v{version}{separator}{true}/[controller]"")
+        {
+        }
+    }
+
+    public sealed class PaddedRouteAttribute : RouteAttribute
+    {
+        public PaddedRouteAttribute(int version) : base(""api/v"" + version.ToString(""D2"") + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class RatioRouteAttribute : RouteAttribute
+    {
+        public RatioRouteAttribute(double ratio) : base($""api/r{ratio}/[controller]"")
+        {
+        }
+    }
+
     public sealed class GetByIdAttribute : HttpGetAttribute
     {
         public GetByIdAttribute() : base(""{id}"")
@@ -106,6 +134,8 @@ namespace TestApi
     [InlineData("[SectionRoute(\"orders\")] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/sections/orders")]
     [InlineData("[DocsRoute] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/docs/orders")]
     [InlineData("[ApiRoute] public abstract class ApiControllerBase : ControllerBase { } public class OrdersController : ApiControllerBase", "OrdersController_FindTool", "/api/orders")]
+    [InlineData("[NumberedRoute(2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v2/orders")]
+    [InlineData("[InterpolatedRoute(5000000000, '-')] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v5000000000-True/orders")]
     public void Generator_ReadsAControllersRoute_FromAnyAttributeMvcReadsItFrom(string controllerDeclaration, string toolClassName, string expectedRoute)
     {
         var tool = GenerateCompilingRouteAttributeTool(controllerDeclaration, "[HttpGet] public IActionResult Find() => Ok();", toolClassName);
@@ -134,6 +164,30 @@ namespace TestApi
 ";
         Assert.DoesNotContain("ProductsController_FindTool", RunGenerator(source, AllExceptExcludedConfig));
         Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
+    }
+
+    [Theory]
+    [InlineData("[PaddedRoute(2)]", "the generator cannot read the route template of the [PaddedRoute] attribute on OrdersController, as it is computed by 'version.ToString(\"D2\")', which the generator cannot evaluate")]
+    [InlineData("[RatioRoute(1.5)]", "the generator cannot read the route template of the [RatioRoute] attribute on OrdersController, as it is computed from 'ratio', a double, which C# writes in the culture the app runs under")]
+    [InlineData("[NumberedRoute(-1)]", "the generator cannot read the route template of the [NumberedRoute] attribute on OrdersController, as it is computed from 'version', a negative number, which C# writes with the minus sign of the culture the app runs under")]
+    public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttributeInTheProject(string attribute, string reason)
+    {
+        // MVC builds the template when the app starts, in the app's culture, so the generator writes a number only where
+        // every culture writes it alike.
+        var source = RouteAttributeUsings + CustomRouteAttributes + @"
+namespace TestApi
+{
+    " + attribute + @"
+    public class OrdersController : ControllerBase
+    {
+        [HttpGet]
+        public IActionResult Find() => Ok();
+    }
+}
+";
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
+
+        Assert.Equal($"No MCP tool is generated for action 'OrdersController.Find': {reason}", warning.GetMessage());
     }
 
     private const string ReferencedRouteAttributes = @"
@@ -200,11 +254,11 @@ namespace TestApi
         Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
         Assert.Equal(2, warnings.Count);
         Assert.Equal(
-            "No MCP tool is generated for action 'ProductsController.Get': the route template of the [SharedRoute] attribute on ProductsController is set in code the generator cannot read, such as a constructor in a referenced assembly",
+            "No MCP tool is generated for action 'ProductsController.Get': the generator cannot read the route template of the [SharedRoute] attribute on ProductsController, as the referenced assembly 'Shared' holds no code of the constructor of SharedRouteAttribute",
             warnings[0].GetMessage());
         Assert.Equal("Get", GetLocatedText(warnings[0].Location, source));
         Assert.Equal(
-            "No MCP tool is generated for action 'OrdersController.Get': the route template of its [SharedGet] attribute is set in code the generator cannot read, such as a constructor in a referenced assembly",
+            "No MCP tool is generated for action 'OrdersController.Get': the generator cannot read the route template of its [SharedGet] attribute, as the referenced assembly 'Shared' holds no code of the constructor of SharedGetAttribute",
             warnings[1].GetMessage());
         Assert.DoesNotContain("class ProductsController_GetTool", generated);
         Assert.DoesNotContain("class OrdersController_GetTool", generated);
