@@ -314,7 +314,7 @@ namespace Api.ToMcp.Generator.Parsing
         {
             if (operation.ConstantValue.HasValue)
             {
-                return operation.ConstantValue.Value;
+                return ToEnumValue(operation.Type, operation.ConstantValue.Value);
             }
 
             switch (operation)
@@ -322,8 +322,8 @@ namespace Api.ToMcp.Generator.Parsing
                 case IParameterReferenceOperation parameterReference when parameterValues.TryGetValue(parameterReference.Parameter, out var value):
                     return value;
 
-                case IConversionOperation conversion when !conversion.Conversion.IsUserDefined:
-                    return Evaluate(conversion.Operand, parameterValues);
+                case IConversionOperation conversion:
+                    return EvaluateConversion(conversion, parameterValues);
 
                 case IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } addition when addition.Type?.SpecialType == SpecialType.System_String:
                     var left = ToText(addition.LeftOperand, parameterValues);
@@ -340,6 +340,55 @@ namespace Api.ToMcp.Generator.Parsing
                 default:
                     return new UnknownValue($"it is computed by '{GetText(operation)}', which the generator cannot evaluate");
             }
+        }
+
+        /// <summary>
+        /// The value a conversion that keeps it gives: an identity, boxing, unboxing or reference one, an implicit nullable
+        /// one, and an implicit numeric one to an integer, which keeps the number, a char's code included. Any other, such
+        /// as <c>(byte)version</c> or <c>(char)code</c>, changes the value, and with it the text C# writes.
+        /// </summary>
+        private static object? EvaluateConversion(IConversionOperation conversion, Dictionary<IParameterSymbol, object?> parameterValues)
+        {
+            var kind = conversion.GetConversion();
+            var target = conversion.Type;
+            var isInteger = target != null && IsInteger(target.SpecialType);
+
+            if (!(kind.IsIdentity || kind.IsBoxing || kind.IsUnboxing || kind.IsReference || (kind.IsImplicit && kind.IsNullable) ||
+                (kind.IsImplicit && kind.IsNumeric && isInteger)))
+            {
+                return new UnknownValue($"it is computed by '{GetText(conversion)}', which the generator cannot evaluate");
+            }
+
+            var value = Evaluate(conversion.Operand, parameterValues);
+
+            // An integer type takes a char's code and an enum's number; any other target, object say, keeps the enum.
+            return value switch
+            {
+                char character when isInteger => (int)character,
+                EnumValue enumValue when isInteger => enumValue.Value,
+                _ => value
+            };
+        }
+
+        private static bool IsInteger(SpecialType type)
+        {
+            return type is SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or SpecialType.System_UInt16 or
+                SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64;
+        }
+
+        /// <summary>
+        /// A constant of an enum type, which Roslyn gives as its underlying number, as an <see cref="EnumValue"/>.
+        /// </summary>
+        private static object? ToEnumValue(ITypeSymbol? type, object? value)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            return type is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType && value != null
+                ? new EnumValue(enumType, value)
+                : value;
         }
 
         private static object? EvaluateInterpolatedString(IInterpolatedStringOperation interpolatedString, Dictionary<IParameterSymbol, object?> parameterValues)
@@ -369,7 +418,9 @@ namespace Api.ToMcp.Generator.Parsing
         /// The text C# makes of an operand of string concatenation or interpolation, as far as it is the same in every
         /// culture. C# writes a number with the culture the app runs under, so the generator writes only an integer that
         /// is not negative, whose digits no culture changes; a negative one takes the culture's minus sign, and a
-        /// fraction its decimal separator. <c>bool</c> and <c>char</c> are written alike everywhere.
+        /// fraction its decimal separator. <c>bool</c> and <c>char</c> are written alike everywhere, and an enum value as
+        /// the name of its member, where exactly one member has it: C# writes a combination of flags as a list of names, a
+        /// value no member has as a number, and of members that share a value one it picks itself.
         /// </summary>
         private static object ToText(IOperation operand, Dictionary<IParameterSymbol, object?> parameterValues)
         {
@@ -378,6 +429,9 @@ namespace Api.ToMcp.Generator.Parsing
             {
                 case UnknownValue:
                     return value;
+                case EnumValue enumValue:
+                    return (object?)enumValue.Name ??
+                        new UnknownValue($"it is computed from '{GetText(operand)}', a value of {enumValue.Type.Name} that no member has alone");
                 case null:
                     return "";
                 case string text:
@@ -426,6 +480,7 @@ namespace Api.ToMcp.Generator.Parsing
             {
                 TypedConstantKind.Array => constant.IsNull ? null : constant.Values.Select(ToValue).ToArray(),
                 TypedConstantKind.Error => new UnknownValue("an argument of the attribute does not compile"),
+                TypedConstantKind.Enum => ToEnumValue(constant.Type, constant.Value),
                 _ => constant.Value
             };
         }
@@ -447,6 +502,37 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             public string Reason { get; }
+        }
+
+        /// <summary>
+        /// A value of an enum type, which Roslyn gives as its underlying number while C# writes it as text by its members.
+        /// </summary>
+        private sealed class EnumValue
+        {
+            public EnumValue(INamedTypeSymbol type, object value)
+            {
+                Type = type;
+                Value = value;
+            }
+
+            public INamedTypeSymbol Type { get; }
+            public object Value { get; }
+
+            /// <summary>
+            /// The name of the one member that has the value, or null when none or several have it.
+            /// </summary>
+            public string? Name
+            {
+                get
+                {
+                    var members = Type.GetMembers()
+                        .OfType<IFieldSymbol>()
+                        .Where(x => x.HasConstantValue && Equals(x.ConstantValue, Value))
+                        .ToList();
+
+                    return members.Count == 1 ? members[0].Name : null;
+                }
+            }
         }
 
         /// <summary>

@@ -225,6 +225,26 @@ namespace TestApi
         }
     }
 
+    public enum EchoVersion
+    {
+        V1 = 1,
+        V2 = 2
+    }
+
+    public sealed class EchoEnumRouteAttribute : RouteAttribute
+    {
+        public EchoEnumRouteAttribute(EchoVersion version) : base($""e/{version}/[controller]"")
+        {
+        }
+    }
+
+    [EchoEnumRoute(EchoVersion.V2)]
+    public class EnumEchoController : ControllerBase
+    {
+        [HttpGet(""ping"")]
+        public object Ping() => new { path = Request.Path.Value };
+    }
+
     [EchoVersionRoute(2)]
     public class VersionedEchoController : ControllerBase
     {
@@ -344,6 +364,7 @@ namespace TestApi
     [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
     [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("VersionedEchoController_PingTool", @"{}", @"{""path"":""/v2/versionedecho/ping""}")]
+    [InlineData("EnumEchoController_PingTool", @"{}", @"{""path"":""/e/V2/enumecho/ping""}")]
     [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]

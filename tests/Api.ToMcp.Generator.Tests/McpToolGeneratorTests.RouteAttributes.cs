@@ -55,6 +55,89 @@ namespace TestApi
         }
     }
 
+    public enum ApiVersion
+    {
+        V1 = 1,
+        V2 = 2
+    }
+
+    [Flags]
+    public enum ApiArea
+    {
+        None = 0,
+        Admin = 1,
+        Public = 2
+    }
+
+    public enum Stage
+    {
+        Beta = 1,
+        Preview = 1
+    }
+
+    public sealed class EnumRouteAttribute : RouteAttribute
+    {
+        public EnumRouteAttribute(ApiVersion version) : base($""api/{version}/[controller]"")
+        {
+        }
+    }
+
+    public sealed class ObjectRouteAttribute : RouteAttribute
+    {
+        public ObjectRouteAttribute(object version) : base(""api/"" + version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class ConstantEnumRouteAttribute : RouteAttribute
+    {
+        public ConstantEnumRouteAttribute() : base(""api/"" + ApiVersion.V2 + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class AreaRouteAttribute : RouteAttribute
+    {
+        public AreaRouteAttribute(ApiArea area) : base($""{area}/[controller]"")
+        {
+        }
+    }
+
+    public sealed class StageRouteAttribute : RouteAttribute
+    {
+        public StageRouteAttribute(Stage stage) : base($""{stage}/[controller]"")
+        {
+        }
+    }
+
+    public sealed class WidenedRouteAttribute : RouteAttribute
+    {
+        public WidenedRouteAttribute(int version) : base(""api/v"" + (long)version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class LetterCodeRouteAttribute : RouteAttribute
+    {
+        public LetterCodeRouteAttribute(char letter) : base(""api/"" + (int)letter + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class NarrowedRouteAttribute : RouteAttribute
+    {
+        public NarrowedRouteAttribute(int version) : base(""api/v"" + (byte)version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class LetterRouteAttribute : RouteAttribute
+    {
+        public LetterRouteAttribute(int code) : base(""api/"" + (char)code + ""/[controller]"")
+        {
+        }
+    }
+
     public sealed class RatioRouteAttribute : RouteAttribute
     {
         public RatioRouteAttribute(double ratio) : base($""api/r{ratio}/[controller]"")
@@ -136,6 +219,12 @@ namespace TestApi
     [InlineData("[ApiRoute] public abstract class ApiControllerBase : ControllerBase { } public class OrdersController : ApiControllerBase", "OrdersController_FindTool", "/api/orders")]
     [InlineData("[NumberedRoute(2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v2/orders")]
     [InlineData("[InterpolatedRoute(5000000000, '-')] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v5000000000-True/orders")]
+    [InlineData("[EnumRoute(ApiVersion.V2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/V2/orders")]
+    [InlineData("[ObjectRoute(ApiVersion.V2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/V2/orders")]
+    [InlineData("[ConstantEnumRoute] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/V2/orders")]
+    [InlineData("[AreaRoute(ApiArea.Admin)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/Admin/orders")]
+    [InlineData("[WidenedRoute(2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v2/orders")]
+    [InlineData("[LetterCodeRoute('A')] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/65/orders")]
     public void Generator_ReadsAControllersRoute_FromAnyAttributeMvcReadsItFrom(string controllerDeclaration, string toolClassName, string expectedRoute)
     {
         var tool = GenerateCompilingRouteAttributeTool(controllerDeclaration, "[HttpGet] public IActionResult Find() => Ok();", toolClassName);
@@ -170,6 +259,11 @@ namespace TestApi
     [InlineData("[PaddedRoute(2)]", "the generator cannot read the route template of the [PaddedRoute] attribute on OrdersController, as it is computed by 'version.ToString(\"D2\")', which the generator cannot evaluate")]
     [InlineData("[RatioRoute(1.5)]", "the generator cannot read the route template of the [RatioRoute] attribute on OrdersController, as it is computed from 'ratio', a double, which C# writes in the culture the app runs under")]
     [InlineData("[NumberedRoute(-1)]", "the generator cannot read the route template of the [NumberedRoute] attribute on OrdersController, as it is computed from 'version', a negative number, which C# writes with the minus sign of the culture the app runs under")]
+    [InlineData("[NarrowedRoute(300)]", "the generator cannot read the route template of the [NarrowedRoute] attribute on OrdersController, as it is computed by '(byte)version', which the generator cannot evaluate")]
+    [InlineData("[LetterRoute(65)]", "the generator cannot read the route template of the [LetterRoute] attribute on OrdersController, as it is computed by '(char)code', which the generator cannot evaluate")]
+    [InlineData("[EnumRoute((ApiVersion)7)]", "the generator cannot read the route template of the [EnumRoute] attribute on OrdersController, as it is computed from 'version', a value of ApiVersion that no member has alone")]
+    [InlineData("[AreaRoute(ApiArea.Admin | ApiArea.Public)]", "the generator cannot read the route template of the [AreaRoute] attribute on OrdersController, as it is computed from 'area', a value of ApiArea that no member has alone")]
+    [InlineData("[StageRoute(Stage.Beta)]", "the generator cannot read the route template of the [StageRoute] attribute on OrdersController, as it is computed from 'stage', a value of Stage that no member has alone")]
     public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttributeInTheProject(string attribute, string reason)
     {
         // MVC builds the template when the app starts, in the app's culture, so the generator writes a number only where
