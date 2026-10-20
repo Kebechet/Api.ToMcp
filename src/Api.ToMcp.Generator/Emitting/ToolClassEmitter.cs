@@ -123,13 +123,16 @@ namespace Api.ToMcp.Generator.Emitting
             // Build mapping from placeholder to source expression
             var placeholderSources = new Dictionary<string, (string expression, string type, bool isNullable, string varName)>();
 
-            // MVC reads a property of a parameter bound from the route, query and form values from the route value of its
-            // name whenever the parameter carries no prefix, whichever parameter fills that route value. Such a property is
-            // sent only in the route, and the other properties of its parameter under their own names.
+            // Of a parameter bound from the route, query and form values, MVC reads a [FromRoute] property only from the
+            // route value of its name, and only when the parameter carries no prefix, whichever parameter fills that route
+            // value. An unattributed property it reads from that route value without the prefix too, but from its prefixed
+            // key in the query string with it, so its parameter keeps the prefix unless that property fills the route
+            // value. A property in this set is sent only in the route, and the other properties of its parameter under
+            // their own names.
             var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action)).ToList();
             var routeProperties = new HashSet<PropertyInfoModel>(valueProviderParams
                 .SelectMany(p => p.Properties)
-                .Where(prop => routePlaceholders.Any(placeholder => ReadsRouteValue(prop, placeholder))));
+                .Where(prop => prop.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(prop, placeholder))));
 
             foreach (var placeholder in routePlaceholders)
             {
@@ -144,16 +147,24 @@ namespace Api.ToMcp.Generator.Emitting
                 else
                 {
                     // Else a property: of a [FromRoute] or [FromBody] parameter first, then of one bound from the route,
-                    // query and form values.
+                    // query and form values, a [FromRoute] one before an unattributed one.
                     var propertySource = parameters
                         .Where(p => p.Source is ParameterSourceModel.Route or ParameterSourceModel.Body)
-                        .Concat(valueProviderParams)
                         .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => FillsPlaceholder(p, prop, placeholder))))
+                        .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                            prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
+                        .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                            prop.Source == ParameterSourceModel.Auto && ReadsRouteValue(prop, placeholder)))))
                         .FirstOrDefault(x => x.Property != null);
 
                     if (propertySource.Property != null)
                     {
                         placeholderSources[placeholder] = GetRouteValueSource(propertySource.Parameter, propertySource.Property);
+
+                        if (valueProviderParams.Contains(propertySource.Parameter) && ReadsRouteValue(propertySource.Property, placeholder))
+                        {
+                            routeProperties.Add(propertySource.Property);
+                        }
                     }
                 }
             }

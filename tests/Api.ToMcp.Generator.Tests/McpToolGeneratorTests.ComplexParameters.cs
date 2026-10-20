@@ -180,17 +180,30 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain("\"Note\"", tool);
     }
 
-    [Fact]
-    public void Generator_SendsEveryParameterWithAPropertyReadFromTheRoute_UnderItsOwnNames()
+    [Theory]
+    [InlineData("AttributedQuery a, NotedShipment b")]
+    [InlineData("NotedShipment b, AttributedQuery a")]
+    public void Generator_FillsTheRouteFromAFromRouteProperty_AndKeepsAParameterWhoseIdIsUnattributedUnderItsPrefix(string parameters)
     {
-        // MVC fills a.Id and b.Id from {id} alike; under the b. prefix b.Id would bind as 0.
-        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"two/{id}\")] public Task<string> Find(AttributedQuery a, NotedShipment b) => Task.FromResult(string.Empty);");
+        // MVC reads a's [FromRoute] Id only without the a. prefix. b's unattributed Id it reads from the route without the
+        // b. prefix too, but from b.Id under it, which keeps b's own value: unprefixed, b.Id and b.Note would get a's.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"two/{{id}}\")] public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
 
         Assert.Contains($"var routea_Id = System.Uri.EscapeDataString({Formatter}.Format(a.Id));", tool);
         Assert.Contains("AddQueryValue(queryParts, \"City\", a.City);", tool);
-        Assert.Contains("AddQueryValue(queryParts, \"Note\", b.Note);", tool);
-        Assert.DoesNotContain("\"b\"", tool);
-        Assert.DoesNotContain("\"Id\"", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"Note\", a.Note);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"b\", b);", tool);
+    }
+
+    [Theory]
+    [InlineData("[HttpPut(\"ship/{id}\")] public Task<string> Find(int id, Shipment b)")]
+    [InlineData("[HttpGet(\"same/{id}\")] public Task<string> Find(Shipment a, Shipment b)")]
+    public void Generator_KeepsAParameterWhoseUnattributedPropertyDoesNotFillTheRoute_UnderItsPrefix(string action)
+    {
+        // Without [ApiController] MVC reads b.Id from the query under the b. prefix; unprefixed, it would get {id}.
+        var tool = GenerateCompilingSimpleTypeTool($"{action} => Task.FromResult(string.Empty);", PlainControllerDeclaration);
+
+        Assert.Contains("AddQueryValue(queryParts, \"b\", b);", tool);
     }
 
     [Fact]
