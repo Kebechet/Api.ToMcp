@@ -11,8 +11,8 @@ public class IsolatedAssemblyCopyTests
     {
         // Two test processes run at once when suites run side by side, as in two worktrees; deleting the other's copy
         // between its writing and reading the XML file failed one of its tests now and then.
-        var runningProcessId = Process.GetProcesses().Select(x => x.Id).First(x => x != Environment.ProcessId && x != 0);
-        var otherRunDirectoryPath = CreateRunDirectory(runningProcessId);
+        using var otherRun = StartWaitingProcess();
+        var otherRunDirectoryPath = CreateRunDirectory(otherRun.Id);
         try
         {
             using var assemblyCopy = new IsolatedAssemblyCopy(typeof(McpExposeAttribute).Assembly, xmlDocContent: null);
@@ -21,6 +21,8 @@ public class IsolatedAssemblyCopyTests
         }
         finally
         {
+            otherRun.Kill();
+            otherRun.WaitForExit();
             Directory.Delete(otherRunDirectoryPath, recursive: true);
         }
     }
@@ -34,6 +36,21 @@ public class IsolatedAssemblyCopyTests
         using var assemblyCopy = new IsolatedAssemblyCopy(typeof(McpExposeAttribute).Assembly, xmlDocContent: null);
 
         Assert.False(Directory.Exists(endedRunDirectoryPath));
+    }
+
+    /// <summary>
+    /// A process that runs until it is killed, reading a standard input nothing writes to: <c>cat</c> on Linux, where CI
+    /// runs, and <c>findstr</c> on Windows.
+    /// </summary>
+    private static Process StartWaitingProcess()
+    {
+        var startInfo = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo("findstr", "x")
+            : new ProcessStartInfo("cat");
+        startInfo.RedirectStandardInput = true;
+        startInfo.UseShellExecute = false;
+
+        return Process.Start(startInfo)!;
     }
 
     private static string CreateRunDirectory(int processId)
