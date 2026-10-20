@@ -255,8 +255,9 @@ namespace Api.ToMcp.Generator.Emitting
                 if (directParam != null)
                 {
                     // An optional route value at the end of the URL, without a default of the route's own, MVC binds as
-                    // the action's default when the URL leaves it out, as it does a query value. Only a whole segment can
-                    // be left empty: of {name}.{ext?}, the URL would keep the dot, which MVC matches only with a value.
+                    // the action's default when the URL leaves it out, as it does a query value. Only a whole segment is
+                    // left out so: of {name}.{ext?}, the tool sends the value it is given, and leaves out the dot only
+                    // with an empty one.
                     var lastPart = template.Parts.Count == 0 ? null : template.Parts[template.Parts.Count - 1];
                     var partBefore = template.Parts.Count < 2 ? null : template.Parts[template.Parts.Count - 2];
                     var canBeLeftOut = lastPart is { IsParameter: true, IsOptional: true, HasDefaultValue: false } &&
@@ -330,20 +331,42 @@ namespace Api.ToMcp.Generator.Emitting
         }
 
         /// <summary>
+        /// Whether the part is the dot between a route value and an optional one that ends their segment, as in
+        /// <c>{name}.{ext?}</c>: the only text MVC lets come before an optional route value in a segment of several.
+        /// </summary>
+        private static bool IsOptionalSeparator(IReadOnlyList<RouteTemplatePart> parts, int index)
+        {
+            return parts[index] is { IsParameter: false, Text: ComplexSegmentSeparator } &&
+                index > 0 && parts[index - 1].IsParameter &&
+                index + 1 < parts.Count && parts[index + 1] is { IsParameter: true, IsOptional: true } &&
+                (index + 2 == parts.Count || parts[index + 2].Text.StartsWith(PathSeparator, StringComparison.Ordinal));
+        }
+
+        /// <summary>
         /// The URL as an interpolated string of the route's literal text and the variables of its route values. The text
         /// is escaped as a C# literal, its braces doubled, so any template compiles.
         /// </summary>
-        private static string FormatRouteString(IEnumerable<RouteTemplatePart> parts, Dictionary<string, string> routeVariables)
+        private static string FormatRouteString(IReadOnlyList<RouteTemplatePart> parts, Dictionary<string, string> routeVariables)
         {
             var route = new StringBuilder();
-            foreach (var part in parts)
+            for (var i = 0; i < parts.Count; i++)
             {
+                var part = parts[i];
+
                 // The generator gives no tool to an action with a route value nothing fills, so every one has a variable.
                 if (part.IsParameter)
                 {
                     if (routeVariables.TryGetValue(part.Text, out var routeVariable))
                         route.Append('{').Append(routeVariable).Append('}');
 
+                    continue;
+                }
+
+                // MVC matches the dot before an optional route value that ends a segment of several only together with a
+                // value: it serves {name}.{ext?} at report, and answers report. with 404.
+                if (IsOptionalSeparator(parts, i) && routeVariables.TryGetValue(parts[i + 1].Text, out var optionalVariable))
+                {
+                    route.Append("{(").Append(optionalVariable).Append(".Length == 0 ? \"\" : \"").Append(ComplexSegmentSeparator).Append("\")}");
                     continue;
                 }
 

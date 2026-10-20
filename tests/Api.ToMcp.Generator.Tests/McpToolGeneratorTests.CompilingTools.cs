@@ -271,6 +271,18 @@ namespace TestApi
         Assert.Contains($"var routepage = System.Uri.EscapeDataString({Formatter}.Format(page));", tool);
     }
 
+    [Theory]
+    [InlineData("names/{name}.{ext?}", "/api/orders/names/{routename}{(routeext.Length == 0 ? \"\" : \".\")}{routeext}")]
+    [InlineData("names/{name}.{ext?}/size", "/api/orders/names/{routename}{(routeext.Length == 0 ? \"\" : \".\")}{routeext}/size")]
+    [InlineData("names/{name}.{ext}", "/api/orders/names/{routename}.{routeext}")]
+    public void Generator_WritesTheDotBeforeAnOptionalRouteValueInASegmentOfSeveral_OnlyWithAValue(string template, string expectedRoute)
+    {
+        // MVC serves {name}.{ext?} at report, without the dot, and answers report. with 404.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"{template}\")] public Task<string> Find(string name, string? ext = null) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var route = $\"{expectedRoute}\";", tool);
+    }
+
     [Fact]
     public void Generator_WritesADefaultValue_WithTheInvariantCulture()
     {

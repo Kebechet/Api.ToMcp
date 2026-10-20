@@ -172,6 +172,13 @@ namespace TestApi
         [HttpGet(""names/{name}.{ext?}"")]
         public object GetFileName(string name, string ext = ""txt"") => new { name, ext, path = Request.Path.Value };
 
+        // MVC serves the action at report without the dot, and answers report. with 404.
+        [HttpGet(""optional-names/{name}.{ext?}"")]
+        public object GetOptionalFileName(string name, string? ext = null) => new { name, ext, path = Request.Path.Value };
+
+        [HttpGet(""optional-names/{name}.{ext?}/size"")]
+        public object GetOptionalFileSize(string name, string? ext = null) => new { name, ext, path = Request.Path.Value };
+
         [HttpGet(""default-route/{status?}"")]
         public object GetDefaultRoute(OrderStatus status = (OrderStatus)99) => new { status, path = Request.Path.Value };
 
@@ -410,6 +417,10 @@ namespace TestApi
     [InlineData("EchoController_GetRequiredDefaultTool", @"{}", @"{""size"":1,""query"":""?size=1""}")]
     [InlineData("EchoController_GetMustBindTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
     [InlineData("EchoController_GetFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":""txt"",""path"":""/api/names/report.txt""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":""""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":""csv""}", @"{""name"":""report"",""ext"":""csv"",""path"":""/api/optional-names/report.csv""}")]
+    [InlineData("EchoController_GetOptionalFileSizeTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report/size""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{}", @"{""status"":99,""path"":""/api/default-route/""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{""status"":1}", @"{""status"":1,""path"":""/api/default-route/Closed""}")]
     [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]
