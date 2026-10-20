@@ -135,6 +135,18 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_WritesAToolNameAndDescriptions_AsStringsThatCompile()
+    {
+        // A line or paragraph separator ends a C# string literal as a line feed does.
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[Api.ToMcp.Abstractions.McpExpose(ToolName = \"find \\\"orders\\\" \\\\ all\", Description = \"Finds\\u2028all\\u2029orders\\u0085now.\")] " +
+            "[HttpGet] public Task<string> Find(string name) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("[McpServerTool(Name = \"find \\\"orders\\\" \\\\ all\", ", tool);
+        Assert.Contains("[Description(\"Finds all orders now.\")]", tool);
+    }
+
+    [Fact]
     public void Generator_WritesADefaultValue_WithTheInvariantCulture()
     {
         // A comma as the decimal separator would end the default value in the middle of the number.

@@ -23,6 +23,9 @@ namespace Api.ToMcp.Generator.Emitting
         private const string RouteVariablePrefix = "route";
         private const string PathSeparator = "/";
         private const string ComplexSegmentSeparator = ".";
+        private const char NextLine = (char)0x0085;
+        private const char LineSeparator = (char)0x2028;
+        private const char ParagraphSeparator = (char)0x2029;
 
         private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
 
@@ -82,14 +85,17 @@ namespace Api.ToMcp.Generator.Emitting
 
             var annotations = FormatAnnotationArguments(action.Annotations);
             var title = FormatTitleArgument(action.Title);
+
+            // A ToolName or a toolNameFormat is any string, so the name is written as an escaped C# literal.
+            var toolNameLiteral = SymbolDisplay.FormatLiteral(toolName, quote: true);
             if (hasOutputSchema)
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\"{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
+                sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
                 sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
             }
             else
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\"{title}, {annotations})]");
+                sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, {annotations})]");
             }
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             // A tool with an output schema returns the parsed body on success, for the SDK to turn into structured content.
@@ -609,9 +615,14 @@ namespace Api.ToMcp.Generator.Emitting
             return result;
         }
 
+        /// <summary>
+        /// The text of a description for a C# string literal, on one line: C# ends a literal at a line or paragraph
+        /// separator as at a line feed.
+        /// </summary>
         private static string EscapeString(string s)
         {
-            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "");
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "")
+                .Replace(NextLine, ' ').Replace(LineSeparator, ' ').Replace(ParagraphSeparator, ' ');
         }
 
         /// <summary>
