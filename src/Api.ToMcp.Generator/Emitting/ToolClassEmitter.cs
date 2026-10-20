@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -573,11 +572,6 @@ namespace Api.ToMcp.Generator.Emitting
             return value ? "true" : "false";
         }
 
-        public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)
-        {
-            return EmitRegistration(GetUniqueToolClassNames(actions));
-        }
-
         /// <summary>
         /// The registration of the tool classes, by their names as <see cref="GetUniqueToolClassNames"/> gives them.
         /// </summary>
@@ -687,28 +681,6 @@ namespace Api.ToMcp.Generator.Emitting
                 : param.Description!;
             var descAttr = $"[Description(\"{EscapeString(description)}\")] ";
             return $"{descAttr}{type} {EscapeIdentifier(param.Name)}{defaultPart}";
-        }
-
-        internal static bool RouteContainsParameter(string route, string paramName)
-        {
-            return RouteTemplate.Parse(route).HasParameter(paramName);
-        }
-
-        internal static string ConvertRouteTemplate(string route, List<ParameterInfoModel> routeParams)
-        {
-            var result = route;
-            foreach (var param in routeParams)
-            {
-                // Handle various route parameter formats using regex to catch any constraint
-                // Pattern matches: {name}, {name?}, {name:constraint}, {name:constraint?}
-                var pattern = @"\{" + param.Name + @"(:[^}]+)?\??\}";
-                result = System.Text.RegularExpressions.Regex.Replace(
-                    result,
-                    pattern,
-                    "{route" + param.Name + "}",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            }
-            return result;
         }
 
         /// <summary>
