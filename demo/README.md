@@ -80,7 +80,7 @@ This demonstrates:
 
 ## Testing with MCP Client
 
-Connect your MCP client (e.g., Claude Desktop) to the SSE endpoint:
+Connect your MCP client (e.g., Claude Desktop) to the MCP endpoint, which uses the Streamable HTTP transport:
 
 ```
 https://localhost:56720/mcp
