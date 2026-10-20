@@ -5,13 +5,19 @@ using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Server;
+using Moq;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Extensions;
@@ -172,6 +178,34 @@ public class McpExtensionsTests
             .GetProperty("properties");
 
         Assert.False(requestProperties.GetProperty("documented").TryGetProperty("description", out _));
+    }
+
+    [Fact]
+    public void AddMcpTools_RegistersABaseUrlProvider_ThatSeesTheRequest()
+    {
+        // An http binding follows a request that came in over https, which the provider can tell only from the request.
+        var addresses = new ServerAddressesFeature();
+        addresses.Addresses.Add("http://+:8080");
+        var features = new FeatureCollection();
+        features.Set<IServerAddressesFeature>(addresses);
+        var server = new Mock<IServer>();
+        server.Setup(x => x.Features).Returns(features);
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+                services.AddSingleton(server.Object);
+                services.AddMcpTools(ToolAssembly);
+            },
+            logs: null);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Scheme = "https";
+        httpContext.Request.Host = new HostString("api.example.com");
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = httpContext;
+
+        var baseUrl = provider.GetRequiredService<ISelfBaseUrlProvider>().GetBaseUrl();
+
+        Assert.Equal("https://api.example.com", baseUrl);
     }
 
     [Fact]

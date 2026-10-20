@@ -158,25 +158,13 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         return new McpScopeValidationException(reason);
     }
 
+    /// <summary>
+    /// The route at the provider's address, used as given: <see cref="DefaultBaseUrlProvider"/> decides itself when an
+    /// address it took from the server bindings has to follow the request to <c>https://</c>.
+    /// </summary>
     private string BuildUrl(string route)
     {
         var baseUrl = _baseUrlProvider.GetBaseUrl();
-
-        // When behind a reverse proxy, Kestrel only listens on HTTP but UseHttpsRedirection()
-        // redirects internal self-calls to HTTPS which doesn't exist locally.
-        // Derive the correct HTTPS base URL from the incoming request instead.
-        if (baseUrl.StartsWith("http://"))
-        {
-            var httpContext = _httpContextAccessor.HttpContext;
-            if (httpContext is not null)
-            {
-                var requestBaseUrl = $"{httpContext.Request.Scheme}://{httpContext.Request.Host}";
-                if (requestBaseUrl.StartsWith("https://"))
-                {
-                    baseUrl = requestBaseUrl;
-                }
-            }
-        }
 
         var normalizedRoute = route.StartsWith("/") ? route : "/" + route;
         return baseUrl + normalizedRoute;

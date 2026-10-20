@@ -459,11 +459,13 @@ This grants `Read` and `Write` scopes but not `Delete`.
 
 Generated tools invoke your API over HTTP internally, so the runtime needs to know the base URL to call. This is handled by `ISelfBaseUrlProvider`. The default implementation (`DefaultBaseUrlProvider`, registered automatically by `AddMcpTools`) resolves the URL in this order:
 
-1. The `McpTools:BaseUrl` configuration value, if set (e.g. in `appsettings.json`).
+1. The `McpTools:BaseUrl` configuration value, if set (e.g. in `appsettings.json`), used as given: an `http://` address stays `http://`.
 2. The first `https://` address the server is bound to.
-3. The first address of any scheme, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`.
+3. The first address of any scheme, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`. When that is an `http://` address and the MCP request came in over `https://`, the tool calls the request's own `https://` address, with its host and port, instead. The server then sits behind a reverse proxy that terminates TLS, and `UseHttpsRedirection` would send a call to the `http://` binding to an HTTPS port nothing listens on locally. The call goes out through the proxy, and the request's host is whatever its `Host` header (or the proxy's `X-Forwarded-Host`) says, so restrict `AllowedHosts`, or pin `McpTools:BaseUrl` to keep the calls on an address you chose.
 
-The result is cached after the first resolution. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
+The configured or bound address is cached after the first resolution; whether a call follows its request to `https://` is decided for each call. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
+
+The invoker calls whatever address `ISelfBaseUrlProvider` returns, so the address of a provider of your own is used as given too. An `http://` address in an app that redirects HTTP to HTTPS is redirected like any other request, so pin an address the app serves without a redirect.
 
 **Pinning the base URL** (recommended behind a reverse proxy or in containers):
 
@@ -714,7 +716,7 @@ To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerG
 
 ### A call fails
 
-`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. The usual cause is the tool's HTTP call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
+`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. The usual cause is the tool's HTTP call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, or behind a TLS-terminating proxy the MCP request's own `https://` address, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
 
 `HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation.
 
@@ -776,7 +778,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).
 
 **Self-calls fail or redirect to HTTPS behind a reverse proxy.**
-- The invoker derives the correct `https://` base from the incoming request when the server only listens on HTTP, but the most reliable fix is to pin `McpTools:BaseUrl` explicitly.
+- Without `McpTools:BaseUrl`, a server that listens only on HTTP has its tools call the MCP request's own `https://` address when the request came in over HTTPS; see [Base URL Resolution](#base-url-resolution). The most reliable fix is to pin `McpTools:BaseUrl` to an address the app serves without a redirect. It is used as given, `http://` included.
 
 **`MissingMethodException` on `AddMcpTools` at startup** (e.g. `Method not found: '...McpServerServiceCollectionExtensions.AddMcpServer(...)'`).
 - Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
