@@ -91,6 +91,8 @@ namespace TestApi
     [InlineData("[HttpHead(\"head\")] [HttpGet(\"get\")] public IActionResult Find() => Ok();", "GET", "/api/products/get")]
     [InlineData("[HttpPost] [HttpGet(\"get\")] public IActionResult Find() => Ok();", "GET", "/api/products/get")]
     [InlineData("[HttpGet] [Route(\"search\")] public IActionResult Find() => Ok();", "GET", "/api/products/search")]
+    [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
+    [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     public void Generator_ReadsTheRouteAndHttpMethod_FromAnyAttributeMvcReadsThemFrom(string action, string expectedMethod, string expectedRoute)
     {
         var tool = GenerateCompilingRouteAttributeTool("[ApiController] [ApiRoute] public class ProductsController : ControllerBase", action, "ProductsController_FindTool");

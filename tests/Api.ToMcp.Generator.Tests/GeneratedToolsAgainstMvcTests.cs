@@ -213,6 +213,11 @@ namespace TestApi
         [AcceptVerbs(""HEAD"", ""PATCH"", Route = ""verbs/{id}"")]
         public object PatchVerbs(int id, [FromBody] ProductFilter filter) => new { id, filter.City, method = Request.Method };
 
+        // A name makes [HttpGet] a route of its own, the controller's, while [Route] serves every method at its template.
+        [HttpGet(Name = ""named-get"")]
+        [Route(""named/{id}"")]
+        public object GetNamed(int id) => new { id };
+
         [HttpGet]
         [EchoDocsRoute]
         public object GetDocs(string slug) => new { slug };
@@ -296,6 +301,7 @@ namespace TestApi
     [InlineData("EchoController_PostFileListQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
     [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
+    [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]

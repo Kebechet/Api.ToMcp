@@ -229,8 +229,10 @@ namespace Api.ToMcp.Generator.Parsing
                 .Select(x => RouteAttributeReader.Read(x, compilation, ct))
                 .ToList();
 
+            var selectors = GetRouteSelectors(routeAttributes, httpMethodAttributes);
             string? problem = null;
-            foreach (var (route, httpMethodProviders) in GetRouteSelectors(routeAttributes, httpMethodAttributes))
+            string? httpMethod = null;
+            foreach (var (route, httpMethodProviders) in selectors)
             {
                 if (route is { IsTemplateKnown: false })
                 {
@@ -238,14 +240,12 @@ namespace Api.ToMcp.Generator.Parsing
                     continue;
                 }
 
-                var httpMethod = httpMethodProviders
+                httpMethod = httpMethodProviders
                     .Where(x => x.AreHttpMethodsKnown)
                     .SelectMany(x => x.HttpMethods)
                     .FirstOrDefault(ToolHttpMethods.Contains);
                 if (httpMethod != null)
-                {
-                    return (httpMethod, route?.Template, null);
-                }
+                    break;
 
                 var unreadable = httpMethodProviders.FirstOrDefault(x => !x.AreHttpMethodsKnown);
                 if (unreadable != null)
@@ -254,7 +254,22 @@ namespace Api.ToMcp.Generator.Parsing
                 }
             }
 
-            return problem is null ? null : ("", null, problem);
+            if (httpMethod is null)
+            {
+                return problem is null ? null : ("", null, problem);
+            }
+
+            // MVC serves the method at each route that gives it, and at each that gives none, which serves every method.
+            // Of those the tool takes the first with a template of its own: on the controller's route alone MVC would still
+            // read a parameter another route names from a route value, which that URL lacks.
+            var servingRoutes = selectors
+                .Where(x => x.Route is not { IsTemplateKnown: false } &&
+                    (x.HttpMethodProviders.Count == 0 || x.HttpMethodProviders.Any(provider => provider.AreHttpMethodsKnown && provider.HttpMethods.Contains(httpMethod))))
+                .Select(x => x.Route)
+                .ToList();
+            var servingRoute = servingRoutes.FirstOrDefault(x => x?.Template != null) ?? servingRoutes.First();
+
+            return (httpMethod, servingRoute?.Template, null);
         }
 
         /// <summary>

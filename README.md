@@ -619,7 +619,7 @@ Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivit
 ## Limitations
 
 - **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are. Support is tracked in [#11](https://github.com/Kebechet/Api.ToMcp/issues/11).
-- **One route per action.** MVC serves an action at every route and HTTP method its attributes give it; its tool calls the first route with a method the tool sends, with the first such method: `GET` for `[HttpHead] [HttpGet]`, `PUT` for `[AcceptVerbs("HEAD", "PUT", "POST")]`.
+- **One route per action.** MVC serves an action at every route and HTTP method its attributes give it. Its tool takes the first method a tool sends, in the order of the routes, `GET` for `[HttpHead] [HttpGet]` and `PUT` for `[AcceptVerbs("HEAD", "PUT", "POST")]`, and calls it at the first route serving that method with a template of its own, else at the controller's route: `[HttpGet(Name = "find")] [Route("{id}")]`, which MVC serves for GET at both, is called at `{id}`.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
 - **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
 
