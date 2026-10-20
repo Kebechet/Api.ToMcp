@@ -168,16 +168,38 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// MVC's rule for which public methods of a controller are actions: an ordinary instance method without type
-        /// parameters and without <c>[NonAction]</c>, which an override inherits from the method it replaces.
+        /// MVC's rule for which public methods of a controller are actions (<c>DefaultApplicationModelProvider.IsAction</c>):
+        /// an ordinary instance method without type parameters and without <c>[NonAction]</c>, which an override inherits
+        /// from the method it replaces, that was not first declared on <c>object</c>, such as an override of
+        /// <c>ToString()</c>, and does not implement <c>IDisposable.Dispose</c>.
         /// </summary>
         private static bool IsAction(IMethodSymbol method)
         {
+            var baseDefinition = GetBaseDefinition(method);
+
             return method.MethodKind == MethodKind.Ordinary &&
                 !method.IsStatic &&
                 !method.IsAbstract &&
                 !method.IsGenericMethod &&
+                baseDefinition.ContainingType.SpecialType != SpecialType.System_Object &&
+                !IsDisposeImplementation(baseDefinition) &&
                 FindNearestAttribute(method, x => x.OverriddenMethod, x => x.AttributeClass?.ToDisplayString() == NonActionAttributeFullName) is null;
+        }
+
+        /// <summary>
+        /// Whether the method, as first declared, is how its class implements <c>IDisposable.Dispose</c>. MVC checks the
+        /// first declaration, so an override of it is no action either, while a method hiding it with <c>new</c> is one.
+        /// </summary>
+        private static bool IsDisposeImplementation(IMethodSymbol baseDefinition)
+        {
+            var declaringType = baseDefinition.ContainingType;
+            var dispose = declaringType.AllInterfaces
+                .FirstOrDefault(x => x.SpecialType == SpecialType.System_IDisposable)?
+                .GetMembers(nameof(IDisposable.Dispose))
+                .FirstOrDefault();
+
+            return dispose != null &&
+                SymbolEqualityComparer.Default.Equals(declaringType.FindImplementationForInterfaceMember(dispose), baseDefinition);
         }
 
         /// <summary>

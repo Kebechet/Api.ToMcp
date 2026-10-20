@@ -425,6 +425,81 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_SkipsObjectsMethodsAndTheDisposeImplementation_AsMvcDoes()
+    {
+        // MVC takes no action from a method first declared on object, or from the one that implements IDisposable.Dispose
+        // for the class that first declares it. A method that hides either with new is an action of its own.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase, IDisposable
+    {
+        [HttpGet]
+        public ActionResult<Product> Get() => new Product();
+
+        [HttpGet(""str"")]
+        public override string ToString() => ""products"";
+
+        [HttpGet(""hash"")]
+        public override int GetHashCode() => 1;
+
+        [HttpPost(""dispose"")]
+        public void Dispose()
+        {
+        }
+    }
+
+    public abstract class ResourceControllerBase : ControllerBase, IDisposable
+    {
+        public virtual void Dispose()
+        {
+        }
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class FilesController : ResourceControllerBase
+    {
+        [HttpGet]
+        public ActionResult<Product> Get() => new Product();
+
+        [HttpDelete]
+        public override void Dispose()
+        {
+        }
+    }
+
+    // MVC's Controller implements IDisposable itself.
+    [Route(""api/[controller]"")]
+    public class ReportsController : Controller
+    {
+        [HttpGet(""text"")]
+        public new string ToString() => ""reports"";
+
+        [HttpPost(""dispose"")]
+        public new void Dispose()
+        {
+        }
+    }
+}
+";
+        AssertCompiles(source, AllExceptExcludedConfig);
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        Assert.Contains("class ProductsController_GetTool", generated);
+        Assert.DoesNotContain("ProductsController_ToStringTool", generated);
+        Assert.DoesNotContain("ProductsController_GetHashCodeTool", generated);
+        Assert.DoesNotContain("ProductsController_DisposeTool", generated);
+        Assert.Contains("class FilesController_GetTool", generated);
+        Assert.DoesNotContain("FilesController_DisposeTool", generated);
+        Assert.Equal("var route = $\"/api/reports/text\";", GetRouteLine(generated, "ReportsController_ToStringTool"));
+        Assert.Equal("var route = $\"/api/reports/dispose\";", GetRouteLine(generated, "ReportsController_DisposeTool"));
+    }
+
+    [Fact]
     public void Generator_TakesEveryClassWithApiController_WhateverItsName()
     {
         // MVC takes a class whose name does not end in "Controller" when it carries [Controller], and [ApiController]
