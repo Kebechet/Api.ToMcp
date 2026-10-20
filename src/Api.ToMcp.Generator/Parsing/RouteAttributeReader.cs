@@ -547,18 +547,19 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The value a conversion that keeps it gives: an identity, boxing, unboxing or reference one, an implicit nullable
-        /// one, and an implicit numeric one to an integer, which keeps the number, a char's code included. Any other, such
-        /// as <c>(byte)version</c> or <c>(char)code</c>, changes the value, and with it the text C# writes.
+        /// The value a conversion that keeps it gives: an identity, boxing, unboxing or reference one, a nullable one
+        /// between types the value keeps between, an implicit numeric one to an integer, which keeps the number, a char's
+        /// code included, and an enum's to an integer its underlying type converts to implicitly, which C# writes as the
+        /// number. Any other, such as <c>(byte)version</c> or <c>(char)code</c>, changes the value, and with it the text C#
+        /// writes.
         /// </summary>
         private static object? EvaluateConversion(IConversionOperation conversion, Dictionary<IParameterSymbol, object?> parameterValues)
         {
-            var kind = conversion.GetConversion();
-            var target = conversion.Type;
+            var target = GetUnderlyingType(conversion.Type);
             var isInteger = target != null && IsInteger(target.SpecialType);
 
-            if (!(kind.IsIdentity || kind.IsBoxing || kind.IsUnboxing || kind.IsReference || (kind.IsImplicit && kind.IsNullable) ||
-                (kind.IsImplicit && kind.IsNumeric && isInteger)))
+            if (conversion.SemanticModel is null ||
+                !KeepsValue(conversion.GetConversion(), conversion.Operand.Type, conversion.Type, conversion.SemanticModel.Compilation))
             {
                 return new UnknownValue($"it is computed by '{GetText(conversion)}', which the generator cannot evaluate");
             }
@@ -574,6 +575,48 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
+        private static bool KeepsValue(Conversion kind, ITypeSymbol? source, ITypeSymbol? target, Compilation compilation)
+        {
+            if (kind.IsIdentity || kind.IsBoxing || kind.IsUnboxing || kind.IsReference)
+            {
+                return true;
+            }
+
+            // Lifted to nullable types, written as a cast or not, a conversion keeps the value as the one between the
+            // underlying types does.
+            if (kind.IsNullable)
+            {
+                var underlyingSource = GetUnderlyingType(source);
+                var underlyingTarget = GetUnderlyingType(target);
+
+                return underlyingSource != null &&
+                    underlyingTarget != null &&
+                    !(underlyingSource.Equals(source, SymbolEqualityComparer.Default) && underlyingTarget.Equals(target, SymbolEqualityComparer.Default)) &&
+                    KeepsValue(compilation.ClassifyConversion(underlyingSource, underlyingTarget), underlyingSource, underlyingTarget, compilation);
+            }
+
+            if (target is null || !IsInteger(target.SpecialType))
+            {
+                return false;
+            }
+
+            if (kind.IsEnumeration)
+            {
+                return source is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlyingType } &&
+                    compilation.ClassifyConversion(underlyingType, target) is { IsImplicit: true } underlyingConversion &&
+                    (underlyingConversion.IsIdentity || underlyingConversion.IsNumeric);
+            }
+
+            return kind.IsImplicit && kind.IsNumeric;
+        }
+
+        private static ITypeSymbol? GetUnderlyingType(ITypeSymbol? type)
+        {
+            return type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable
+                ? nullable.TypeArguments[0]
+                : type;
+        }
+
         private static bool IsInteger(SpecialType type)
         {
             return type is SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or SpecialType.System_UInt16 or
@@ -585,12 +628,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static object? ToEnumValue(ITypeSymbol? type, object? value)
         {
-            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
-            {
-                type = nullable.TypeArguments[0];
-            }
-
-            return type is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType && value != null
+            return GetUnderlyingType(type) is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType && value != null
                 ? new EnumValue(enumType, value)
                 : value;
         }

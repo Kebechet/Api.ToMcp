@@ -138,6 +138,55 @@ namespace TestApi
         }
     }
 
+    public sealed class NullableEnumRouteAttribute : RouteAttribute
+    {
+        public NullableEnumRouteAttribute(ApiVersion version) : base($""n/{(ApiVersion?)version}/[controller]"")
+        {
+        }
+    }
+
+    public sealed class NullableNumberRouteAttribute : RouteAttribute
+    {
+        public NullableNumberRouteAttribute(int version) : base(""api/v"" + (long?)version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class EnumNumberRouteAttribute : RouteAttribute
+    {
+        public EnumNumberRouteAttribute(ApiVersion version) : base(""l/"" + (long)version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class NullableEnumNumberRouteAttribute : RouteAttribute
+    {
+        public NullableEnumNumberRouteAttribute(ApiVersion version) : base($""l/{(int?)version}/[controller]"")
+        {
+        }
+    }
+
+    public sealed class NarrowedNullableRouteAttribute : RouteAttribute
+    {
+        public NarrowedNullableRouteAttribute(int version) : base(""api/v"" + (byte?)version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class NarrowedEnumRouteAttribute : RouteAttribute
+    {
+        public NarrowedEnumRouteAttribute(ApiVersion version) : base(""api/v"" + (short)version + ""/[controller]"")
+        {
+        }
+    }
+
+    public sealed class UnsignedEnumRouteAttribute : RouteAttribute
+    {
+        public UnsignedEnumRouteAttribute(ApiVersion version) : base(""api/v"" + (uint)version + ""/[controller]"")
+        {
+        }
+    }
+
     public sealed class RatioRouteAttribute : RouteAttribute
     {
         public RatioRouteAttribute(double ratio) : base($""api/r{ratio}/[controller]"")
@@ -329,6 +378,10 @@ namespace TestApi
     [InlineData("[AreaRoute(ApiArea.Admin)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/Admin/orders")]
     [InlineData("[WidenedRoute(2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v2/orders")]
     [InlineData("[LetterCodeRoute('A')] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/65/orders")]
+    [InlineData("[NullableEnumRoute(ApiVersion.V2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/n/V2/orders")]
+    [InlineData("[NullableNumberRoute(2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v2/orders")]
+    [InlineData("[EnumNumberRoute(ApiVersion.V2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/l/2/orders")]
+    [InlineData("[NullableEnumNumberRoute(ApiVersion.V2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/l/2/orders")]
     public void Generator_ReadsAControllersRoute_FromAnyAttributeMvcReadsItFrom(string controllerDeclaration, string toolClassName, string expectedRoute)
     {
         var tool = GenerateCompilingRouteAttributeTool(controllerDeclaration, "[HttpGet] public IActionResult Find() => Ok();", toolClassName);
@@ -366,6 +419,9 @@ namespace TestApi
     [InlineData("[ApiRoute(42)]", "the generator cannot read the route template of the [ApiRoute] attribute on OrdersController, as an argument of the attribute does not compile")]
     [InlineData("[NarrowedRoute(300)]", "the generator cannot read the route template of the [NarrowedRoute] attribute on OrdersController, as it is computed by '(byte)version', which the generator cannot evaluate")]
     [InlineData("[LetterRoute(65)]", "the generator cannot read the route template of the [LetterRoute] attribute on OrdersController, as it is computed by '(char)code', which the generator cannot evaluate")]
+    [InlineData("[NarrowedNullableRoute(300)]", "the generator cannot read the route template of the [NarrowedNullableRoute] attribute on OrdersController, as it is computed by '(byte?)version', which the generator cannot evaluate")]
+    [InlineData("[NarrowedEnumRoute(ApiVersion.V2)]", "the generator cannot read the route template of the [NarrowedEnumRoute] attribute on OrdersController, as it is computed by '(short)version', which the generator cannot evaluate")]
+    [InlineData("[UnsignedEnumRoute(ApiVersion.V2)]", "the generator cannot read the route template of the [UnsignedEnumRoute] attribute on OrdersController, as it is computed by '(uint)version', which the generator cannot evaluate")]
     [InlineData("[EnumRoute((ApiVersion)7)]", "the generator cannot read the route template of the [EnumRoute] attribute on OrdersController, as it is computed from 'version', a value of ApiVersion that no member has alone")]
     [InlineData("[AreaRoute(ApiArea.Admin | ApiArea.Public)]", "the generator cannot read the route template of the [AreaRoute] attribute on OrdersController, as it is computed from 'area', a value of ApiArea that no member has alone")]
     [InlineData("[StageRoute(Stage.Beta)]", "the generator cannot read the route template of the [StageRoute] attribute on OrdersController, as it is computed from 'stage', a value of Stage that no member has alone")]
