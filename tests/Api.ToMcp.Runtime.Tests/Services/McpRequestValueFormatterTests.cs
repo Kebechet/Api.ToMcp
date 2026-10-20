@@ -451,6 +451,24 @@ public class McpRequestValueFormatterTests
         Assert.Equal(new[] { "f.Ids=1", "f.Ids=2", "f.Ids=3", "f.Names=a", "f.Names=b", "f.Codes=x", "f.Codes=y", "f.City=Brno" }, queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_SendsAPropertyARecordsConstructorSets_DespiteBindNeverOnTheRecord()
+    {
+        // MVC binds such a property as the constructor parameter, whose binding behavior only the parameter's attributes
+        // decide; [BindNever] on the record's class covers its other properties.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "r", new NeverBoundRecord("Brno") { Note = "n1" });
+
+        Assert.Equal(new[] { "r.City=Brno" }, queryParts);
+    }
+
+    [BindNever]
+    private sealed record NeverBoundRecord(string? City)
+    {
+        public string? Note { get; set; }
+    }
+
     private sealed class BoundCollectionsFilter
     {
         [ModelBinder(typeof(NoOpBinder))]

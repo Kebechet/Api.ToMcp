@@ -208,8 +208,8 @@ public static class McpRequestValueFormatter
             }
 
             // Decided before the property is read, so a value that is not sent is never read into either.
-            var attributes = GetBindingAttributes(type, property);
-            if (!IsBoundFromTheQuery(type, property.PropertyType, attributes))
+            var (attributes, isConstructorParameter) = GetBindingAttributes(type, property);
+            if (!IsBoundFromTheQuery(type, property.PropertyType, attributes, isConstructorParameter))
             {
                 continue;
             }
@@ -227,33 +227,34 @@ public static class McpRequestValueFormatter
     }
 
     /// <summary>
-    /// The attributes MVC binds a property with. For a property a record's primary constructor sets, those of the
-    /// constructor parameter it binds the property through; one on the property it ignores.
+    /// The attributes MVC binds a property with, and whether it binds it as a constructor parameter. For a property a
+    /// record's primary constructor sets, those of the constructor parameter it binds the property through; one on the
+    /// property it ignores.
     /// </summary>
-    private static object[] GetBindingAttributes(Type type, PropertyInfo property)
+    private static (object[] Attributes, bool IsConstructorParameter) GetBindingAttributes(Type type, PropertyInfo property)
     {
-        ICustomAttributeProvider attributeProvider = GetConstructorParameters(type).TryGetValue(property.Name, out var parameter)
-            ? parameter
-            : property;
-
-        return attributeProvider.GetCustomAttributes(inherit: true);
+        return GetConstructorParameters(type).TryGetValue(property.Name, out var parameter)
+            ? (parameter.GetCustomAttributes(inherit: true), true)
+            : (property.GetCustomAttributes(inherit: true), false);
     }
 
     /// <summary>
     /// Whether MVC can read the property from the query string: not when its type is bound from a source of its own,
-    /// when <c>[BindNever]</c> on it or on its type excludes it, or when a binding attribute names a source the query
+    /// when <c>[BindNever]</c> on it or on its class excludes it, or when a binding attribute names a source the query
     /// string never fills, <c>[FromHeader]</c>, <c>[FromForm]</c>, <c>[FromServices]</c>, <c>[FromKeyedServices]</c> or
     /// <c>[FromBody]</c>. A property with a model binder of its own reads its key from the query string as well.
     /// </summary>
-    private static bool IsBoundFromTheQuery(Type type, Type propertyType, object[] attributes)
+    private static bool IsBoundFromTheQuery(Type type, Type propertyType, object[] attributes, bool isConstructorParameter)
     {
         if (IsNotBoundFromTheQuery(propertyType))
         {
             return false;
         }
 
+        // MVC falls back to the class's [BindNever] for a property, but a constructor parameter's binding behavior only
+        // its own attributes decide (DefaultBindingMetadataProvider.FindBindingBehavior).
         var bindingBehavior = attributes.OfType<BindingBehaviorAttribute>().FirstOrDefault() ??
-            type.GetCustomAttributes(typeof(BindingBehaviorAttribute), inherit: true).OfType<BindingBehaviorAttribute>().FirstOrDefault();
+            (isConstructorParameter ? null : type.GetCustomAttributes(typeof(BindingBehaviorAttribute), inherit: true).OfType<BindingBehaviorAttribute>().FirstOrDefault());
         if (bindingBehavior?.Behavior == BindingBehavior.Never || attributes.OfType<FromKeyedServicesAttribute>().Any())
         {
             return false;

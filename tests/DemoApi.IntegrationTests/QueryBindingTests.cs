@@ -60,6 +60,15 @@ public class QueryBindingTests
     }
 
     [Fact]
+    public async Task APropertyARecordsConstructorSets_BindsDespiteBindNeverOnTheRecord()
+    {
+        var bound = await PostAsync("never-record", "r", new QueryNeverBoundRecord("Brno") { Note = "n1" });
+
+        Assert.Equal("Brno", bound.GetProperty("city").GetString());
+        Assert.Equal(JsonValueKind.Null, bound.GetProperty("note").ValueKind);
+    }
+
+    [Fact]
     public async Task AnObjectWithACancellationToken_SendsOnlyWhatTheQueryBinds()
     {
         using var cancellation = new CancellationTokenSource();
@@ -106,6 +115,9 @@ public sealed class QueryBindingController : ControllerBase
 
     [HttpPost("ids")]
     public IActionResult Ids([FromQuery] QueryIdsFilter f) => Ok(new { ids = f.Ids, f.City });
+
+    [HttpPost("never-record")]
+    public IActionResult NeverRecord([FromQuery] QueryNeverBoundRecord r) => Ok(new { r.City, r.Note });
 
     [HttpPost("ct")]
     public IActionResult Cancellation(QueryCancellationFilter f) => Ok(new { f.City, query = Request.QueryString.Value });
@@ -165,6 +177,12 @@ public sealed class QueryIdsBinder : IModelBinder
 
         return Task.CompletedTask;
     }
+}
+
+[BindNever]
+public sealed record QueryNeverBoundRecord(string? City)
+{
+    public string? Note { get; set; }
 }
 
 public sealed class QueryCancellationFilter
