@@ -19,7 +19,11 @@ using Microsoft.AspNetCore.Mvc;
 namespace TestApi
 {
     [TypeConverter(typeof(OrderIdConverter))]
-    public readonly record struct OrderId(Guid Value);
+    public readonly record struct OrderId(Guid Value)
+    {
+        // The text OrderIdConverter reads back; the record's generated one would not parse.
+        public override string ToString() => Value.ToString();
+    }
 
     public sealed class OrderIdConverter : TypeConverter
     {
@@ -232,6 +236,77 @@ namespace TestApi
 
         [FromQuery]
         public string? City { get; set; }
+    }
+
+    // MVC leaves the properties a record's primary constructor sets out of the binding-source check, so it reads both
+    // records from the body, whichever the attribute targets.
+    public sealed record RecordPropertyFilter([property: FromQuery] string? City, int Page);
+
+    public sealed record RecordParameterFilter([FromQuery] string? City, int Page);
+
+    // A property the constructor does not set still counts.
+    public sealed record RecordWithQueryProperty(string? City)
+    {
+        [FromQuery]
+        public int Page { get; set; }
+    }
+
+    // [ModelBinder] and [BindProperty] name a binding source only together with a binder type.
+    public sealed class NamedModelBinderFilter
+    {
+        [ModelBinder(Name = ""c"")]
+        public string? City { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class NamedBindPropertyFilter
+    {
+        [BindProperty(Name = ""c"")]
+        public string? City { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class CustomBinderFilter
+    {
+        [ModelBinder(typeof(CityBinder))]
+        public string? City { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class CityBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext) => Task.CompletedTask;
+    }
+
+    public sealed class KeywordQuery
+    {
+        [FromRoute]
+        public int Id { get; set; }
+
+        [FromQuery]
+        public string? @event { get; set; }
+    }
+
+    // MVC binds only a property whose getter is public.
+    public sealed class PrivateGetterQuery
+    {
+        [FromRoute]
+        public int Id { get; set; }
+
+        public string? Note { private get; set; }
+
+        public string? Echo => Note;
+    }
+
+    public sealed class NotedShipment
+    {
+        public int Id { get; set; }
+
+        [FromQuery]
+        public string? Note { get; set; }
     }
 
     public sealed class Shipment

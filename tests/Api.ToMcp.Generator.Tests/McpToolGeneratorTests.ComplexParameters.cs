@@ -144,4 +144,40 @@ public partial class McpToolGeneratorTests
         Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
         Assert.DoesNotContain("bodyJson", tool);
     }
+
+    [Theory]
+    [InlineData("RecordPropertyFilter")]
+    [InlineData("RecordParameterFilter")]
+    [InlineData("NamedModelBinderFilter")]
+    [InlineData("NamedBindPropertyFilter")]
+    public void Generator_SendsAComplexParameterAsTheBody_WhenItsAttributesNameNoBindingSourceMvcCounts(string type)
+    {
+        // MVC skips the properties a record's constructor sets, and [ModelBinder] or [BindProperty] without a binder
+        // type names no source; it reads the type from the body, and the query string gets a 415.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"search\")] public Task<string> Find({type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(q);", tool);
+        Assert.DoesNotContain("queryParts", tool);
+    }
+
+    [Theory]
+    [InlineData("RecordWithQueryProperty")]
+    [InlineData("CustomBinderFilter")]
+    public void Generator_SendsAComplexParameterInTheQuery_WhenAPropertyMvcCountsNamesABindingSource(string type)
+    {
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"search\")] public Task<string> Find({type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("AddQueryValue(queryParts, \"q\", q);", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
+    [Fact]
+    public void Generator_LeavesOutAPropertyWhoseGetterIsNotPublic()
+    {
+        // MVC does not bind it either, and the generated tool could not read it.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"priv/{id}\")] public Task<string> Find(PrivateGetterQuery q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+        Assert.DoesNotContain("\"Note\"", tool);
+    }
 }
