@@ -23,8 +23,16 @@ public static class McpRequestValueFormatter
 
     private const string TryParseMethodName = "TryParse";
 
+    /// <summary>
+    /// The clone method the compiler gives a record, by which MVC tells one (<c>DefaultBindingMetadataProvider</c>).
+    /// </summary>
+    private const string RecordCloneMethodName = "<Clone>$";
+
+    private static readonly string ParsableInterfaceName = $"{typeof(IParsable<>).Namespace}.{nameof(IParsable<int>)}";
+
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
+    private static readonly ConcurrentDictionary<Type, IReadOnlyDictionary<string, ParameterInfo>> ConstructorParametersByType = new();
 
     /// <summary>
     /// Formats a single route or query value with the invariant culture and ISO 8601 dates.
@@ -120,7 +128,8 @@ public static class McpRequestValueFormatter
 
     private static void AddProperties(List<string> queryParts, string prefix, object value, int depth)
     {
-        var properties = value.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        var type = value.GetType();
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
         foreach (var property in properties)
         {
             if (!property.CanRead || property.GetIndexParameters().Length > 0)
@@ -128,21 +137,73 @@ public static class McpRequestValueFormatter
                 continue;
             }
 
-            AddValue(queryParts, $"{prefix}.{GetBinderModelName(property)}", property.GetValue(value), depth);
+            AddValue(queryParts, $"{prefix}.{GetBinderModelName(type, property)}", property.GetValue(value), depth);
         }
     }
 
     /// <summary>
     /// The key the binder reads a property under: the name a binding attribute such as <c>[FromQuery(Name = "q")]</c>
-    /// gives it, else its own name.
+    /// gives it, else its own name. For a property a record's primary constructor sets, MVC takes that attribute from the
+    /// constructor parameter it binds the property through, and ignores one on the property.
     /// </summary>
-    private static string GetBinderModelName(PropertyInfo property)
+    private static string GetBinderModelName(Type type, PropertyInfo property)
     {
-        return property
+        ICustomAttributeProvider attributeProvider = GetConstructorParameters(type).TryGetValue(property.Name, out var parameter)
+            ? parameter
+            : property;
+
+        return attributeProvider
             .GetCustomAttributes(inherit: true)
             .OfType<IModelNameProvider>()
             .Select(x => x.Name)
             .FirstOrDefault(x => !string.IsNullOrEmpty(x)) ?? property.Name;
+    }
+
+    private static IReadOnlyDictionary<string, ParameterInfo> GetConstructorParameters(Type type)
+    {
+        return ConstructorParametersByType.GetOrAdd(type, FindConstructorParameters);
+    }
+
+    /// <summary>
+    /// The parameters of the primary constructor MVC binds a record through, by the property each sets
+    /// (<c>DefaultBindingMetadataProvider.GetBoundConstructor</c>): of a record class that is not abstract and has exactly
+    /// one public constructor, every parameter of which has a property of the same name and type. Empty for any other type.
+    /// </summary>
+    private static IReadOnlyDictionary<string, ParameterInfo> FindConstructorParameters(Type type)
+    {
+        var none = new Dictionary<string, ParameterInfo>();
+        if (type.IsAbstract || type.IsValueType || type.IsInterface)
+        {
+            return none;
+        }
+
+        var constructors = type.GetConstructors();
+        var cloneMethod = type.GetMethod(RecordCloneMethodName, BindingFlags.Public | BindingFlags.Instance);
+        var isRecord = cloneMethod is not null && (cloneMethod.ReturnType == type || cloneMethod.ReturnType == type.BaseType);
+        if (!isRecord || constructors.Length != 1)
+        {
+            return none;
+        }
+
+        var parameters = constructors[0].GetParameters();
+        var properties = type
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(x => x.GetMethod is { IsPublic: true } && x.GetIndexParameters().Length == 0)
+            .ToList();
+        var parametersByProperty = new Dictionary<string, ParameterInfo>(StringComparer.Ordinal);
+        foreach (var parameter in parameters)
+        {
+            var isMapped = properties.Any(x => string.Equals(x.Name, parameter.Name, StringComparison.Ordinal) && x.PropertyType == parameter.ParameterType);
+            if (!isMapped)
+            {
+                // Not a primary constructor: MVC binds the record's properties like any other type's.
+                return none;
+            }
+
+            parametersByProperty[parameter.Name!] = parameter;
+        }
+
+        return parametersByProperty;
     }
 
     private static bool HasDeclaredTypeConverter(Type type)
@@ -169,23 +230,49 @@ public static class McpRequestValueFormatter
     {
         return type == typeof(byte[]) ||
             TypeDescriptor.GetConverter(type).CanConvertFrom(typeof(string)) ||
-            type
-                .GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .Any(x => x.Name == TryParseMethodName && IsTryParseSignature(x, type));
+            HasTryParse(type);
     }
 
-    private static bool IsTryParseSignature(MethodInfo method, Type type)
+    /// <summary>
+    /// Whether MVC finds a <c>TryParse</c> to read the type with (<c>ParameterBindingMethodCache.FindTryParseMethod</c>):
+    /// an explicit <c>IParsable&lt;T&gt;.TryParse</c> the type declares, else a public static
+    /// <c>bool TryParse(string, IFormatProvider, out T)</c> or <c>bool TryParse(string, out T)</c> that the type or a
+    /// base class declares, or that exactly one of its interfaces implements with a body.
+    /// </summary>
+    private static bool HasTryParse(Type type)
     {
-        var parameterTypes = method
-            .GetParameters()
-            .Select(x => x.ParameterType)
-            .ToList();
-        var resultType = type.MakeByRefType();
+        return DeclaresExplicitParsableTryParse(type) ||
+            HasTryParse(type, [typeof(string), typeof(IFormatProvider), type.MakeByRefType()]) ||
+            HasTryParse(type, [typeof(string), type.MakeByRefType()]);
+    }
 
-        return method.ReturnType == typeof(bool) &&
-            (
-                parameterTypes.SequenceEqual([typeof(string), resultType]) ||
-                parameterTypes.SequenceEqual([typeof(string), typeof(IFormatProvider), resultType])
-            );
+    /// <summary>
+    /// MVC looks the explicit implementation up by the name the compiler gives it, which holds the type's full name with
+    /// dots between nested types. A generic type's never matches, as the compiler names it after the type parameters.
+    /// </summary>
+    private static bool DeclaresExplicitParsableTryParse(Type type)
+    {
+        var explicitTryParseName = $"{ParsableInterfaceName}<{type.FullName?.Replace('+', '.')}>.{TryParseMethodName}";
+
+        return type.GetMethod(explicitTryParseName, BindingFlags.Static | BindingFlags.NonPublic) is not null;
+    }
+
+    private static bool HasTryParse(Type type, Type[] parameterTypes)
+    {
+        var declaredTryParse = type.GetMethod(TryParseMethodName, BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy, parameterTypes);
+        if (IsTryParse(declaredTryParse))
+        {
+            return true;
+        }
+
+        // When two interfaces offer one, MVC takes neither.
+        return type
+            .GetInterfaces()
+            .Count(x => IsTryParse(x.GetMethod(TryParseMethodName, BindingFlags.Public | BindingFlags.Static, parameterTypes))) == 1;
+    }
+
+    private static bool IsTryParse(MethodInfo? method)
+    {
+        return method is { IsAbstract: false } && method.ReturnType == typeof(bool);
     }
 }
