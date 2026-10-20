@@ -396,6 +396,75 @@ namespace TestApi
     }
 
     // Code sets a property or field in other forms than a plain assignment as well.
+    // A constructor runs after the initializers, so one that hands the attribute to other code may change the template.
+    public static class LocalRoutes
+    {
+        public static void Prefix(CtorHelperGetAttribute attribute, string? area) => attribute.Template = area + ""/"" + attribute.Template;
+
+        public static void Mark(object attribute)
+        {
+        }
+    }
+
+    public sealed class CtorHelperGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public CtorHelperGetAttribute()
+        {
+            LocalRoutes.Prefix(this, ""admin"");
+        }
+
+        public string? Template { get; set; } = ""init"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public abstract class MarkingBaseAttribute : Attribute
+    {
+        protected MarkingBaseAttribute()
+        {
+            LocalRoutes.Mark(this);
+        }
+    }
+
+    public sealed class MarkedGetAttribute : MarkingBaseAttribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public string? Template { get; set; } = ""init"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class CtorValuesGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private readonly string _area;
+
+        public CtorValuesGetAttribute()
+        {
+            _area = ""admin"" + ""/"" + 1;
+            Methods = new[] { ""GET"" };
+            Weight = _area == null ? 1 : 2;
+        }
+
+        public string? Template { get; set; } = ""init"";
+
+        public IEnumerable<string> Methods { get; }
+
+        public int Weight { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
     public sealed class TupleCtorGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
     {
         public TupleCtorGetAttribute()
@@ -611,6 +680,7 @@ namespace TestApi
     [InlineData("[OverridingGet] public IActionResult Find() => Ok();", "GET", "/api/products/overridden")]
     [InlineData("[ConstantOverrideGet] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
     [InlineData("[StoringAreaGet(Template = \"items\", Area = \"admin\")] public IActionResult Find() => Ok();", "GET", "/api/products/items")]
+    [InlineData("[CtorValuesGet] public IActionResult Find() => Ok();", "GET", "/api/products/init")]
     [InlineData("[NewHidingGet(Template = \"hidden\")] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
     [InlineData("[NewHidingGet] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
     [InlineData("[NewReimplementingGet(Template = \"own\")] public IActionResult Find() => Ok();", "GET", "/api/products/own")]
@@ -709,6 +779,8 @@ namespace TestApi
     [InlineData("[AssignedGet(\"actual\")]", "the generator cannot read the route template of its [AssignedGet] attribute, as AssignedGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
     [InlineData("[DerivedInitGet]", "the generator cannot read the route template of its [DerivedInitGet] attribute, as DerivedInitGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
     [InlineData("[TupleCtorGet]", "the generator cannot read the route template of its [TupleCtorGet] attribute, as TupleCtorGetAttribute.Template is set by code other than its initializer, which the generator does not follow")]
+    [InlineData("[CtorHelperGet]", "the generator cannot read the route template of its [CtorHelperGet] attribute, as the constructor of CtorHelperGetAttribute does more than assign values to the attribute's fields and auto-properties, which the generator does not follow")]
+    [InlineData("[MarkedGet]", "the generator cannot read the route template of its [MarkedGet] attribute, as the constructor of MarkingBaseAttribute does more than assign values to the attribute's fields and auto-properties, which the generator does not follow")]
     public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttribute_ThatCodeOtherThanItsInitializerSets(string attribute, string reason)
     {
         // A constructor overwrites the initializer, so the initializer is not the template MVC reads; a base class's
@@ -834,6 +906,10 @@ namespace Shared
         }
     }
 
+    public abstract class SharedPlainBaseAttribute : System.Attribute
+    {
+    }
+
     public class SharedAutoRouteAttribute : System.Attribute, IRouteTemplateProvider
     {
         public string? Template { get; set; }
@@ -935,6 +1011,29 @@ namespace TestApi
         private void Apply(string? area) => Shared.SharedRoutes.Prefix(this, area);
     }
 
+    public sealed class LocalCtorHelperRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        public LocalCtorHelperRouteAttribute()
+        {
+            Shared.SharedRoutes.Prefix(this, ""admin"");
+        }
+
+        public string? Template { get; set; } = ""init"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
+    public sealed class LocalInitOverSharedPlainBaseRouteAttribute : Shared.SharedPlainBaseAttribute, IRouteTemplateProvider
+    {
+        public string? Template { get; set; } = ""init"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
     public sealed class LocalFieldSelfAreaRouteAttribute : Shared.SharedAutoRouteAttribute
     {
         private readonly object _self;
@@ -963,6 +1062,8 @@ namespace TestApi
     [InlineData("[LocalStoringZoneRoute(Template = \"items\", Zone = \" east \")]", "/api/products/items", null)]
     [InlineData("[LocalSelfVarAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalSelfVarAreaRoute] attribute, as the setter of LocalSelfVarAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     [InlineData("[LocalIndirectAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalIndirectAreaRoute] attribute, as the setter of LocalIndirectAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[LocalCtorHelperRoute]", null, "the generator cannot read the route template of its [LocalCtorHelperRoute] attribute, as the constructor of LocalCtorHelperRouteAttribute does more than assign values to the attribute's fields and auto-properties, which the generator does not follow")]
+    [InlineData("[LocalInitOverSharedPlainBaseRoute]", null, "the generator cannot read the route template of its [LocalInitOverSharedPlainBaseRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedPlainBaseAttribute, which may set LocalInitOverSharedPlainBaseRouteAttribute.Template")]
     [InlineData("[LocalFieldSelfAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalFieldSelfAreaRoute] attribute, as the setter of LocalFieldSelfAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [SharedSideSetRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedSideSetRouteAttribute.Area, whose setter a named argument runs, and which may set SharedSideSetRouteAttribute.Template")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Weight = 2)]", "/api/products/items", null)]

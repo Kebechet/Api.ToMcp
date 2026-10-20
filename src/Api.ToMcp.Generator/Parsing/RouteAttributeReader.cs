@@ -377,10 +377,16 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             // Of a property a referenced assembly declares, the generator can read no initializer either, which says so.
-            if (classWithoutCode != null && !property.DeclaringSyntaxReferences.IsEmpty)
+            if (!property.DeclaringSyntaxReferences.IsEmpty)
             {
-                return new UnknownValue(
-                    $"the referenced assembly '{classWithoutCode.ContainingAssembly?.Name}' holds no code of {classWithoutCode.Name}, which may set {qualifiedName}");
+                var constructorProblem = classWithoutCode is null
+                    ? GetConstructorProblem(attributeClass, qualifiedName, compilation, ct)
+                    : new UnknownValue(
+                        $"the referenced assembly '{classWithoutCode.ContainingAssembly?.Name}' holds no code of {classWithoutCode.Name}, which may set {qualifiedName}");
+                if (constructorProblem != null)
+                {
+                    return constructorProblem;
+                }
             }
 
             return GetOtherSetterProblem(attribute, property, qualifiedName, compilation, ct) ?? ReadPropertyValue(property, compilation, ct);
@@ -399,6 +405,93 @@ namespace Api.ToMcp.Generator.Parsing
             var getter = declaration.AccessorList?.Accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.GetAccessorDeclaration));
 
             return declaration.ExpressionBody != null || getter is { } && !IsAutoAccessor(getter);
+        }
+
+        /// <summary>
+        /// Why a constructor that runs when MVC creates the attribute, after the initializers, may change the value an
+        /// initializer gives: one of the attribute's class or a class it derives from, up to <c>System.Attribute</c>, that
+        /// does more than assign plain values to the attribute's fields and auto-properties, or any of a referenced
+        /// assembly, whose code metadata does not hold.
+        /// </summary>
+        private static UnknownValue? GetConstructorProblem(INamedTypeSymbol attributeClass, string propertyName, Compilation compilation, CancellationToken ct)
+        {
+            for (var type = attributeClass;
+                type != null && type.SpecialType != SpecialType.System_Object && type.ToDisplayString() != KnownTypeNames.Attribute;
+                type = type.BaseType)
+            {
+                if (type.DeclaringSyntaxReferences.IsEmpty)
+                {
+                    return new UnknownValue(
+                        $"the referenced assembly '{type.ContainingAssembly?.Name}' holds no code of {type.Name}, which may set {propertyName}");
+                }
+
+                var constructors = type.InstanceConstructors
+                    .SelectMany(x => x.DeclaringSyntaxReferences)
+                    .Select(x => x.GetSyntax(ct))
+                    .OfType<ConstructorDeclarationSyntax>();
+                if (constructors.Any(x => !OnlyAssignsValues(x, compilation, ct)))
+                {
+                    return new UnknownValue(
+                        $"the constructor of {type.Name} does more than assign values to the attribute's fields and auto-properties, which the generator does not follow");
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Whether each statement of the constructor assigns a plain value to a field of the attribute, or to one of its
+        /// auto-properties: a value made of constants, the constructor's parameters, fields, arrays, conversions,
+        /// interpolation and operators that are not user-defined, so it runs no code that could reach the attribute.
+        /// </summary>
+        private static bool OnlyAssignsValues(ConstructorDeclarationSyntax constructor, Compilation compilation, CancellationToken ct)
+        {
+            if (!(compilation.GetSemanticModel(constructor.SyntaxTree).GetOperation(constructor, ct) is IConstructorBodyOperation body))
+            {
+                return false;
+            }
+
+            var block = body.BlockBody ?? body.ExpressionBody;
+
+            return block is null || block.Operations.All(x => x is IExpressionStatementOperation { Operation: ISimpleAssignmentOperation assignment } &&
+                IsPlainTarget(assignment.Target, compilation, ct) &&
+                assignment.Value.DescendantsAndSelf().All(IsPlainValue));
+        }
+
+        private static bool IsPlainTarget(IOperation target, Compilation compilation, CancellationToken ct)
+        {
+            if (GetInstanceField(target) != null)
+            {
+                return true;
+            }
+
+            if (!(target is IPropertyReferenceOperation
+                {
+                    Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance },
+                    Property: var property
+                }))
+            {
+                return false;
+            }
+
+            // A constructor assigns a get-only auto-property's backing field.
+            return GetSetter(property) is { } setter
+                ? IsCompilerGenerated(setter) || IsStoringSetter(setter, compilation, ct)
+                : property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax
+                {
+                    ExpressionBody: null,
+                    AccessorList: { Accessors: { Count: 1 } accessors }
+                } && IsAutoAccessor(accessors[0]);
+        }
+
+        private static bool IsPlainValue(IOperation operation)
+        {
+            return operation.ConstantValue.HasValue ||
+                operation is ILiteralOperation or IParameterReferenceOperation or IFieldReferenceOperation or IDefaultValueOperation or
+                    IArrayCreationOperation or IArrayInitializerOperation or IInterpolatedStringOperation or IInterpolatedStringTextOperation or
+                    IInterpolationOperation or ICoalesceOperation or IConditionalOperation or
+                    IConversionOperation { OperatorMethod: null } or IBinaryOperation { OperatorMethod: null } or IUnaryOperation { OperatorMethod: null } or
+                    IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance, Parent: IFieldReferenceOperation };
         }
 
         /// <summary>
