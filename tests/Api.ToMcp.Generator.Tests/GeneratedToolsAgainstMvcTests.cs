@@ -166,6 +166,9 @@ namespace TestApi
         [HttpGet(""required-default"")]
         public object GetRequiredDefault([FromQuery, System.ComponentModel.DataAnnotations.Required] int size = 1) => new { size, query = Request.QueryString.Value };
 
+        [HttpGet(""names/{name}.{ext?}"")]
+        public object GetFileName(string name, string ext = ""txt"") => new { name, ext, path = Request.Path.Value };
+
         [HttpGet(""default-route/{status?}"")]
         public object GetDefaultRoute(OrderStatus status = (OrderStatus)99) => new { status, path = Request.Path.Value };
 
@@ -395,6 +398,7 @@ namespace TestApi
     [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":1,""page"":3}", @"{""unknown"":1,""page"":3,""text"":""x"",""query"":""?unknown=Closed&page=3""}")]
     [InlineData("EchoController_GetBindRequiredTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
     [InlineData("EchoController_GetRequiredDefaultTool", @"{}", @"{""size"":1,""query"":""?size=1""}")]
+    [InlineData("EchoController_GetFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":""txt"",""path"":""/api/names/report.txt""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{}", @"{""status"":99,""path"":""/api/default-route/""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{""status"":1}", @"{""status"":1,""path"":""/api/default-route/Closed""}")]
     [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]

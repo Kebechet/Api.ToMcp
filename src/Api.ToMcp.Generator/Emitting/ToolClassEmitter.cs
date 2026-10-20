@@ -256,10 +256,13 @@ namespace Api.ToMcp.Generator.Emitting
                 if (directParam != null)
                 {
                     // An optional route value at the end of the URL, without a default of the route's own, MVC binds as
-                    // the action's default when the URL leaves it out, as it does a query value.
+                    // the action's default when the URL leaves it out, as it does a query value. Only a whole segment can
+                    // be left empty: of {name}.{ext?}, the URL would keep the dot, which MVC matches only with a value.
                     var lastPart = template.Parts.Count == 0 ? null : template.Parts[template.Parts.Count - 1];
+                    var partBefore = template.Parts.Count < 2 ? null : template.Parts[template.Parts.Count - 2];
                     var canBeLeftOut = lastPart is { IsParameter: true, IsOptional: true, HasDefaultValue: false } &&
-                        string.Equals(lastPart.Text, placeholder, StringComparison.OrdinalIgnoreCase);
+                        string.Equals(lastPart.Text, placeholder, StringComparison.OrdinalIgnoreCase) &&
+                        partBefore is { IsParameter: false } && partBefore.Text.EndsWith(PathSeparator, StringComparison.Ordinal);
                     placeholderSources[placeholder] = (canBeLeftOut ? GetSentValue(directParam) : EscapeIdentifier(directParam.Name), directParam.Name);
                 }
                 else

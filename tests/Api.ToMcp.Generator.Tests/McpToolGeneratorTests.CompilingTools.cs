@@ -175,11 +175,13 @@ namespace TestApi
         Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
     }
 
-    [Fact]
-    public void Generator_SendsARequiredRouteValue_ThatEqualsTheActionsDefault()
+    [Theory]
+    [InlineData("p/{page}")]
+    [InlineData("p/{name}.{page?}")]
+    public void Generator_SendsARouteValue_ThatEqualsTheActionsDefault_WhenTheUrlCannotLeaveItOut(string template)
     {
-        // The URL needs the segment.
-        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"p/{page}\")] public Task<string> Find(int page = 1) => Task.FromResult(string.Empty);");
+        // The URL needs the segment; one value of a segment of several MVC matches only with the separator before it.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"{template}\")] public Task<string> Find(string name, int page = 1) => Task.FromResult(string.Empty);");
 
         Assert.Contains($"var routepage = System.Uri.EscapeDataString({Formatter}.Format(page));", tool);
     }
