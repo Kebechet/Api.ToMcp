@@ -414,6 +414,72 @@ namespace TestApi
         public IEnumerable<string> HttpMethods => new[] { ""GET"" };
     }
 
+    // Setters of another named argument that do more than store the value: the generator follows none of them.
+    public sealed class CollectionAreaGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private List<string> _tags = new List<string>();
+
+        public string? Template { get; set; }
+
+        public string? Area { get => null; set => _tags = new List<string> { value ?? """" }; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class PatternAreaGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _area;
+
+        public string? Template { get; set; }
+
+        public string? Area { get => _area; set => _area = value is { Length: > 0 } ? value : null; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class ObjectInitAreaGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private Options? _options;
+
+        public string? Template { get; set; }
+
+        public string? Area { get => null; set => _options = new Options { Label = value }; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+
+        private sealed class Options
+        {
+            public string? Label { get; set; }
+        }
+    }
+
+    public sealed class StoringAreaGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _area;
+
+        public string? Template { get; set; }
+
+        public string? Area { get => _area; set => _area = value; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
     public sealed class RefSideGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
     {
         private string? _template;
@@ -498,6 +564,7 @@ namespace TestApi
     [InlineData("[ParenthesizedGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
     [InlineData("[OverridingGet] public IActionResult Find() => Ok();", "GET", "/api/products/overridden")]
     [InlineData("[ConstantOverrideGet] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
+    [InlineData("[StoringAreaGet(Template = \"items\", Area = \"admin\")] public IActionResult Find() => Ok();", "GET", "/api/products/items")]
     [InlineData("[NewHidingGet(Template = \"hidden\")] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
     [InlineData("[NewHidingGet] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
     [InlineData("[NewReimplementingGet(Template = \"own\")] public IActionResult Find() => Ok();", "GET", "/api/products/own")]
@@ -623,6 +690,9 @@ namespace TestApi
     [InlineData("[SideSetGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideSetGet] attribute, as the value SideSetGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[SideDerivedGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideDerivedGet] attribute, as the value SideDerivedGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[RefSideGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [RefSideGet] attribute, as the value RefSideGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    [InlineData("[CollectionAreaGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [CollectionAreaGet] attribute, as the setter of CollectionAreaGetAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[PatternAreaGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [PatternAreaGet] attribute, as the setter of PatternAreaGetAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[ObjectInitAreaGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [ObjectInitAreaGet] attribute, as the setter of ObjectInitAreaGetAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     public void Generator_SaysWhyItCannotReadTheTemplateANamedArgumentSets_WhenThePropertyMayNotKeepIt(string attribute, string reason)
     {
         // MVC serves the template the getter returns, which a setter that adds to its value, say, makes /v1/items.
@@ -796,6 +866,38 @@ namespace TestApi
 
         public string? Zone { get => _zone; set => _zone = value?.Trim(); }
     }
+
+    public sealed class LocalStoringZoneRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+        private string? _zone;
+
+        public string? Zone { get => _zone; set => _zone = value; }
+    }
+
+    // The attribute reaches referenced code that sets Template by ways other than this passed on directly.
+    public sealed class LocalSelfVarAreaRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+        public string? Area { get => null; set { var self = this; Shared.SharedRoutes.Prefix(self, value); } }
+    }
+
+    public sealed class LocalIndirectAreaRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+        public string? Area { get => null; set => Apply(value); }
+
+        private void Apply(string? area) => Shared.SharedRoutes.Prefix(this, area);
+    }
+
+    public sealed class LocalFieldSelfAreaRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+        private readonly object _self;
+
+        public LocalFieldSelfAreaRouteAttribute()
+        {
+            _self = this;
+        }
+
+        public string? Area { get => null; set => Shared.SharedRoutes.Prefix(_self, value); }
+    }
 }
 ";
 
@@ -805,11 +907,15 @@ namespace TestApi
     [InlineData("[LocalConstantOverrideRoute]", "/api/products/items", null)]
     [InlineData("[LocalSideOverSharedAutoRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalSideOverSharedAutoRoute] attribute, as the value SharedAutoRouteAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[LocalPlainOverSharedAutoRoute(Template = \"items\")]", "/api/products/items", null)]
-    [InlineData("[LocalForwardingAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalForwardingAreaRoute] attribute, as the setter of LocalForwardingAreaRouteAttribute.Area, which a named argument runs, calls code of the referenced assembly 'Shared' with the attribute, which may set SharedSideVirtualRouteAttribute.Template")]
+    [InlineData("[LocalForwardingAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalForwardingAreaRoute] attribute, as the setter of LocalForwardingAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     [InlineData("[LocalOwnAreaRoute(Template = \"items\", Area = \"admin\")]", "/api/products/items", null)]
-    [InlineData("[LocalHelperAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalHelperAreaRoute] attribute, as the setter of LocalHelperAreaRouteAttribute.Area, which a named argument runs, calls code of the referenced assembly 'Shared' with the attribute, which may set LocalHelperAreaRouteAttribute.Template")]
-    [InlineData("[LocalHelperAreaRoute(Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalHelperAreaRoute] attribute, as the setter of LocalHelperAreaRouteAttribute.Area, which a named argument runs, calls code of the referenced assembly 'Shared' with the attribute, which may set LocalHelperAreaRouteAttribute.Template")]
-    [InlineData("[LocalTrimmingZoneRoute(Template = \"items\", Zone = \" east \")]", "/api/products/items", null)]
+    [InlineData("[LocalHelperAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalHelperAreaRoute] attribute, as the setter of LocalHelperAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[LocalHelperAreaRoute(Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalHelperAreaRoute] attribute, as the setter of LocalHelperAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[LocalTrimmingZoneRoute(Template = \"items\", Zone = \" east \")]", null, "the generator cannot read the route template of its [LocalTrimmingZoneRoute] attribute, as the setter of LocalTrimmingZoneRouteAttribute.Zone, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[LocalStoringZoneRoute(Template = \"items\", Zone = \" east \")]", "/api/products/items", null)]
+    [InlineData("[LocalSelfVarAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalSelfVarAreaRoute] attribute, as the setter of LocalSelfVarAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[LocalIndirectAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalIndirectAreaRoute] attribute, as the setter of LocalIndirectAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
+    [InlineData("[LocalFieldSelfAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalFieldSelfAreaRoute] attribute, as the setter of LocalFieldSelfAreaRouteAttribute.Area, which a named argument runs, does more than store its value, which the generator does not follow")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [SharedSideSetRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedSideSetRouteAttribute.Area, whose setter a named argument runs, and which may set SharedSideSetRouteAttribute.Template")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Weight = 2)]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\")]", "/api/products/items", null)]

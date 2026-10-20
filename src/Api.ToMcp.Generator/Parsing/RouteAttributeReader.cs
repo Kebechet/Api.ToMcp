@@ -481,10 +481,10 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Why the setter of another named argument of the attribute may set the property after all: one a referenced
-        /// assembly declares, whose code metadata does not hold, unless the compiler wrote it for an auto-property, or one
-        /// of the project that calls code of a referenced assembly with the attribute. The scan for writes finds the
-        /// project's own code that sets the property.
+        /// Why the setter of another named argument of the attribute may set the property after all: any but one that only
+        /// stores its value, an auto-property's or, in the project, one that assigns the value to a field. Such a setter
+        /// may hand the attribute to code the generator does not follow; the scan for writes finds one that sets the
+        /// property's own field.
         /// </summary>
         private static UnknownValue? GetOtherSetterProblem(
             AttributeData attribute,
@@ -511,10 +511,10 @@ namespace Api.ToMcp.Generator.Parsing
                             $"the referenced assembly '{setter.ContainingAssembly?.Name}' holds no code of {setterName}, whose setter a named argument runs, and which may set {propertyName}");
                     }
                 }
-                else if (CallsReferencedCodeWithTheAttribute(setter, compilation, ct) is { } referencedAssembly)
+                else if (!IsStoringSetter(setter, compilation, ct))
                 {
                     return new UnknownValue(
-                        $"the setter of {setterName}, which a named argument runs, calls code of the referenced assembly '{referencedAssembly}' with the attribute, which may set {propertyName}");
+                        $"the setter of {setterName}, which a named argument runs, does more than store its value, which the generator does not follow");
                 }
             }
 
@@ -538,59 +538,13 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The name of the referenced assembly whose code the project's setter calls with the attribute, as a method's
-        /// instance or argument, or as the instance of a property that is not an auto-property; null if none.
+        /// Whether the project's setter only stores the value: an auto-property's, or one that assigns it to a field of
+        /// the attribute and does nothing else.
         /// </summary>
-        private static string? CallsReferencedCodeWithTheAttribute(IMethodSymbol setter, Compilation compilation, CancellationToken ct)
+        private static bool IsStoringSetter(IMethodSymbol setter, Compilation compilation, CancellationToken ct)
         {
-            foreach (var reference in setter.DeclaringSyntaxReferences)
-            {
-                var declaration = reference.GetSyntax(ct);
-                var operation = compilation.GetSemanticModel(declaration.SyntaxTree).GetOperation(declaration, ct);
-                foreach (var called in operation?.Descendants() ?? Enumerable.Empty<IOperation>())
-                {
-                    ISymbol? member = null;
-                    var isWithTheAttribute = false;
-                    switch (called)
-                    {
-                        case IInvocationOperation invocation:
-                            member = invocation.TargetMethod;
-                            isWithTheAttribute = IsTheAttribute(invocation.Instance) || invocation.Arguments.Any(x => IsTheAttribute(x.Value));
-                            break;
-                        case IObjectCreationOperation creation:
-                            member = creation.Constructor;
-                            isWithTheAttribute = creation.Arguments.Any(x => IsTheAttribute(x.Value));
-                            break;
-                        case IPropertyReferenceOperation propertyReference:
-                            member = propertyReference.Property;
-                            isWithTheAttribute = IsTheAttribute(propertyReference.Instance) && !IsAutoProperty(propertyReference.Property);
-                            break;
-                    }
-
-                    if (member != null && isWithTheAttribute && !member.Locations.Any(x => x.IsInSource))
-                    {
-                        return member.ContainingAssembly?.Name;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        private static bool IsAutoProperty(IPropertySymbol property)
-        {
-            return (property.GetMethod is null || IsCompilerGenerated(property.GetMethod)) &&
-                (property.SetMethod is null || IsCompilerGenerated(property.SetMethod));
-        }
-
-        private static bool IsTheAttribute(IOperation? operation)
-        {
-            while (operation is IConversionOperation conversion)
-            {
-                operation = conversion.Operand;
-            }
-
-            return operation is IInstanceReferenceOperation;
+            return setter.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is AccessorDeclarationSyntax accessor &&
+                (IsAutoAccessor(accessor) || GetStoringField(accessor, compilation.GetSemanticModel(accessor.SyntaxTree), ct) != null);
         }
 
         /// <summary>
@@ -651,15 +605,22 @@ namespace Api.ToMcp.Generator.Parsing
         {
             var returned = getter.ExpressionBody?.Expression ??
                 (getter.Body?.Statements.Count == 1 && getter.Body.Statements[0] is ReturnStatementSyntax returnStatement ? returnStatement.Expression : null);
-            var stored = setter.ExpressionBody?.Expression ??
-                (setter.Body?.Statements.Count == 1 && setter.Body.Statements[0] is ExpressionStatementSyntax expressionStatement ? expressionStatement.Expression : null);
             var field = returned is null ? null : GetInstanceField(GetOperation(semanticModel, returned, ct));
 
-            return field != null &&
-                stored != null &&
-                GetOperation(semanticModel, stored, ct) is ISimpleAssignmentOperation { Value: IParameterReferenceOperation { Parameter: { IsImplicitlyDeclared: true } } } assignment &&
-                SymbolEqualityComparer.Default.Equals(GetInstanceField(assignment.Target), field)
-                    ? field
+            return field != null && SymbolEqualityComparer.Default.Equals(GetStoringField(setter, semanticModel, ct), field) ? field : null;
+        }
+
+        /// <summary>
+        /// The field of the attribute that the setter stores the value in, with nothing else in it, or null.
+        /// </summary>
+        private static IFieldSymbol? GetStoringField(AccessorDeclarationSyntax setter, SemanticModel semanticModel, CancellationToken ct)
+        {
+            var stored = setter.ExpressionBody?.Expression ??
+                (setter.Body?.Statements.Count == 1 && setter.Body.Statements[0] is ExpressionStatementSyntax expressionStatement ? expressionStatement.Expression : null);
+
+            return stored != null &&
+                GetOperation(semanticModel, stored, ct) is ISimpleAssignmentOperation { Value: IParameterReferenceOperation { Parameter: { IsImplicitlyDeclared: true } } } assignment
+                    ? GetInstanceField(assignment.Target)
                     : null;
         }
 
