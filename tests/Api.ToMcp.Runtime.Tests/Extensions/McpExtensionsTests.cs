@@ -24,7 +24,8 @@ public class McpExtensionsTests
     {
         // The SDK scan is the reference: with the XML docs off, every tool must come out identical in name,
         // description, annotations, metadata and input schema (DI-bound parameters left out, [Description]s kept).
-        // Generated tools are left out: their output schema is meant to differ, it follows MVC's JSON options.
+        // Generated tools are left out: their output schema is meant to differ, it follows MVC's JSON options. A
+        // property with a [JsonConverter] of its own would differ too, on purpose, and none of these tools has one.
         var expectedTools = BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly)).Where(x => !IsGenerated(x));
         var actualTools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false)).Where(x => !IsGenerated(x)).ToList();
 
@@ -95,6 +96,33 @@ public class McpExtensionsTests
 
         Assert.Equal("object", branches[0].GetProperty("type").GetString());
         Assert.Equal("null", branches[1].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void AddMcpTools_LetsAPropertyWrittenByItsOwnConverter_AcceptAnyValue_InTheInputAndOutputSchema()
+    {
+        // The SDK reads the argument, and MVC writes the response, with the converter: "12.5 EUR", not an object.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+        var tool = tools.Single(x => x.ProtocolTool.Name == "generated_converted").ProtocolTool;
+
+        var inputTotal = tool.InputSchema.GetProperty("properties").GetProperty("invoice").GetProperty("properties").GetProperty("total");
+        var outputTotal = GetOutputSchema(tools, "generated_converted").GetProperty("properties").GetProperty("total");
+
+        Assert.Equal("""{"description":"Total as the till prints it."}""", inputTotal.GetRawText());
+        Assert.Equal("""{"description":"Total as the till prints it."}""", outputTotal.GetRawText());
+    }
+
+    [Fact]
+    public void AddMcpTools_LetsAPropertyWrittenByItsOwnConverter_AcceptAnyValue_WhenXmlDocDescriptionsAreOff()
+    {
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false));
+        var tool = tools.Single(x => x.ProtocolTool.Name == "generated_converted").ProtocolTool;
+
+        var inputTotal = tool.InputSchema.GetProperty("properties").GetProperty("invoice").GetProperty("properties").GetProperty("total");
+        var outputTotal = GetOutputSchema(tools, "generated_converted").GetProperty("properties").GetProperty("total");
+
+        Assert.Equal(JsonValueKind.True, inputTotal.ValueKind);
+        Assert.Equal(JsonValueKind.True, outputTotal.ValueKind);
     }
 
     [Fact]

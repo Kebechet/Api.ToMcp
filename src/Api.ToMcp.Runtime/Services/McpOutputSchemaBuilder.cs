@@ -190,16 +190,18 @@ internal sealed class McpOutputSchemaBuilder
 
     /// <summary>
     /// Takes out what the exporter promises but MVC does not always write, since a validating client rejects a body
-    /// that breaks any of it: properties MVC can omit from <c>required</c>, and formats MVC can miss.
+    /// that breaks any of it: the shape of a property its own converter writes, properties MVC can omit from
+    /// <c>required</c>, and formats MVC can miss.
     /// </summary>
     private static AIJsonSchemaCreateOptions MatchWhatMvcWrites(AIJsonSchemaCreateOptions? inferenceOptions)
     {
-        var transformSchemaNode = inferenceOptions?.TransformSchemaNode;
+        var convertedOptions = ConvertedPropertySchema.Apply(inferenceOptions);
+        var transformSchemaNode = convertedOptions.TransformSchemaNode!;
 
-        return (inferenceOptions ?? AIJsonSchemaCreateOptions.Default) with
+        return convertedOptions with
         {
             TransformSchemaNode = (context, schema) =>
-                RemoveFormatMvcCanMiss(context, RemoveOmittableFromRequired(context, transformSchemaNode is null ? schema : transformSchemaNode(context, schema)))
+                RemoveFormatMvcCanMiss(context, RemoveOmittableFromRequired(context, transformSchemaNode(context, schema)))
         };
     }
 

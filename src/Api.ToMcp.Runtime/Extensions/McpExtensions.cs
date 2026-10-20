@@ -102,12 +102,13 @@ public static class McpExtensions
     private static McpServerTool CreateTool(IServiceProvider serviceProvider, Type toolType, MethodInfo toolMethod)
     {
         var scopeOptions = serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>().Value;
+        var describingOptions = scopeOptions.ArePropertyDescriptionsFromXmlDocs
+            ? serviceProvider.GetRequiredService<XmlDocPropertyDescriber>().SchemaCreateOptions
+            : null;
         var createOptions = new McpServerToolCreateOptions
         {
             Services = serviceProvider,
-            SchemaCreateOptions = scopeOptions.ArePropertyDescriptionsFromXmlDocs
-                ? serviceProvider.GetRequiredService<XmlDocPropertyDescriber>().SchemaCreateOptions
-                : null
+            SchemaCreateOptions = ConvertedPropertySchema.Apply(describingOptions)
         };
 
         // The SDK would build this schema from OutputSchemaType with its own JSON options; an explicit one wins.
@@ -115,7 +116,7 @@ public static class McpExtensions
             toolMethod.GetCustomAttribute<McpServerToolAttribute>() is { UseStructuredContent: true, OutputSchemaType: { } outputSchemaType })
         {
             createOptions.OutputSchema = serviceProvider.GetRequiredService<McpOutputSchemaBuilder>()
-                .Build(outputSchemaType, generatedTool.IsOutputNullable, createOptions.SchemaCreateOptions);
+                .Build(outputSchemaType, generatedTool.IsOutputNullable, describingOptions);
         }
 
         if (toolMethod.IsStatic)

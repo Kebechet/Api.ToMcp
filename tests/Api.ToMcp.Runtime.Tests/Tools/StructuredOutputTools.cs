@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -27,6 +29,35 @@ public sealed class StructuredNode
     public List<StructuredNode> Children { get; set; } = [];
 }
 
+/// <summary>An invoice whose total its own converter writes.</summary>
+public sealed class StructuredInvoice
+{
+    /// <summary>Total as the till prints it.</summary>
+    [JsonConverter(typeof(StructuredMoneyConverter))]
+    public StructuredMoney Total { get; set; } = new();
+}
+
+public sealed class StructuredMoney
+{
+    public decimal Amount { get; set; }
+
+    public string Currency { get; set; } = "";
+}
+
+public sealed class StructuredMoneyConverter : JsonConverter<StructuredMoney>
+{
+    public override StructuredMoney Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var parts = reader.GetString()!.Split(' ');
+        return new StructuredMoney { Amount = decimal.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture), Currency = parts[1] };
+    }
+
+    public override void Write(Utf8JsonWriter writer, StructuredMoney value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue($"{value.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture)} {value.Currency}");
+    }
+}
+
 /// <summary>Shaped like the tools the generator emits for actions with a typed response.</summary>
 [McpServerToolType]
 public static class GeneratedStructuredTools
@@ -43,6 +74,14 @@ public static class GeneratedStructuredTools
     [McpGeneratedTool(IsOutputNullable = true)]
     [Description("Generated tool whose response can be empty.")]
     public static Task<object> Nullable()
+    {
+        return Task.FromResult<object>(new CallToolResult());
+    }
+
+    [McpServerTool(Name = "generated_converted", UseStructuredContent = true, OutputSchemaType = typeof(StructuredInvoice))]
+    [McpGeneratedTool]
+    [Description("Generated tool whose request and response have a property its own converter writes.")]
+    public static Task<object> Converted(StructuredInvoice invoice)
     {
         return Task.FromResult<object>(new CallToolResult());
     }
