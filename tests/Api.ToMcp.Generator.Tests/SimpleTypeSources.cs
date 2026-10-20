@@ -251,6 +251,39 @@ namespace TestApi
         public int Page { get; set; }
     }
 
+    // MVC binds a property the primary constructor sets through the constructor parameter, with the parameter's binding
+    // attributes; a [property: ...] attribute it ignores. Extra makes MVC read these records from the route and query.
+    public sealed record RecordNamedCity([FromQuery(Name = ""c"")] string? City, int Page)
+    {
+        [FromQuery]
+        public int Extra { get; set; }
+    }
+
+    public sealed record RecordPropertyNamedCity([property: FromQuery(Name = ""c"")] string? City, int Page)
+    {
+        [FromQuery]
+        public int Extra { get; set; }
+    }
+
+    public sealed record RecordRouteOrder([FromRoute(Name = ""orderId"")] Guid Order, [FromQuery(Name = ""c"")] string? City)
+    {
+        [FromQuery]
+        public int Page { get; set; }
+    }
+
+    public sealed record RecordQueryId([FromQuery] int Id, string? City);
+
+    public sealed record RecordRouteId([property: FromRoute] int Id, string? City);
+
+    // MVC reads Id from the query string, though the route has an {id} for it to fill.
+    public sealed class QueryIdFilter
+    {
+        [FromQuery]
+        public int Id { get; set; }
+
+        public string? City { get; set; }
+    }
+
     // [ModelBinder] and [BindProperty] name a binding source only together with a binder type.
     public sealed class NamedModelBinderFilter
     {

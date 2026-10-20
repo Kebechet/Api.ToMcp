@@ -116,7 +116,7 @@ namespace Api.ToMcp.Generator.Models
         /// Whether a property of the parameter's type names a binding source of its own. <c>[ApiController]</c> then
         /// infers no source for the parameter, so MVC binds it from the route, query and form values, not the body.
         /// </summary>
-        public bool HasBindingSourceProperties => Properties.Any(x => x.Source != ParameterSourceModel.Auto);
+        public bool HasBindingSourceProperties => Properties.Any(x => x.NamesBindingSource);
 
         public string? Description { get; set; }
 
@@ -144,6 +144,18 @@ namespace Api.ToMcp.Generator.Models
         /// <see cref="ParameterSourceModel.Auto"/> when it has none and is read wherever its parameter is.
         /// </summary>
         public ParameterSourceModel Source { get; set; }
+
+        /// <summary>
+        /// Whether a record's primary constructor sets the property. MVC then binds it through the constructor parameter,
+        /// whose binding attributes <see cref="ModelName"/> and <see cref="Source"/> come from.
+        /// </summary>
+        public bool IsSetByConstructor { get; set; }
+
+        /// <summary>
+        /// Whether the property's binding source keeps <c>[ApiController]</c> from reading its type from the body. MVC
+        /// leaves the properties a record's constructor sets out of that check (<c>ModelMetadata.BoundProperties</c>).
+        /// </summary>
+        public bool NamesBindingSource => !IsSetByConstructor && Source != ParameterSourceModel.Auto;
     }
 
     internal enum ParameterSourceModel

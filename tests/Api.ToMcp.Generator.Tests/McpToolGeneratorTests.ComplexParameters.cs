@@ -207,6 +207,28 @@ public partial class McpToolGeneratorTests
     }
 
     [Fact]
+    public void Generator_TakesTheBindingAttributesOfARecordsConstructorProperties_FromTheConstructorParameters()
+    {
+        // MVC binds Order and City through the constructor, as {orderId} and ?c=; Page counts as a binding source.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"ord/{orderId}\")] public Task<string> Find(RecordRouteOrder q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"c\", q.City);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"Page\", q.Page);", tool);
+    }
+
+    [Fact]
+    public void Generator_KeepsARecordWhoseConstructorReadsTheQuery_UnderItsPrefix()
+    {
+        // The constructor's [FromQuery] Id reads only the query, so {id}, which the parameter id fills, is no value of it.
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpGet(\"qid/{id}\")] public Task<string> Find(int id, RecordQueryId filter) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        Assert.Contains("AddQueryValue(queryParts, \"filter\", filter);", tool);
+    }
+
+    [Fact]
     public void Generator_SendsAParameterWithAPropertyReadFromTheRoute_UnderItsOwnNames_WhenAParameterFillsTheRoute()
     {
         // The parameter id fills {id}; MVC still reads q.Id from it, but only without the q. prefix.

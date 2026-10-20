@@ -23,10 +23,16 @@ public static class McpRequestValueFormatter
 
     private const string TryParseMethodName = "TryParse";
 
+    /// <summary>
+    /// The clone method the compiler gives a record, by which MVC tells one (<c>DefaultBindingMetadataProvider</c>).
+    /// </summary>
+    private const string RecordCloneMethodName = "<Clone>$";
+
     private static readonly string ParsableInterfaceName = $"{typeof(IParsable<>).Namespace}.{nameof(IParsable<int>)}";
 
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
+    private static readonly ConcurrentDictionary<Type, IReadOnlyDictionary<string, ParameterInfo>> ConstructorParametersByType = new();
 
     /// <summary>
     /// Formats a single route or query value with the invariant culture and ISO 8601 dates.
@@ -122,7 +128,8 @@ public static class McpRequestValueFormatter
 
     private static void AddProperties(List<string> queryParts, string prefix, object value, int depth)
     {
-        var properties = value.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        var type = value.GetType();
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
         foreach (var property in properties)
         {
             if (!property.CanRead || property.GetIndexParameters().Length > 0)
@@ -130,21 +137,73 @@ public static class McpRequestValueFormatter
                 continue;
             }
 
-            AddValue(queryParts, $"{prefix}.{GetBinderModelName(property)}", property.GetValue(value), depth);
+            AddValue(queryParts, $"{prefix}.{GetBinderModelName(type, property)}", property.GetValue(value), depth);
         }
     }
 
     /// <summary>
     /// The key the binder reads a property under: the name a binding attribute such as <c>[FromQuery(Name = "q")]</c>
-    /// gives it, else its own name.
+    /// gives it, else its own name. For a property a record's primary constructor sets, MVC takes that attribute from the
+    /// constructor parameter it binds the property through, and ignores one on the property.
     /// </summary>
-    private static string GetBinderModelName(PropertyInfo property)
+    private static string GetBinderModelName(Type type, PropertyInfo property)
     {
-        return property
+        ICustomAttributeProvider attributeProvider = GetConstructorParameters(type).TryGetValue(property.Name, out var parameter)
+            ? parameter
+            : property;
+
+        return attributeProvider
             .GetCustomAttributes(inherit: true)
             .OfType<IModelNameProvider>()
             .Select(x => x.Name)
             .FirstOrDefault(x => !string.IsNullOrEmpty(x)) ?? property.Name;
+    }
+
+    private static IReadOnlyDictionary<string, ParameterInfo> GetConstructorParameters(Type type)
+    {
+        return ConstructorParametersByType.GetOrAdd(type, FindConstructorParameters);
+    }
+
+    /// <summary>
+    /// The parameters of the primary constructor MVC binds a record through, by the property each sets
+    /// (<c>DefaultBindingMetadataProvider.GetBoundConstructor</c>): of a record class that is not abstract and has exactly
+    /// one public constructor, every parameter of which has a property of the same name and type. Empty for any other type.
+    /// </summary>
+    private static IReadOnlyDictionary<string, ParameterInfo> FindConstructorParameters(Type type)
+    {
+        var none = new Dictionary<string, ParameterInfo>();
+        if (type.IsAbstract || type.IsValueType || type.IsInterface)
+        {
+            return none;
+        }
+
+        var constructors = type.GetConstructors();
+        var cloneMethod = type.GetMethod(RecordCloneMethodName, BindingFlags.Public | BindingFlags.Instance);
+        var isRecord = cloneMethod is not null && (cloneMethod.ReturnType == type || cloneMethod.ReturnType == type.BaseType);
+        if (!isRecord || constructors.Length != 1)
+        {
+            return none;
+        }
+
+        var parameters = constructors[0].GetParameters();
+        var properties = type
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(x => x.GetMethod is { IsPublic: true } && x.GetIndexParameters().Length == 0)
+            .ToList();
+        var parametersByProperty = new Dictionary<string, ParameterInfo>(StringComparer.Ordinal);
+        foreach (var parameter in parameters)
+        {
+            var isMapped = properties.Any(x => string.Equals(x.Name, parameter.Name, StringComparison.Ordinal) && x.PropertyType == parameter.ParameterType);
+            if (!isMapped)
+            {
+                // Not a primary constructor: MVC binds the record's properties like any other type's.
+                return none;
+            }
+
+            parametersByProperty[parameter.Name!] = parameter;
+        }
+
+        return parametersByProperty;
     }
 
     private static bool HasDeclaredTypeConverter(Type type)

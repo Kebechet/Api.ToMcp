@@ -229,14 +229,15 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var properties = GetVisibleProperties(type);
-            var constructorProperties = GetRecordConstructorProperties(type, properties);
+            var constructorParameters = GetRecordConstructorParameters(type, properties);
 
             return properties
                 .Select(property =>
                 {
-                    // MVC binds such a property through the record's constructor and leaves it out of the properties
-                    // whose binding sources keep it from inferring the body, so it counts as having none.
-                    var isSetByConstructor = constructorProperties.Contains(property);
+                    // MVC binds a property the record's constructor sets through the constructor parameter, with the
+                    // parameter's binding attributes; a [property: ...] one it ignores.
+                    var isSetByConstructor = constructorParameters.TryGetValue(property, out var constructorParameter);
+                    var attributes = isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes();
 
                     return new PropertyInfoModel
                     {
@@ -244,8 +245,9 @@ namespace Api.ToMcp.Generator.Parsing
                         Type = property.Type.ToDisplayString(),
                         IsNullable = property.Type.NullableAnnotation == NullableAnnotation.Annotated ||
                                      property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
-                        ModelName = isSetByConstructor ? null : property.GetAttributes().Select(GetModelName).FirstOrDefault(x => x is not null),
-                        Source = isSetByConstructor ? ParameterSourceModel.Auto : GetPropertySource(property)
+                        ModelName = attributes.Select(GetModelName).FirstOrDefault(x => x is not null),
+                        Source = GetBindingSource(attributes),
+                        IsSetByConstructor = isSetByConstructor
                     };
                 })
                 .ToImmutableArray();
@@ -284,16 +286,17 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The properties a record's primary constructor sets, which MVC binds through that constructor
-        /// (<c>DefaultBindingMetadataProvider.GetBoundConstructor</c>): of a record class that is not abstract and has
-        /// exactly one public constructor, every parameter of which has a property of the same name and type.
+        /// The properties a record's primary constructor sets, each with the parameter that sets it, which MVC binds
+        /// through that constructor (<c>DefaultBindingMetadataProvider.GetBoundConstructor</c>): of a record class that is
+        /// not abstract and has exactly one public constructor, every parameter of which has a property of the same name
+        /// and type.
         /// </summary>
-        private static HashSet<IPropertySymbol> GetRecordConstructorProperties(ITypeSymbol type, List<IPropertySymbol> properties)
+        private static Dictionary<IPropertySymbol, IParameterSymbol> GetRecordConstructorParameters(ITypeSymbol type, List<IPropertySymbol> properties)
         {
-            var constructorProperties = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            var constructorParameters = new Dictionary<IPropertySymbol, IParameterSymbol>(SymbolEqualityComparer.Default);
             if (!(type is INamedTypeSymbol { IsRecord: true, IsAbstract: false, TypeKind: TypeKind.Class } record))
             {
-                return constructorProperties;
+                return constructorParameters;
             }
 
             var publicConstructors = record.InstanceConstructors
@@ -301,7 +304,7 @@ namespace Api.ToMcp.Generator.Parsing
                 .ToList();
             if (publicConstructors.Count != 1 || publicConstructors[0].Parameters.Length == 0)
             {
-                return constructorProperties;
+                return constructorParameters;
             }
 
             foreach (var parameter in publicConstructors[0].Parameters)
@@ -312,13 +315,13 @@ namespace Api.ToMcp.Generator.Parsing
                 if (property is null)
                 {
                     // Not a primary constructor: MVC binds the record's properties like any other type's.
-                    return new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+                    return new Dictionary<IPropertySymbol, IParameterSymbol>(SymbolEqualityComparer.Default);
                 }
 
-                constructorProperties.Add(property);
+                constructorParameters[property] = parameter;
             }
 
-            return constructorProperties;
+            return constructorParameters;
         }
 
         /// <summary>
@@ -339,12 +342,12 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Where the first of the property's attributes that gives a binding source makes MVC read it from, as
-        /// <c>DefaultBindingMetadataProvider</c> takes that one.
+        /// Where the first of a property's or constructor parameter's attributes that gives a binding source makes MVC read
+        /// it from, as <c>DefaultBindingMetadataProvider</c> takes that one.
         /// </summary>
-        private static ParameterSourceModel GetPropertySource(IPropertySymbol property)
+        private static ParameterSourceModel GetBindingSource(ImmutableArray<AttributeData> attributes)
         {
-            foreach (var attribute in property.GetAttributes())
+            foreach (var attribute in attributes)
             {
                 switch (attribute.AttributeClass?.Name)
                 {
@@ -421,7 +424,7 @@ namespace Api.ToMcp.Generator.Parsing
             ImmutableArray<PropertyInfoModel> properties)
         {
             var isBodyMethod = httpMethod is HttpMethodNames.Post or HttpMethodNames.Put or HttpMethodNames.Patch;
-            var hasBindingSourceProperties = properties.Any(x => x.Source != ParameterSourceModel.Auto);
+            var hasBindingSourceProperties = properties.Any(x => x.NamesBindingSource);
 
             return isApiController && isBodyMethod && IsComplexType(type) && !hasBindingSourceProperties
                 ? ParameterSourceModel.Body

@@ -274,6 +274,30 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_KeysAPropertyARecordsConstructorSets_ByTheNameItsConstructorParameterBindsUnder()
+    {
+        // MVC binds such a property through the constructor parameter, with the parameter's binding attributes, and
+        // ignores the property's: ?filter.c= reaches City of the first record and ?filter.City= that of the second.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new ParameterNamedRecord("Brno", 3));
+        McpRequestValueFormatter.AddQueryValue(queryParts, "other", new PropertyNamedRecord("Praha", 4));
+
+        Assert.Equal(new[] { "filter.c=Brno", "filter.Page=3", "other.City=Praha", "other.Page=4" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_KeysAPropertyOfARecordMvcDoesNotBindThroughItsConstructor_ByThePropertysAttribute()
+    {
+        // With two public constructors MVC binds the record's properties, as it would a class's.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new TwoConstructorRecord("Brno", 3));
+
+        Assert.Equal(new[] { "filter.c=Brno", "filter.Page=3" }, queryParts);
+    }
+
+    [Fact]
     public void Format_WritesATypeThroughItsOwnConverter_BeforeItsIFormattable()
     {
         // The binder reads the value back through the converter, so the converter's text is the one that round-trips.
@@ -498,4 +522,16 @@ public class McpRequestValueFormatterTests
     }
 
     private readonly record struct DockId(int Value) : INumberedId<DockId>, ICodedId<DockId>;
+
+    private sealed record ParameterNamedRecord([FromQuery(Name = "c")] string? City, int Page);
+
+    private sealed record PropertyNamedRecord([property: FromQuery(Name = "c")] string? City, int Page);
+
+    private sealed record TwoConstructorRecord([property: FromQuery(Name = "c")] string? City, int Page)
+    {
+        public TwoConstructorRecord()
+            : this(null, 0)
+        {
+        }
+    }
 }
