@@ -215,10 +215,12 @@ namespace TestApi
     }
 
     [Fact]
-    public void Generator_SendsTheDefault_OfAParameterWithABindingBehaviorAttributeFromAReferencedAssembly()
+    public void Generator_SendsTheDefault_OfAParameterWithABindingBehaviorAttributeFromAReferencedAssembly_WhereMvcReadsItAsText()
     {
         // Metadata holds no constructor code, so the behavior stays unknown; a value MVC does not require is sent harmlessly,
-        // while one it requires and does not get answers 400.
+        // while one it requires and does not get answers 400. A default MVC refuses as text, though, an enum value that no
+        // member has nor a combination of [Flags] members makes, fails when sent for sure, so the tool sends it only when
+        // it differs from the default.
         const string referenced = SimpleTypeSources.Usings + @"
 namespace Shared
 {
@@ -237,15 +239,30 @@ namespace Shared
     }
 }
 ";
-        const string source = SimpleTypeSources.Usings + @"
+        const string source = SimpleTypeSources.Usings + SimpleTypeSources.Types + @"
 namespace TestApi
 {
+    [Flags]
+    public enum Access
+    {
+        Read = 1,
+        Write = 2
+    }
+
     [ApiController]
     [Route(""api/[controller]"")]
     public class OrdersController : ControllerBase
     {
         [HttpGet]
-        public Task<string> Find([FromQuery, Shared.SharedMayBind] int page = 1, [FromQuery, Shared.SharedMustBind] int size = 1) => Task.FromResult(string.Empty);
+        public Task<string> Find(
+            [FromQuery, Shared.SharedMayBind] int page = 1,
+            [FromQuery, Shared.SharedMustBind] int size = 1,
+            [FromQuery, Shared.SharedMayBind] OrderStatus status = OrderStatus.Closed,
+            [FromQuery, Shared.SharedMayBind] OrderStatus unknown = (OrderStatus)99,
+            [FromQuery, Shared.SharedMayBind] OrderStatus? nullableUnknown = (OrderStatus)99,
+            [FromQuery, Shared.SharedMayBind] Access access = Access.Read | Access.Write,
+            [FromQuery, Shared.SharedMayBind] Access none = 0,
+            [FromQuery, Shared.SharedMayBind] Access unknownAccess = (Access)8) => Task.FromResult(string.Empty);
     }
 }
 ";
@@ -258,6 +275,12 @@ namespace TestApi
         Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
         Assert.Contains("AddQueryValue(queryParts, \"page\", page);", generated);
         Assert.Contains("AddQueryValue(queryParts, \"size\", size);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"status\", status);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"unknown\", unknown == (global::TestApi.OrderStatus)99 ? null : unknown);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"nullableUnknown\", nullableUnknown == (global::TestApi.OrderStatus)99 ? null : nullableUnknown);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"access\", access);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"none\", none == (global::TestApi.Access)0 ? null : none);", generated);
+        Assert.Contains("AddQueryValue(queryParts, \"unknownAccess\", unknownAccess == (global::TestApi.Access)8 ? null : unknownAccess);", generated);
     }
 
     [Theory]

@@ -169,6 +169,10 @@ namespace TestApi
         [HttpGet(""must-bind"")]
         public object GetMustBind([FromQuery, MustBind] int page = 1) => new { page, query = Request.QueryString.Value };
 
+        // MVC reads a combination of [Flags] members from the text C# writes of it, and refuses a value none makes.
+        [HttpGet(""access"")]
+        public object GetAccess([FromQuery] EchoAccess access = EchoAccess.Read) => new { access, query = Request.QueryString.Value };
+
         [HttpGet(""names/{name}.{ext?}"")]
         public object GetFileName(string name, string ext = ""txt"") => new { name, ext, path = Request.Path.Value };
 
@@ -221,6 +225,13 @@ namespace TestApi
 
         [HttpGet(""record-query-id/{id}"")]
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
+    }
+
+    [Flags]
+    public enum EchoAccess
+    {
+        Read = 1,
+        Write = 2
     }
 
     public sealed class MustBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
@@ -416,6 +427,7 @@ namespace TestApi
     [InlineData("EchoController_GetBindRequiredTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
     [InlineData("EchoController_GetRequiredDefaultTool", @"{}", @"{""size"":1,""query"":""?size=1""}")]
     [InlineData("EchoController_GetMustBindTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
+    [InlineData("EchoController_GetAccessTool", @"{""access"":3}", @"{""access"":3,""query"":""?access=Read%2C%20Write""}")]
     [InlineData("EchoController_GetFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":""txt"",""path"":""/api/names/report.txt""}")]
     [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report""}")]
     [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":""""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report""}")]
@@ -447,6 +459,18 @@ namespace TestApi
 
         Assert.True(statusCode == StatusCodes.Status200OK, $"{toolClassName}: {statusCode} {body}");
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedEcho), JsonNode.Parse(body)), $"{toolClassName}: expected {expectedEcho}, MVC bound {body}");
+    }
+
+    [Theory]
+    [InlineData("EchoController_GetAccessTool", @"{""access"":8}")]
+    [InlineData("EchoController_GetAccessTool", @"{""access"":0}")]
+    [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":5}")]
+    public async Task Mvc_RefusesAnEnumValueAsText_ThatNoMemberNorCombinationOfFlagsMakes(string toolClassName, string arguments)
+    {
+        // So a tool that cannot tell whether MVC requires a value leaves out such a default rather than send it.
+        var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
+
+        Assert.True(statusCode == StatusCodes.Status400BadRequest, $"{toolClassName}: {statusCode} {body}");
     }
 
     [Fact]

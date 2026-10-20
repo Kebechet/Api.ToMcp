@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -399,6 +400,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var bindingAttributes = GetBindingAttributes(param);
                 // After its own attributes MVC reads those of its type (ModelAttributes), where an id type names its binder.
                 var modelAttributes = bindingAttributes.Concat(GetTypeAttributes(param.Type)).ToList();
+                var bindingRequirement = GetBindingRequirement(bindingAttributes, compilation, ct);
                 var declaredSource = GetDeclaredParameterSource(bindingAttributes) ??
                     (HasModelBinder(modelAttributes) ? ParameterSourceModel.Custom : null);
 
@@ -429,7 +431,9 @@ namespace Api.ToMcp.Generator.Parsing
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
                     Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
-                    IsBindingRequired = IsBindingRequired(bindingAttributes, compilation, ct),
+                    IsBindingRequired = bindingRequirement == true,
+                    IsBindingRequirementUnknown = bindingRequirement is null,
+                    IsDefaultRefusedAsText = param.HasExplicitDefaultValue && IsRefusedAsText(param.Type, param.ExplicitDefaultValue),
                     IsSimpleType = isSimpleType,
                     IsCollection = IsCollection(param.Type),
                     Properties = properties,
@@ -706,23 +710,26 @@ namespace Api.ToMcp.Generator.Parsing
         /// Whether MVC requires a value for the parameter: its first binding behavior attribute is <c>[BindRequired]</c>,
         /// or passes <c>BindingBehavior.Required</c> to the constructor of <c>BindingBehaviorAttribute</c>, or it is
         /// <c>[Required]</c>. MVC reads the binding behavior of a parameter from the parameter's own attributes alone
-        /// (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>).
+        /// (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>). Null when the generator cannot tell: the binding
+        /// behavior attribute's constructors are ones it cannot follow, as those of a referenced assembly.
         /// </summary>
-        private static bool IsBindingRequired(IEnumerable<AttributeData> attributes, Compilation compilation, CancellationToken ct)
+        private static bool? GetBindingRequirement(IEnumerable<AttributeData> attributes, Compilation compilation, CancellationToken ct)
         {
             var attributeList = attributes.Where(x => x.AttributeClass != null).ToList();
+            if (attributeList.Any(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.Required)))
+            {
+                return true;
+            }
+
             var bindingBehavior = attributeList.FirstOrDefault(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.BindingBehavior));
 
-            return (bindingBehavior != null && IsRequiredBehavior(bindingBehavior, compilation, ct)) ||
-                attributeList.Any(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.Required));
+            return bindingBehavior is null ? false : GetBehaviorRequirement(bindingBehavior, compilation, ct);
         }
 
         /// <summary>
-        /// Whether a binding behavior attribute requires a value. One whose constructors the generator cannot follow, as
-        /// those of a referenced assembly, counts as requiring one: the tool then sends the default, which MVC binds as it
-        /// would apply it, where a value MVC requires and does not get answers 400.
+        /// Whether a binding behavior attribute requires a value, or null when the generator cannot follow its constructors.
         /// </summary>
-        private static bool IsRequiredBehavior(AttributeData bindingBehavior, Compilation compilation, CancellationToken ct)
+        private static bool? GetBehaviorRequirement(AttributeData bindingBehavior, Compilation compilation, CancellationToken ct)
         {
             // Both are sealed, and their constructors, in MVC's assembly, pass a behavior of their own.
             if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired))
@@ -735,14 +742,68 @@ namespace Api.ToMcp.Generator.Parsing
                 return false;
             }
 
-            return !RouteAttributeReader.TryReadArgumentPassedTo(
+            return RouteAttributeReader.TryReadArgumentPassedTo(
                     bindingBehavior,
                     BindingAttributeNames.BindingBehavior,
                     BindingAttributeNames.BindingBehaviorArgument,
                     compilation,
                     ct,
-                    out var behavior) ||
-                behavior is BindingAttributeNames.BindingBehaviorRequired;
+                    out var behavior)
+                ? behavior is BindingAttributeNames.BindingBehaviorRequired
+                : null;
+        }
+
+        /// <summary>
+        /// Whether MVC refuses the value when it is sent as text, as the tool writes it: an enum value that no member has,
+        /// which C# writes as a number, and MVC's enum binder does not take (<c>EnumTypeModelBinder.IsDefinedInEnum</c>).
+        /// Of a <c>[Flags]</c> enum, a combination of members C# writes as their names, which it does take.
+        /// </summary>
+        private static bool IsRefusedAsText(ITypeSymbol type, object? value)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            if (!(type is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType) || value is null)
+            {
+                return false;
+            }
+
+            var memberValues = enumType.GetMembers()
+                .OfType<IFieldSymbol>()
+                .Where(x => x.HasConstantValue)
+                .Select(x => ToBits(x.ConstantValue!))
+                .ToList();
+            var bits = ToBits(value);
+            if (memberValues.Contains(bits))
+            {
+                return false;
+            }
+
+            var isFlags = enumType.GetAttributes().Any(x => x.AttributeClass?.ToDisplayString() == KnownTypeNames.Flags);
+            if (!isFlags || bits == 0)
+            {
+                return true;
+            }
+
+            // Enum.ToString takes the largest members first, and writes the number when they leave bits over.
+            foreach (var memberValue in memberValues.Where(x => x != 0).OrderByDescending(x => x))
+            {
+                if ((bits & memberValue) == memberValue)
+                {
+                    bits -= memberValue;
+                }
+            }
+
+            return bits != 0;
+        }
+
+        private static ulong ToBits(object value)
+        {
+            return value is ulong or uint or ushort or byte
+                ? Convert.ToUInt64(value, CultureInfo.InvariantCulture)
+                : unchecked((ulong)Convert.ToInt64(value, CultureInfo.InvariantCulture));
         }
 
         private static bool IsCollection(ITypeSymbol type)

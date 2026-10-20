@@ -277,6 +277,18 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public bool IsBindingRequired { get; init; }
 
+        /// <summary>
+        /// Whether the generator cannot tell if MVC requires a value for the parameter, as its binding behavior attribute
+        /// comes from a referenced assembly, whose constructor code metadata does not hold.
+        /// </summary>
+        public bool IsBindingRequirementUnknown { get; init; }
+
+        /// <summary>
+        /// Whether MVC refuses the action's default value when the tool sends it as text, as it does an enum value that no
+        /// member has.
+        /// </summary>
+        public bool IsDefaultRefusedAsText { get; init; }
+
         public ParameterSourceModel Source { get; init; }
 
         /// <summary>

@@ -22,6 +22,7 @@ internal static class KnownTypeNames
     public const string IConvertToActionResult = "Microsoft.AspNetCore.Mvc.Infrastructure.IConvertToActionResult";
     public const string AttributeUsage = "System.AttributeUsageAttribute";
     public const string CompilerGenerated = "System.Runtime.CompilerServices.CompilerGeneratedAttribute";
+    public const string Flags = "System.FlagsAttribute";
     public const string FormFile = "Microsoft.AspNetCore.Http.IFormFile";
     public const string FormFileCollection = "Microsoft.AspNetCore.Http.IFormFileCollection";
     public const string FormCollection = "Microsoft.AspNetCore.Http.IFormCollection";
