@@ -159,6 +159,13 @@ namespace TestApi
         public object GetDefaults(OrderStatus unknown = (OrderStatus)99, int page = 2, string text = ""x"")
             => new { unknown, page, text, query = Request.QueryString.Value };
 
+        // MVC answers 400 when a binding-required or [Required] parameter gets no value, its default notwithstanding.
+        [HttpGet(""bind-required"")]
+        public object GetBindRequired([FromQuery, Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int page = 1) => new { page, query = Request.QueryString.Value };
+
+        [HttpGet(""required-default"")]
+        public object GetRequiredDefault([FromQuery, System.ComponentModel.DataAnnotations.Required] int size = 1) => new { size, query = Request.QueryString.Value };
+
         [HttpGet(""default-route/{status?}"")]
         public object GetDefaultRoute(OrderStatus status = (OrderStatus)99) => new { status, path = Request.Path.Value };
 
@@ -386,6 +393,8 @@ namespace TestApi
     [InlineData("EchoController_GetOptionalTool", @"{}", @"{""id"":null,""path"":""/api/optional""}")]
     [InlineData("EchoController_GetDefaultsTool", @"{}", @"{""unknown"":99,""page"":2,""text"":""x"",""query"":""""}")]
     [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":1,""page"":3}", @"{""unknown"":1,""page"":3,""text"":""x"",""query"":""?unknown=Closed&page=3""}")]
+    [InlineData("EchoController_GetBindRequiredTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
+    [InlineData("EchoController_GetRequiredDefaultTool", @"{}", @"{""size"":1,""query"":""?size=1""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{}", @"{""status"":99,""path"":""/api/default-route/""}")]
     [InlineData("EchoController_GetDefaultRouteTool", @"{""status"":1}", @"{""status"":1,""path"":""/api/default-route/Closed""}")]
     [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]

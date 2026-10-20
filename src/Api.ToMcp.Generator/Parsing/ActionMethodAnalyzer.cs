@@ -403,6 +403,7 @@ namespace Api.ToMcp.Generator.Parsing
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
                     Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
+                    IsBindingRequired = IsBindingRequired(bindingAttributes),
                     IsSimpleType = isSimpleType,
                     IsCollection = IsCollection(param.Type),
                     Properties = properties,
@@ -666,6 +667,22 @@ namespace Api.ToMcp.Generator.Parsing
 
             return attribute.ConstructorArguments.Any(x => x.Value is not null) ||
                 attribute.NamedArguments.Any(x => x.Key == BindingAttributeNames.BinderTypePropertyName && x.Value.Value is not null);
+        }
+
+        /// <summary>
+        /// Whether MVC requires a value for the parameter: its first binding behavior attribute is <c>[BindRequired]</c> or
+        /// <c>[BindingBehavior(BindingBehavior.Required)]</c>, or it is <c>[Required]</c>. MVC reads the binding behavior of
+        /// a parameter from the parameter's own attributes alone (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>).
+        /// </summary>
+        private static bool IsBindingRequired(IEnumerable<AttributeData> attributes)
+        {
+            var attributeList = attributes.Where(x => x.AttributeClass != null).ToList();
+            var bindingBehavior = attributeList.FirstOrDefault(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.BindingBehavior));
+            var isBindRequired = bindingBehavior != null &&
+                (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired) ||
+                    bindingBehavior.ConstructorArguments.FirstOrDefault().Value is BindingAttributeNames.BindingBehaviorRequired);
+
+            return isBindRequired || attributeList.Any(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.Required));
         }
 
         private static bool IsCollection(ITypeSymbol type)

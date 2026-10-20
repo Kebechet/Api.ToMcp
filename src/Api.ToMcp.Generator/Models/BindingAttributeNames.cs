@@ -23,6 +23,20 @@ internal static class BindingAttributeNames
     public const string BinderTypePropertyName = "BinderType";
 
     /// <summary>
+    /// The base of <c>[BindRequired]</c> and <c>[BindNever]</c>, whose constructor takes a <c>BindingBehavior</c>.
+    /// </summary>
+    public const string BindingBehavior = "Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute";
+
+    public const string BindRequired = "Microsoft.AspNetCore.Mvc.ModelBinding.BindRequiredAttribute";
+
+    /// <summary>
+    /// <c>BindingBehavior.Required</c>, as Roslyn gives an enum argument: its number.
+    /// </summary>
+    public const int BindingBehaviorRequired = 2;
+
+    public const string Required = "System.ComponentModel.DataAnnotations.RequiredAttribute";
+
+    /// <summary>
     /// Implemented by every attribute that can name a binding source, <c>[FromForm]</c> and <c>[ModelBinder]</c> included.
     /// </summary>
     public const string BindingSourceMetadata = "Microsoft.AspNetCore.Mvc.ModelBinding.IBindingSourceMetadata";

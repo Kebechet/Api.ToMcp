@@ -361,6 +361,12 @@ namespace Api.ToMcp.Generator.Emitting
         {
             var name = EscapeIdentifier(parameter.Name);
 
+            // MVC answers a parameter it requires a value for with 400 when it is not sent, whatever its default.
+            if (parameter.IsBindingRequired)
+            {
+                return name;
+            }
+
             return parameter.DefaultValueExpression is { } defaultValue && defaultValue != NullLiteral
                 ? $"{name} == {defaultValue} ? null : {name}"
                 : name;

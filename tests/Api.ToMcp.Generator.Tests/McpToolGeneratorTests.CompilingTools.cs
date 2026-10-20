@@ -163,6 +163,18 @@ namespace TestApi
         Assert.Contains($"var routestatus = System.Uri.EscapeDataString({Formatter}.Format(status == global::TestApi.OrderStatus.Closed ? null : status));", tool);
     }
 
+    [Theory]
+    [InlineData("[FromQuery, Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int page = 1", "page")]
+    [InlineData("[FromQuery, Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)] int page = 1", "page")]
+    [InlineData("[FromQuery, System.ComponentModel.DataAnnotations.Required] int page = 1", "page")]
+    public void Generator_SendsTheDefault_OfAParameterMvcRequiresAValueFor(string parameter, string name)
+    {
+        // MVC answers 400 when such a parameter gets no value, though the action declares a default.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
+    }
+
     [Fact]
     public void Generator_SendsARequiredRouteValue_ThatEqualsTheActionsDefault()
     {

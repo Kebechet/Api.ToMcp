@@ -265,6 +265,12 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public string? DefaultValueExpression { get; init; }
 
+        /// <summary>
+        /// Whether MVC requires a value for the parameter, through <c>[BindRequired]</c> or <c>[Required]</c>, and answers 400
+        /// without one, though the action declares a default.
+        /// </summary>
+        public bool IsBindingRequired { get; init; }
+
         public ParameterSourceModel Source { get; init; }
 
         /// <summary>
