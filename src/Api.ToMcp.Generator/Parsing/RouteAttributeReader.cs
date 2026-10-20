@@ -30,6 +30,30 @@ namespace Api.ToMcp.Generator.Parsing
         private const int MaxConstructorChainLength = 32;
 
         /// <summary>
+        /// The position of the template among the constructor arguments of <c>RouteAttribute(template)</c>.
+        /// </summary>
+        private const int RouteTemplateArgument = 0;
+
+        /// <summary>
+        /// The position of the template among the constructor arguments of <c>HttpGetAttribute(template)</c> and the
+        /// other <c>[Http*]</c> attributes; their parameterless constructors take none.
+        /// </summary>
+        private const int HttpVerbTemplateArgument = 0;
+
+        /// <summary>
+        /// The positions of the methods and the template among the constructor arguments of
+        /// <c>HttpMethodAttribute(httpMethods, template)</c>, whose other constructor takes no template.
+        /// </summary>
+        private const int HttpMethodsArgument = 0;
+        private const int HttpMethodTemplateArgument = 1;
+
+        /// <summary>
+        /// The position of the methods among the constructor arguments of <c>AcceptVerbsAttribute(method)</c> and
+        /// <c>AcceptVerbsAttribute(params methods)</c>.
+        /// </summary>
+        private const int AcceptVerbsMethodsArgument = 0;
+
+        /// <summary>
         /// The HTTP method each of MVC's <c>[Http*]</c> attributes serves, fixed by its constructors.
         /// </summary>
         private static readonly Dictionary<string, string> HttpMethodByAttribute = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -138,24 +162,24 @@ namespace Api.ToMcp.Generator.Parsing
                 var typeName = current.ContainingType.OriginalDefinition.ToDisplayString();
                 if (typeName == RoutingAttributeNames.Route)
                 {
-                    return (GetArgument(arguments, 0), null, name, order);
+                    return (GetArgument(arguments, RouteTemplateArgument), null, name, order);
                 }
 
                 if (HttpMethodByAttribute.TryGetValue(typeName, out var httpMethod))
                 {
-                    return (arguments.Length > 0 ? arguments[0] : null, new object?[] { httpMethod }, name, order);
+                    return (arguments.Length > HttpVerbTemplateArgument ? arguments[HttpVerbTemplateArgument] : null, new object?[] { httpMethod }, name, order);
                 }
 
                 if (typeName == RoutingAttributeNames.HttpMethod)
                 {
-                    return (arguments.Length > 1 ? arguments[1] : null, GetArgument(arguments, 0), name, order);
+                    return (arguments.Length > HttpMethodTemplateArgument ? arguments[HttpMethodTemplateArgument] : null, GetArgument(arguments, HttpMethodsArgument), name, order);
                 }
 
                 if (typeName == RoutingAttributeNames.AcceptVerbs)
                 {
                     // Sealed, so applied as itself, and its template is a property.
                     var route = attribute.NamedArguments.FirstOrDefault(x => x.Key == RoutingAttributeNames.AcceptVerbsRoutePropertyName).Value.Value;
-                    return (route, GetArgument(arguments, 0), name, order);
+                    return (route, GetArgument(arguments, AcceptVerbsMethodsArgument), name, order);
                 }
 
                 UnknownValue? failure;
