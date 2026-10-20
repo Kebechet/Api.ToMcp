@@ -75,6 +75,7 @@ namespace TestApi
     [InlineData("[Produces(\"application/json\", Type = typeof(Product))] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
     [InlineData("[Produces<Product>] [ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
     [InlineData("[Produces(typeof(Product), Order = 0)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces(typeof(Order))] public ActionResult<Product> Get() => new Product();", "global::TestApi.Order")]
     [InlineData("[Produces(typeof(Product), Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
     [InlineData("[Produces<Product>(Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
     public void Generator_AdvertisesTheSuccessResponseType_AsTheOutputSchema(string action, string expectedType)
@@ -557,6 +558,7 @@ namespace TestApi
     [Theory]
     [InlineData("[Produces(typeof(Product), Order = -1)] public IActionResult Get() => Ok(new Product());", "[Produces(\"text/csv\")]")]
     [InlineData("[ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());", "[Produces(typeof(Order), Order = 1)]")]
+    [InlineData("[ProducesResponseType(typeof(Order), 200)] public IActionResult Get() => Ok(new Order());", "[Produces<Product>(Order = 1)]")]
     public void Generator_AdvertisesNoOutputSchema_WhenAProducesSetsItsOrder(string action, string controllerAttributes)
     {
         // MVC sorts filters by Order before scope, so an Order can run an action's [Produces] before its controller's.
