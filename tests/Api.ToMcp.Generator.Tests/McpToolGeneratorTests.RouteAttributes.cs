@@ -697,6 +697,26 @@ namespace Shared
         public string? Name => null;
     }
 
+    public class SharedSideVirtualRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        public virtual string? Template { get; set; }
+
+        public virtual string? Area { get => null; set => Template = value + ""/"" + Template; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
+    public static class SharedRoutes
+    {
+        public static void Prefix(object attribute, string? area)
+        {
+            var template = attribute.GetType().GetProperty(""Template"")!;
+            template.SetValue(attribute, area + ""/"" + template.GetValue(attribute));
+        }
+    }
+
     public class SharedAutoRouteAttribute : System.Attribute, IRouteTemplateProvider
     {
         public string? Template { get; set; }
@@ -748,6 +768,35 @@ namespace TestApi
     public sealed class LocalPlainOverSharedAutoRouteAttribute : Shared.SharedAutoRouteAttribute
     {
     }
+
+    // The setter of the project's Area runs the referenced one, which sets Template.
+    public sealed class LocalForwardingAreaRouteAttribute : Shared.SharedSideVirtualRouteAttribute
+    {
+        public override string? Area { get => base.Area; set => base.Area = value; }
+    }
+
+    public sealed class LocalOwnAreaRouteAttribute : Shared.SharedSideVirtualRouteAttribute
+    {
+        public override string? Area { get; set; }
+    }
+
+    public sealed class LocalHelperAreaRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        public string? Template { get; set; } = ""init"";
+
+        public string? Area { get => null; set => Shared.SharedRoutes.Prefix(this, value); }
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
+    public sealed class LocalTrimmingZoneRouteAttribute : Shared.SharedAutoRouteAttribute
+    {
+        private string? _zone;
+
+        public string? Zone { get => _zone; set => _zone = value?.Trim(); }
+    }
 }
 ";
 
@@ -757,6 +806,11 @@ namespace TestApi
     [InlineData("[LocalConstantOverrideRoute]", "/api/products/items", null)]
     [InlineData("[LocalSideOverSharedAutoRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalSideOverSharedAutoRoute] attribute, as the value SharedAutoRouteAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
     [InlineData("[LocalPlainOverSharedAutoRoute(Template = \"items\")]", "/api/products/items", null)]
+    [InlineData("[LocalForwardingAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalForwardingAreaRoute] attribute, as the setter of LocalForwardingAreaRouteAttribute.Area, which a named argument runs, calls code of the referenced assembly 'Shared' with the attribute, which may set SharedSideVirtualRouteAttribute.Template")]
+    [InlineData("[LocalOwnAreaRoute(Template = \"items\", Area = \"admin\")]", "/api/products/items", null)]
+    [InlineData("[LocalHelperAreaRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalHelperAreaRoute] attribute, as the setter of LocalHelperAreaRouteAttribute.Area, which a named argument runs, calls code of the referenced assembly 'Shared' with the attribute, which may set LocalHelperAreaRouteAttribute.Template")]
+    [InlineData("[LocalHelperAreaRoute(Area = \"admin\")]", null, "the generator cannot read the route template of its [LocalHelperAreaRoute] attribute, as the setter of LocalHelperAreaRouteAttribute.Area, which a named argument runs, calls code of the referenced assembly 'Shared' with the attribute, which may set LocalHelperAreaRouteAttribute.Template")]
+    [InlineData("[LocalTrimmingZoneRoute(Template = \"items\", Zone = \" east \")]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Area = \"admin\")]", null, "the generator cannot read the route template of its [SharedSideSetRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedSideSetRouteAttribute.Area, whose setter a named argument runs, and which may set SharedSideSetRouteAttribute.Template")]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\", Weight = 2)]", "/api/products/items", null)]
     [InlineData("[Shared.SharedSideSetRoute(Template = \"items\")]", "/api/products/items", null)]

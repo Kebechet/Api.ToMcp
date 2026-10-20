@@ -383,7 +383,7 @@ namespace Api.ToMcp.Generator.Parsing
                     $"the referenced assembly '{classWithoutCode.ContainingAssembly?.Name}' holds no code of {classWithoutCode.Name}, which may set {qualifiedName}");
             }
 
-            return ReadPropertyValue(property, compilation, ct);
+            return GetOtherSetterProblem(attribute, property, qualifiedName, compilation, ct) ?? ReadPropertyValue(property, compilation, ct);
         }
 
         /// <summary>
@@ -477,25 +477,120 @@ namespace Api.ToMcp.Generator.Parsing
 
             return isSetElsewhere
                 ? new UnknownValue($"the value {propertyName} returns is set by code other than its setter and the constructors, which the generator does not follow")
-                : GetReferencedSetterProblem(attribute, property, propertyName);
+                : GetOtherSetterProblem(attribute, property, propertyName, compilation, ct);
         }
 
         /// <summary>
         /// Why the setter of another named argument of the attribute may set the property after all: one a referenced
-        /// assembly declares, whose code metadata does not hold, unless the compiler wrote it for an auto-property. The
-        /// generator finds an assignment in the project's code itself.
+        /// assembly declares, whose code metadata does not hold, unless the compiler wrote it for an auto-property, or one
+        /// of the project that calls code of a referenced assembly with the attribute. The scan for writes finds the
+        /// project's own code that sets the property.
         /// </summary>
-        private static UnknownValue? GetReferencedSetterProblem(AttributeData attribute, IPropertySymbol property, string propertyName)
+        private static UnknownValue? GetOtherSetterProblem(
+            AttributeData attribute,
+            IPropertySymbol property,
+            string propertyName,
+            Compilation compilation,
+            CancellationToken ct)
         {
-            var otherSetter = attribute.NamedArguments
-                .Where(x => !SetsProperty(attribute.AttributeClass!, x.Key, property))
-                .Select(x => FindMember(attribute.AttributeClass!, x.Key) as IPropertySymbol)
-                .FirstOrDefault(x => x != null && x.DeclaringSyntaxReferences.IsEmpty && !IsCompilerGenerated(x.SetMethod));
+            var attributeClass = attribute.AttributeClass!;
+            foreach (var argument in attribute.NamedArguments.Where(x => !SetsProperty(attributeClass, x.Key, property)))
+            {
+                // A field a named argument sets runs no code.
+                if (!(FindMember(attributeClass, argument.Key) is IPropertySymbol other) || !(GetSetter(other) is { } setter))
+                {
+                    continue;
+                }
 
-            return otherSetter is null
-                ? null
-                : new UnknownValue(
-                    $"the referenced assembly '{otherSetter.ContainingAssembly?.Name}' holds no code of {otherSetter.ContainingType.Name}.{otherSetter.Name}, whose setter a named argument runs, and which may set {propertyName}");
+                var setterName = $"{setter.AssociatedSymbol?.ContainingType.Name ?? other.ContainingType.Name}.{other.Name}";
+                if (!setter.Locations.Any(x => x.IsInSource))
+                {
+                    if (!IsCompilerGenerated(setter))
+                    {
+                        return new UnknownValue(
+                            $"the referenced assembly '{setter.ContainingAssembly?.Name}' holds no code of {setterName}, whose setter a named argument runs, and which may set {propertyName}");
+                    }
+                }
+                else if (CallsReferencedCodeWithTheAttribute(setter, compilation, ct) is { } referencedAssembly)
+                {
+                    return new UnknownValue(
+                        $"the setter of {setterName}, which a named argument runs, calls code of the referenced assembly '{referencedAssembly}' with the attribute, which may set {propertyName}");
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The setter a named argument runs: the property's own, else that of the property it overrides.
+        /// </summary>
+        private static IMethodSymbol? GetSetter(IPropertySymbol property)
+        {
+            for (IPropertySymbol? current = property; current != null; current = current.OverriddenProperty)
+            {
+                if (current.SetMethod != null)
+                {
+                    return current.SetMethod;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The name of the referenced assembly whose code the project's setter calls with the attribute, as a method's
+        /// instance or argument, or as the instance of a property that is not an auto-property; null if none.
+        /// </summary>
+        private static string? CallsReferencedCodeWithTheAttribute(IMethodSymbol setter, Compilation compilation, CancellationToken ct)
+        {
+            foreach (var reference in setter.DeclaringSyntaxReferences)
+            {
+                var declaration = reference.GetSyntax(ct);
+                var operation = compilation.GetSemanticModel(declaration.SyntaxTree).GetOperation(declaration, ct);
+                foreach (var called in operation?.Descendants() ?? Enumerable.Empty<IOperation>())
+                {
+                    ISymbol? member = null;
+                    var isWithTheAttribute = false;
+                    switch (called)
+                    {
+                        case IInvocationOperation invocation:
+                            member = invocation.TargetMethod;
+                            isWithTheAttribute = IsTheAttribute(invocation.Instance) || invocation.Arguments.Any(x => IsTheAttribute(x.Value));
+                            break;
+                        case IObjectCreationOperation creation:
+                            member = creation.Constructor;
+                            isWithTheAttribute = creation.Arguments.Any(x => IsTheAttribute(x.Value));
+                            break;
+                        case IPropertyReferenceOperation propertyReference:
+                            member = propertyReference.Property;
+                            isWithTheAttribute = IsTheAttribute(propertyReference.Instance) && !IsAutoProperty(propertyReference.Property);
+                            break;
+                    }
+
+                    if (member != null && isWithTheAttribute && !member.Locations.Any(x => x.IsInSource))
+                    {
+                        return member.ContainingAssembly?.Name;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsAutoProperty(IPropertySymbol property)
+        {
+            return (property.GetMethod is null || IsCompilerGenerated(property.GetMethod)) &&
+                (property.SetMethod is null || IsCompilerGenerated(property.SetMethod));
+        }
+
+        private static bool IsTheAttribute(IOperation? operation)
+        {
+            while (operation is IConversionOperation conversion)
+            {
+                operation = conversion.Operand;
+            }
+
+            return operation is IInstanceReferenceOperation;
         }
 
         /// <summary>
