@@ -17,6 +17,11 @@ namespace Api.ToMcp.Generator
     {
         private const string McpRouteSegment = "/mcp";
 
+        /// <summary>
+        /// Separates the controller from the action in an include or exclude entry such as <c>Products.GetById</c>.
+        /// </summary>
+        private const char EntryActionSeparator = '.';
+
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
             // Step 1: Read generator.json configuration
@@ -161,30 +166,48 @@ namespace Api.ToMcp.Generator
                 return true;
 
             // Apply config-based selection
-            var controllerBaseName = controller.Name;
-            if (controllerBaseName.EndsWith(ConventionNames.ControllerSuffix))
-                controllerBaseName = controllerBaseName.Substring(0, controllerBaseName.Length - ConventionNames.ControllerSuffix.Length);
-
-            var fullName = $"{controller.Name}.{action.Name}";
-            var fullNameWithoutSuffix = $"{controllerBaseName}.{action.Name}";
+            var names = GetEntryNames(controller, action);
 
             switch (config.Mode)
             {
                 case SelectionModeModel.SelectedOnly:
-                    return config.Include.Contains(controller.Name) ||
-                           config.Include.Contains(controllerBaseName) ||
-                           config.Include.Contains(fullName) ||
-                           config.Include.Contains(fullNameWithoutSuffix);
+                    return names.Any(config.Include.Contains);
 
                 case SelectionModeModel.AllExceptExcluded:
-                    return !config.Exclude.Contains(controller.Name) &&
-                           !config.Exclude.Contains(controllerBaseName) &&
-                           !config.Exclude.Contains(fullName) &&
-                           !config.Exclude.Contains(fullNameWithoutSuffix);
+                    return !names.Any(config.Exclude.Contains);
 
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// The entries that select the controller as a whole: its name, with and without the <c>Controller</c> suffix.
+        /// </summary>
+        private static IEnumerable<string> GetEntryNames(ControllerInfoModel controller)
+        {
+            yield return controller.Name;
+
+            var nameWithoutSuffix = RemoveControllerSuffix(controller.Name);
+            if (nameWithoutSuffix != controller.Name)
+                yield return nameWithoutSuffix;
+        }
+
+        /// <summary>
+        /// The entries that select the action: its controller's, and either of them followed by the action's name.
+        /// </summary>
+        private static IEnumerable<string> GetEntryNames(ControllerInfoModel controller, ActionInfoModel action)
+        {
+            var controllerNames = GetEntryNames(controller).ToList();
+
+            return controllerNames.Concat(controllerNames.Select(x => $"{x}{EntryActionSeparator}{action.Name}"));
+        }
+
+        private static string RemoveControllerSuffix(string name)
+        {
+            return name.EndsWith(ConventionNames.ControllerSuffix, StringComparison.Ordinal)
+                ? name.Substring(0, name.Length - ConventionNames.ControllerSuffix.Length)
+                : name;
         }
 
         /// <summary>
