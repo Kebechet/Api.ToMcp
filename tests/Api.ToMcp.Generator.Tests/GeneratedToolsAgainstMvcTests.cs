@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
@@ -79,7 +80,16 @@ namespace TestApi
         public object GetPrivateGetter(PrivateGetterQuery q) => new { q.Id, q.Echo };
 
         [HttpGet(""two/{id}"")]
-        public object GetTwo(AttributedQuery a, NotedShipment b) => new { aId = a.Id, a.City, bId = b.Id, b.Note };
+        public object GetTwo(AttributedQuery a, NotedShipment b) => new { aId = a.Id, a.City, aNote = a.Note, bId = b.Id, bNote = b.Note };
+
+        [HttpPost(""record-named"")]
+        public object PostRecordNamed(RecordNamedCity q) => q;
+
+        [HttpGet(""record-route/{orderId}"")]
+        public object GetRecordRoute(RecordRouteOrder q) => q;
+
+        [HttpGet(""query-id/{id}"")]
+        public object GetQueryId([FromRoute] QueryIdFilter q) => q;
 
         [HttpGet(""direct/{id}"")]
         public object GetDirect(int id, AttributedQuery q) => new { id, qId = q.Id, q.City };
@@ -108,6 +118,21 @@ namespace TestApi
 
         [HttpPost(""simple"")]
         public object PostSimple(string name, int? count) => new { name, count };
+
+        [HttpPut(""ship/{id}"")]
+        public object PutShip(int id, Shipment shipment) => new { id, shipmentId = shipment.Id, shipment.Note };
+
+        [HttpGet(""same/{id}"")]
+        public object GetSame(Shipment a, Shipment b) => new { aId = a.Id, aNote = a.Note, bId = b.Id, bNote = b.Note };
+
+        [HttpGet(""record-named"")]
+        public object GetRecordNamed(RecordNamedCity filter) => filter;
+
+        [HttpGet(""record-property-named"")]
+        public object GetRecordPropertyNamed(RecordPropertyNamedCity filter) => filter;
+
+        [HttpGet(""record-query-id/{id}"")]
+        public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
     }
 }
 ";
@@ -134,7 +159,10 @@ namespace TestApi
     [InlineData("EchoController_PostNamedBindPropertyTool", @"{""q"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3}")]
     [InlineData("EchoController_PostKeywordTool", @"{""namespace"":""ns"",""q"":{""id"":7,""event"":""launch""},""class"":""c1"",""object"":{""city"":""Brno""}}", @"{""namespace"":""ns"",""id"":7,""event"":""launch"",""class"":""c1"",""city"":""Brno""}")]
     [InlineData("EchoController_GetPrivateGetterTool", @"{""q"":{""id"":7}}", @"{""id"":7,""echo"":null}")]
-    [InlineData("EchoController_GetTwoTool", @"{""a"":{""id"":7,""city"":""Brno""},""b"":{""id"":7,""note"":""n1""}}", @"{""aId"":7,""city"":""Brno"",""bId"":7,""note"":""n1""}")]
+    [InlineData("EchoController_GetTwoTool", @"{""a"":{""id"":7,""city"":""Brno"",""note"":""na""},""b"":{""id"":9,""note"":""nb""}}", @"{""aId"":7,""city"":""Brno"",""aNote"":""na"",""bId"":9,""bNote"":""nb""}")]
+    [InlineData("EchoController_PostRecordNamedTool", @"{""q"":{""city"":""Brno"",""page"":3,""extra"":1}}", @"{""city"":""Brno"",""page"":3,""extra"":1}")]
+    [InlineData("EchoController_GetRecordRouteTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}}", @"{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}")]
+    [InlineData("EchoController_GetQueryIdTool", @"{""q"":{""id"":9,""city"":""Brno""}}", @"{""id"":9,""city"":null}")]
     [InlineData("EchoController_GetDirectTool", @"{""id"":7,""q"":{""id"":7,""city"":""Brno""}}", @"{""id"":7,""qId"":7,""city"":""Brno""}")]
     [InlineData("EchoController_GetOrderTool", @"{""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostBodyIdTool", @"{""id"":{""value"":""" + OrderGuid + @"""}}", @"{""id"":""" + OrderGuid + @"""}")]
@@ -143,11 +171,16 @@ namespace TestApi
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]
     [InlineData("PlainEchoController_PostSimpleTool", @"{""name"":""a"",""count"":2}", @"{""name"":""a"",""count"":2}")]
+    [InlineData("PlainEchoController_PutShipTool", @"{""id"":7,""shipment"":{""id"":9,""note"":""x""}}", @"{""id"":7,""shipmentId"":9,""note"":""x""}")]
+    [InlineData("PlainEchoController_GetSameTool", @"{""a"":{""id"":7,""note"":""na""},""b"":{""id"":9,""note"":""nb""}}", @"{""aId"":7,""aNote"":""na"",""bId"":9,""bNote"":""nb""}")]
+    [InlineData("PlainEchoController_GetRecordNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
+    [InlineData("PlainEchoController_GetRecordPropertyNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
+    [InlineData("PlainEchoController_GetRecordQueryIdTool", @"{""id"":7,""filter"":{""id"":9,""city"":""Brno""}}", @"{""id"":7,""filterId"":9,""city"":""Brno""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
 
-        Assert.True(statusCode == 200, $"{toolClassName}: {statusCode} {body}");
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{toolClassName}: {statusCode} {body}");
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedEcho), JsonNode.Parse(body)), $"{toolClassName}: expected {expectedEcho}, MVC bound {body}");
     }
 
@@ -160,6 +193,7 @@ namespace TestApi
 
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
+        private HttpClient _client = null!;
         private RecordingInvoker _invoker = null!;
 
         public async Task InitializeAsync()
@@ -175,11 +209,13 @@ namespace TestApi
             await _app.StartAsync();
 
             var address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-            _invoker = new RecordingInvoker(new HttpClient { BaseAddress = new Uri(address) });
+            _client = new HttpClient { BaseAddress = new Uri(address) };
+            _invoker = new RecordingInvoker(_client);
         }
 
         public async Task DisposeAsync()
         {
+            _client.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
         }
