@@ -363,8 +363,8 @@ namespace Api.ToMcp.Generator.Parsing
                 return computed;
             }
 
-            var namedArguments = attribute.NamedArguments.Where(x => x.Key == property.Name).ToList();
-            if (namedArguments.Count > 0 && property.ExplicitInterfaceImplementations.IsEmpty)
+            var namedArguments = attribute.NamedArguments.Where(x => SetsProperty(attributeClass, x.Key, property)).ToList();
+            if (namedArguments.Count > 0)
             {
                 return GetSetterProblem(attribute, property, compilation, ct) ?? ToValue(namedArguments[namedArguments.Count - 1].Value);
             }
@@ -488,7 +488,7 @@ namespace Api.ToMcp.Generator.Parsing
         private static UnknownValue? GetReferencedSetterProblem(AttributeData attribute, IPropertySymbol property, string propertyName)
         {
             var otherSetter = attribute.NamedArguments
-                .Where(x => x.Key != property.Name)
+                .Where(x => !SetsProperty(attribute.AttributeClass!, x.Key, property))
                 .Select(x => FindMember(attribute.AttributeClass!, x.Key) as IPropertySymbol)
                 .FirstOrDefault(x => x != null && x.DeclaringSyntaxReferences.IsEmpty && !IsCompilerGenerated(x.SetMethod));
 
@@ -499,14 +499,32 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The property or field of the name that a named argument of the attribute sets: the one the class declares
-        /// nearest to the attribute's own.
+        /// Whether a named argument of the name sets the property MVC reads: the member it sets is that property or one
+        /// the property overrides, not one that hides it with <c>new</c>, nor an explicit implementation of the interface's.
+        /// </summary>
+        private static bool SetsProperty(INamedTypeSymbol attributeClass, string name, IPropertySymbol property)
+        {
+            var member = FindMember(attributeClass, name)?.OriginalDefinition;
+            for (IPropertySymbol? current = property; current != null; current = current.OverriddenProperty)
+            {
+                if (SymbolEqualityComparer.Default.Equals(member, current.OriginalDefinition))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// The property or field of the name that a named argument of the attribute sets: the public one the class
+        /// declares nearest to the attribute's own.
         /// </summary>
         private static ISymbol? FindMember(INamedTypeSymbol attributeClass, string name)
         {
             for (var type = attributeClass; type != null; type = type.BaseType)
             {
-                var member = type.GetMembers(name).FirstOrDefault(x => x is IPropertySymbol or IFieldSymbol);
+                var member = type.GetMembers(name).FirstOrDefault(x => x is IPropertySymbol or IFieldSymbol && x.DeclaredAccessibility == Accessibility.Public);
                 if (member != null)
                 {
                     return member;

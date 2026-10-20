@@ -395,6 +395,28 @@ namespace TestApi
         public override string? Template { get; set; } = ""init"";
     }
 
+    public class InitBaseGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public virtual string? Template { get; set; } = ""base"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    // A named argument sets the property that hides the one MVC reads through the interface.
+    public sealed class NewHidingGetAttribute : InitBaseGetAttribute
+    {
+        public new string? Template { get; set; } = ""init"";
+    }
+
+    public sealed class NewReimplementingGetAttribute : InitBaseGetAttribute, IRouteTemplateProvider
+    {
+        public new string? Template { get; set; } = ""init"";
+    }
+
     // A getter computed from constants alone returns its value whatever sets the property.
     public sealed class ConstantOverrideGetAttribute : BaseCtorGetAttribute
     {
@@ -440,6 +462,9 @@ namespace TestApi
     [InlineData("[ParenthesizedGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
     [InlineData("[OverridingGet] public IActionResult Find() => Ok();", "GET", "/api/products/overridden")]
     [InlineData("[ConstantOverrideGet] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
+    [InlineData("[NewHidingGet(Template = \"hidden\")] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
+    [InlineData("[NewHidingGet] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
+    [InlineData("[NewReimplementingGet(Template = \"own\")] public IActionResult Find() => Ok();", "GET", "/api/products/own")]
     [InlineData("[ConstantOverrideGet(Template = \"ignored\")] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
     [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
