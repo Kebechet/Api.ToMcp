@@ -184,6 +184,34 @@ namespace TestApi
         public string? Name => null;
     }
 
+    // MVC reads the template after the application's named arguments have set it.
+    public sealed class CustomGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public string? Template { get; set; } = ""fallback"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class AssignedGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public AssignedGetAttribute(string template)
+        {
+            Template = template;
+        }
+
+        public string? Template { get; } = ""fallback"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
     public sealed class GetOnlyAttribute : Attribute, IActionHttpMethodProvider
     {
         public IEnumerable<string> HttpMethods { get; } = new[] { ""GET"" };
@@ -202,6 +230,8 @@ namespace TestApi
     [InlineData("[HttpHead(\"head\")] [HttpGet(\"get\")] public IActionResult Find() => Ok();", "GET", "/api/products/get")]
     [InlineData("[HttpPost] [HttpGet(\"get\")] public IActionResult Find() => Ok();", "GET", "/api/products/get")]
     [InlineData("[HttpGet] [Route(\"search\")] public IActionResult Find() => Ok();", "GET", "/api/products/search")]
+    [InlineData("[CustomGet(Template = \"actual\")] public IActionResult Find() => Ok();", "GET", "/api/products/actual")]
+    [InlineData("[CustomGet] public IActionResult Find() => Ok();", "GET", "/api/products/fallback")]
     [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     public void Generator_ReadsTheRouteAndHttpMethod_FromAnyAttributeMvcReadsThemFrom(string action, string expectedMethod, string expectedRoute)
@@ -282,6 +312,29 @@ namespace TestApi
         var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
 
         Assert.Equal($"No MCP tool is generated for action 'OrdersController.Find': {reason}", warning.GetMessage());
+    }
+
+    [Fact]
+    public void Generator_SaysWhyItCannotReadTheTemplateOfARouteAttribute_ThatCodeOtherThanItsInitializerSets()
+    {
+        // The constructor overwrites the initializer, so the initializer is not the template MVC reads.
+        var source = RouteAttributeUsings + CustomRouteAttributes + @"
+namespace TestApi
+{
+    [ApiController]
+    [ApiRoute]
+    public class ProductsController : ControllerBase
+    {
+        [AssignedGet(""actual"")]
+        public IActionResult Find() => Ok();
+    }
+}
+";
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
+
+        Assert.Equal(
+            "No MCP tool is generated for action 'ProductsController.Find': the generator cannot read the route template of its [AssignedGet] attribute, as AssignedGetAttribute.Template is set by code other than its initializer, which the generator does not follow",
+            warning.GetMessage());
     }
 
     private const string ReferencedRouteAttributes = @"

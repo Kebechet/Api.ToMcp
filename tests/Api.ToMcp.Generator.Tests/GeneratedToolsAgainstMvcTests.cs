@@ -252,6 +252,17 @@ namespace TestApi
         public object Ping() => new { path = Request.Path.Value };
     }
 
+    public sealed class EchoCustomGetAttribute : Attribute, Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider, Microsoft.AspNetCore.Mvc.Routing.IActionHttpMethodProvider
+    {
+        public string? Template { get; set; } = ""fallback"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
     public sealed class EchoDocsRouteAttribute : Attribute, Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider
     {
         public string Template => ""docs/{slug}"";
@@ -275,6 +286,9 @@ namespace TestApi
         [HttpGet(Name = ""named-get"")]
         [Route(""named/{id}"")]
         public object GetNamed(int id) => new { id };
+
+        [EchoCustomGet(Template = ""custom-get"")]
+        public object GetCustom() => new { path = Request.Path.Value };
 
         [HttpGet]
         [EchoDocsRoute]
@@ -365,6 +379,7 @@ namespace TestApi
     [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("VersionedEchoController_PingTool", @"{}", @"{""path"":""/v2/versionedecho/ping""}")]
     [InlineData("EnumEchoController_PingTool", @"{}", @"{""path"":""/e/V2/enumecho/ping""}")]
+    [InlineData("CustomRouteController_GetCustomTool", @"{}", @"{""path"":""/custom/customroute/custom-get""}")]
     [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]

@@ -78,7 +78,7 @@ namespace Api.ToMcp.Generator.Parsing
 
             var (template, httpMethods, name, order) = DerivesFromMvcAttribute(attributeClass)
                 ? ReadThroughConstructors(attribute, compilation, ct)
-                : ReadThroughProperties(attributeClass, isRouteTemplateProvider, isHttpMethodProvider, compilation, ct);
+                : ReadThroughProperties(attribute, isRouteTemplateProvider, isHttpMethodProvider, compilation, ct);
 
             var templateProblem = isRouteTemplateProvider ? (template as UnknownValue)?.Reason : null;
             var methods = ToHttpMethods(httpMethods);
@@ -231,7 +231,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// its properties, when each returns a value its code spells out.
         /// </summary>
         private static (object? Template, object? HttpMethods, object? Name, object? Order) ReadThroughProperties(
-            INamedTypeSymbol attributeClass,
+            AttributeData attribute,
             bool isRouteTemplateProvider,
             bool isHttpMethodProvider,
             Compilation compilation,
@@ -240,12 +240,12 @@ namespace Api.ToMcp.Generator.Parsing
             object? ReadRouteProperty(string propertyName)
             {
                 return isRouteTemplateProvider
-                    ? ReadInterfaceProperty(attributeClass, RoutingAttributeNames.RouteTemplateProvider, propertyName, compilation, ct)
+                    ? ReadInterfaceProperty(attribute, RoutingAttributeNames.RouteTemplateProvider, propertyName, compilation, ct)
                     : null;
             }
 
             var httpMethods = isHttpMethodProvider
-                ? ReadInterfaceProperty(attributeClass, RoutingAttributeNames.ActionHttpMethodProvider, RoutingAttributeNames.HttpMethodsPropertyName, compilation, ct)
+                ? ReadInterfaceProperty(attribute, RoutingAttributeNames.ActionHttpMethodProvider, RoutingAttributeNames.HttpMethodsPropertyName, compilation, ct)
                 : null;
 
             return (
@@ -255,13 +255,19 @@ namespace Api.ToMcp.Generator.Parsing
                 ReadRouteProperty(RoutingAttributeNames.OrderPropertyName));
         }
 
+        /// <summary>
+        /// The value MVC reads from the property of the attribute that implements the interface's: the one a named
+        /// argument of the application sets, as it does so after the constructor ran, else the one its getter or its
+        /// initializer gives, unless code of the attribute's classes, such as a constructor, may set it instead.
+        /// </summary>
         private static object? ReadInterfaceProperty(
-            INamedTypeSymbol attributeClass,
+            AttributeData attribute,
             string interfaceName,
             string propertyName,
             Compilation compilation,
             CancellationToken ct)
         {
+            var attributeClass = attribute.AttributeClass!;
             var interfaceProperty = attributeClass.AllInterfaces
                 .FirstOrDefault(x => x.ToDisplayString() == interfaceName)?
                 .GetMembers(propertyName)
@@ -269,9 +275,56 @@ namespace Api.ToMcp.Generator.Parsing
                 .FirstOrDefault();
             var property = interfaceProperty is null ? null : attributeClass.FindImplementationForInterfaceMember(interfaceProperty) as IPropertySymbol;
 
-            return property is null
-                ? new UnknownValue($"the generator finds no {propertyName} property of {attributeClass.Name}")
-                : ReadPropertyValue(property, compilation, ct);
+            if (property is null)
+            {
+                return new UnknownValue($"the generator finds no {propertyName} property of {attributeClass.Name}");
+            }
+
+            var namedArguments = attribute.NamedArguments.Where(x => x.Key == property.Name).ToList();
+            if (namedArguments.Count > 0 && property.ExplicitInterfaceImplementations.IsEmpty)
+            {
+                return ToValue(namedArguments[namedArguments.Count - 1].Value);
+            }
+
+            if (IsAssignedInCode(property, attributeClass, compilation, ct))
+            {
+                return new UnknownValue(
+                    $"{property.ContainingType.Name}.{property.Name} is set by code other than its initializer, which the generator does not follow");
+            }
+
+            return ReadPropertyValue(property, compilation, ct);
+        }
+
+        /// <summary>
+        /// Whether code of the attribute's class, or of a class between it and the property's, assigns the property, as a
+        /// constructor may: the value the generator would read from its initializer is then not the one MVC reads.
+        /// </summary>
+        private static bool IsAssignedInCode(IPropertySymbol property, INamedTypeSymbol attributeClass, Compilation compilation, CancellationToken ct)
+        {
+            for (var type = attributeClass; type != null; type = type.BaseType)
+            {
+                foreach (var reference in type.DeclaringSyntaxReferences)
+                {
+                    var declaration = reference.GetSyntax(ct);
+                    var semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+                    var isAssigned = declaration.DescendantNodes()
+                        .OfType<AssignmentExpressionSyntax>()
+                        .Any(x => SymbolEqualityComparer.Default.Equals(
+                            semanticModel.GetSymbolInfo(x.Left, ct).Symbol?.OriginalDefinition,
+                            property.OriginalDefinition));
+                    if (isAssigned)
+                    {
+                        return true;
+                    }
+                }
+
+                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, property.ContainingType.OriginalDefinition))
+                {
+                    break;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
