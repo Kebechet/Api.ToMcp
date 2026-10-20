@@ -447,7 +447,7 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ## Debugging & Inspecting Your Tools
 
-You don't need Claude, ChatGPT or another AI client to see what the generator produced. The official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connects to any MCP server: point it at your running app and it shows each tool exactly as a client receives it, and calls it against your API. The commands below were checked with Inspector 2.11.0, which declares Node.js 22.19 or later. They ask for `@latest` because on an older Node a bare `npx @modelcontextprotocol/inspector` runs the deprecated v1 instead, which prints `@modelcontextprotocol/inspector v1 is deprecated` and lacks some of the flags used here.
+You don't need Claude, ChatGPT or another AI client to see what the generator produced. The official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connects to any MCP server: point it at your running app and it shows each tool exactly as a client receives it, and calls it against your API. The commands below were checked with Inspector 2.11.0, which declares Node.js 22.19 or later. They ask for `@latest` because on an older Node a bare `npx @modelcontextprotocol/inspector` runs the deprecated v1 instead, which prints `@modelcontextprotocol/inspector v1 is deprecated` and lacks some of the flags used here. On such a Node, `@latest` still runs; npm only prints `npm warn EBADENGINE Unsupported engine` for the Inspector and for `undici` when it installs them.
 
 ### Connecting
 
@@ -458,7 +458,7 @@ dotnet run --urls http://localhost:5080
 npx @modelcontextprotocol/inspector@latest --transport http --server-url http://localhost:5080/mcp
 ```
 
-The Inspector opens in the browser at `http://127.0.0.1:6274` with the connection filled in. Where it cannot open a browser, open the full URL it prints, which carries the `MCP_INSPECTOR_API_TOKEN` the page asks for. Press **Connect**, open the **Tools** tab, pick a tool, fill in its arguments and press **Execute**.
+The Inspector opens in the browser at `http://127.0.0.1:6274` with the connection filled in. Where it cannot open a browser, open the full URL it prints, which carries the `MCP_INSPECTOR_API_TOKEN` the page asks for. Turn on the server's connection switch, open the **Tools** tab, pick a tool (listed by its title, with its name beneath), fill in its arguments and press **Execute Tool**. The result shows the text content and, under **Structured Output**, the structured content.
 
 **HTTPS.** The Inspector runs on Node, which does not trust the ASP.NET Core development certificate, so an `https://localhost` URL fails with `fetch failed` (cause: `self-signed certificate`). Inspect over HTTP as above, or export the certificate (only the certificate, not its key) and let Node trust it:
 
@@ -478,7 +478,7 @@ npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --met
 
 - The transport is inferred from a URL ending in `/mcp`; for another pattern add `--transport http`.
 - `--tool-arg` converts each value to the type the tool's input schema declares: numbers and booleans are parsed (`days=3` is a number), and an object or array argument is parsed as JSON, `--tool-arg 'request={"city":"Brno","temperatureC":21}'`. Anything else stays a string. `--tool-args-json` passes the arguments verbatim instead.
-- A call whose result is an error exits with code `5`. `--format json` prints one JSON object, with the whole output under its own `result` key, apart from the `{"result": ...}` wrapping of structured content described below.
+- A call whose result is an error exits with code `5`. `--format json` prints one JSON object, with the whole output under a `result` key of its own; that is the CLI's envelope, separate from the `{"result": ...}` wrapping of structured content described below.
 - `tools/list` also prints a schema portability summary, and `--strict` its details. The usual warnings are nullable properties written as a type array, `"type": ["string", "null"]`: valid JSON Schema, which a client that allows one type per property may reject or simplify.
 
 ### What to check
@@ -503,7 +503,9 @@ Every tool is listed, whatever the caller is allowed to do: scopes are checked w
 npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --header "Authorization: Bearer <token>" --method tools/call --tool-name Products_GetAll
 ```
 
-The web UI takes the same `--header` flag at launch and keeps it with the server's settings. If your API uses JWT bearer authentication (`AddAuthentication().AddJwtBearer()`), `dotnet user-jwts create --claim "permissions=mcp:read" -o token`, run in the API project, prints a token the app accepts in the Development environment.
+The web UI takes the same `--header` flag, and needs it at launch: a session started with a server URL is read-only, so a header cannot be added in the UI afterwards. If your API uses JWT bearer authentication (`AddAuthentication().AddJwtBearer()`), `dotnet user-jwts create --claim "permissions=mcp:read" -o token`, run in the API project, prints a token the app accepts in the Development environment.
+
+If your app requires authentication on the MCP endpoint itself, such as through a fallback authorization policy, `tools/list` already needs `--header`. Without it the endpoint answers `401`, and the CLI reports `auth_required` and exits with code `3`; in an interactive terminal the Inspector tries to start an OAuth sign-in instead.
 
 A refused call comes back as `isError: true`:
 
@@ -519,12 +521,13 @@ A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the
 ### A tool is missing
 
 - The Inspector lists what the running app registered. After changing `generator.json` or an attribute, rebuild, restart the app and connect again.
-- The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes nothing until you list actions or switch to `AllExceptExcluded`.
-- A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Neither gives a build warning.
+- The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes only `[McpExpose]` actions until you list others or switch to `AllExceptExcluded`.
+- A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included, so again only `[McpExpose]` actions. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Neither gives a build warning.
 - An action whose route contains `/mcp` anywhere, such as `api/settings/mcp-status`, is never exposed (loop prevention).
+- An action that is not `public`, or whose HTTP method comes from anything but `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]` (`[AcceptVerbs]`, `[HttpHead]`, `[HttpOptions]`, conventional routing), is skipped without a diagnostic.
 - `AdditionalFiles`, include names and minimal APIs: see [Troubleshooting](#troubleshooting).
 
-To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the project. A build then writes it under `obj/<Configuration>/<TargetFramework>/generated/Api.ToMcp.Generator/`, one file per tool, such as `ProductsController_GetByIdTool.g.cs`. A file stays there after its tool is gone; `McpToolsRegistration.g.cs` lists the current tools.
+To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the project. A build then writes it to `obj/<Configuration>/<TargetFramework>/generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`, one file per tool, such as `ProductsController_GetByIdTool.g.cs`. A project can move it with `<CompilerGeneratedFilesOutputPath>`: the demo sets `$(BaseIntermediateOutputPath)Generated`, so its files are in `obj/Generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`. A file stays there after its tool is gone; `McpToolsRegistration.g.cs` lists the current tools.
 
 ### A call fails
 
