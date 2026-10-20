@@ -77,11 +77,11 @@ public class McpLoopPreventionTests
     }
 
     [Fact]
-    public async Task ServesAnApiRoute_ToAnInternalCall_WhenTheMcpEndpointIsElsewhere()
+    public async Task ServesAnApiRoute_ToAnInternalCall()
     {
-        // A tool's own request carries the header; only the MCP endpoint refuses it, whatever the path looks like.
+        // A tool's own request carries the header, and the API serves it.
         await using var app = await StartAppAsync("ai");
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/mcp/status");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/status");
         request.Headers.Add(LoopPreventionHeader, "true");
 
         var response = await app.GetTestClient().SendAsync(request);
@@ -90,7 +90,24 @@ public class McpLoopPreventionTests
         Assert.Equal("up", await response.Content.ReadAsStringAsync());
     }
 
-    private static async Task<WebApplication> StartAppAsync(string pattern, bool useLoopPrevention = true, bool routeAfterLoopPrevention = false)
+    [Theory]
+    [InlineData("/mcp")]
+    [InlineData("/mcp/status")]
+    public async Task RefusesAnInternalCall_ToAnEndpointTheSdksMapMcpMapsAtMcp_AndToAnyPathUnderIt(string path)
+    {
+        // An app that maps the endpoint with the SDK's MapMcp directly kept this protection from before MapMcpEndpoint
+        // refused internal calls itself.
+        await using var app = await StartAppAsync("mcp", mapWithTheSdk: true);
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.Add(LoopPreventionHeader, "true");
+
+        var response = await app.GetTestClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(RefusalText, await response.Content.ReadAsStringAsync());
+    }
+
+    private static async Task<WebApplication> StartAppAsync(string pattern, bool useLoopPrevention = true, bool routeAfterLoopPrevention = false, bool mapWithTheSdk = false)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -108,8 +125,16 @@ public class McpLoopPreventionTests
             app.UseRouting();
         }
 
-        app.MapGet("/mcp/status", () => "up");
-        app.MapMcpEndpoint(pattern);
+        app.MapGet("/api/status", () => "up");
+        app.MapPost("/mcp/status", () => "up");
+        if (mapWithTheSdk)
+        {
+            app.MapMcp(pattern);
+        }
+        else
+        {
+            app.MapMcpEndpoint(pattern);
+        }
         await app.StartAsync();
 
         return app;

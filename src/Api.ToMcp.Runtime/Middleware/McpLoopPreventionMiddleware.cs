@@ -6,11 +6,16 @@ namespace Api.ToMcp.Runtime.Middleware;
 /// Turns on loop prevention for every request: the MCP endpoint <c>MapMcpEndpoint</c> maps then refuses a request that
 /// carries the header the invoker adds to a tool's own call to the API. The endpoint does the refusing, not this
 /// middleware, so it is refused wherever the endpoint is mapped, route parameters included, and whether routing runs
-/// before or after this middleware; any other route serves such a request as usual.
+/// before or after this middleware. This middleware still refuses such a request to any path under <c>/mcp</c>, as it
+/// did before endpoints refused them, so an endpoint the SDK's <c>MapMcp</c> maps there directly keeps the protection;
+/// any other route serves such a request as usual.
 /// </summary>
 public sealed class McpLoopPreventionMiddleware
 {
     private const string LoopPreventionHeader = "X-MCP-Internal-Call";
+
+    private static readonly PathString DefaultMcpPath = new("/" + McpExtensions.DefaultMcpPattern);
+
     private readonly RequestDelegate _next;
 
     public McpLoopPreventionMiddleware(RequestDelegate next)
@@ -20,6 +25,12 @@ public sealed class McpLoopPreventionMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
+        if (context.Request.Path.StartsWithSegments(DefaultMcpPath) && context.Request.Headers.ContainsKey(LoopPreventionHeader))
+        {
+            await RefuseAsync(context);
+            return;
+        }
+
         context.Features.Set(LoopPreventionFeature.Instance);
 
         try

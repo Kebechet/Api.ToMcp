@@ -22,6 +22,11 @@ public static class McpExtensions
     private const string GeneratedToolTypesFieldName = "ToolTypes";
 
     /// <summary>
+    /// The pattern <see cref="MapMcpEndpoint"/> maps the MCP endpoint at unless told otherwise.
+    /// </summary>
+    internal const string DefaultMcpPattern = "mcp";
+
+    /// <summary>
     /// Registers MCP tool services including HTTP invoker and base URL provider, and every tool of the assembly:
     /// the generated ones and any hand-written <see cref="McpServerToolTypeAttribute"/> class.
     /// </summary>
@@ -86,7 +91,7 @@ public static class McpExtensions
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
     /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint.</param>
-    public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = "mcp", bool allowAnonymous = false)
+    public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = DefaultMcpPattern, bool allowAnonymous = false)
     {
         var endpoint = endpoints.MapMcp(pattern);
         endpoint.Add(builder =>
