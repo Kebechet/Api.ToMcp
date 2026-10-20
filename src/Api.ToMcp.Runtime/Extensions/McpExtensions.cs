@@ -63,7 +63,8 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Adds middleware to prevent infinite loops when MCP tools call back to the API.
+    /// Adds middleware to prevent infinite loops when MCP tools call back to the API: the MCP endpoint
+    /// <see cref="MapMcpEndpoint"/> maps refuses a request a tool sent, wherever it is mapped.
     /// </summary>
     public static IApplicationBuilder UseMcpLoopPrevention(this IApplicationBuilder app)
     {
@@ -71,7 +72,8 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Maps the MCP endpoint at the specified path.
+    /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
+    /// a tool sent.
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
@@ -79,6 +81,13 @@ public static class McpExtensions
     public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = "mcp", bool allowAnonymous = false)
     {
         var endpoint = endpoints.MapMcp(pattern);
+        endpoint.Add(builder =>
+        {
+            if (builder.RequestDelegate is { } requestDelegate)
+            {
+                builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
+            }
+        });
         if (allowAnonymous)
         {
             endpoint.AllowAnonymous();

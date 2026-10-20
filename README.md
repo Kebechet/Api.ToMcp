@@ -525,11 +525,11 @@ A tool call reaches your API as two HTTP requests: the MCP client's `POST /mcp`,
 | `traceparent`, and `tracestate` when the MCP request has one | .NET's `HttpClient`, from the current `Activity`: the trace of the MCP request, which continues the client's trace when the MCP request came with a `traceparent` |
 | `baggage` when the MCP request has one (`Correlation-Context` on .NET 8 and 9) | .NET's `HttpClient`, from the current `Activity`'s baggage, the same way as `traceparent` |
 | `Authorization` | Copied from the MCP request, when it parses as an authentication header |
-| `X-MCP-Internal-Call: true` | Added by the invoker, so that `UseMcpLoopPrevention` refuses the request if it targets `/mcp` |
+| `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` the MCP endpoint refuses the request if it targets that endpoint |
 
 No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent` or `X-Forwarded-For`. If your API logs a correlation ID taken from a header of its own, the internal request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it on both requests.
 
-`X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only `/mcp` refuses it), so never let it skip authentication or authorization.
+`X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only the MCP endpoint refuses it), so never let it skip authentication or authorization. The refusal comes from the endpoint `MapMcpEndpoint` maps, at whatever pattern it is given, route parameters included, and wherever `UseRouting` sits in the pipeline; an endpoint mapped with the SDK's `MapMcp` directly is not covered.
 
 ### Logs
 
