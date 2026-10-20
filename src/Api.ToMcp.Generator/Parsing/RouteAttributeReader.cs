@@ -358,7 +358,7 @@ namespace Api.ToMcp.Generator.Parsing
             var namedArguments = attribute.NamedArguments.Where(x => x.Key == property.Name).ToList();
             if (namedArguments.Count > 0 && property.ExplicitInterfaceImplementations.IsEmpty)
             {
-                return GetSetterProblem(property, attributeClass, compilation, ct) ?? ToValue(namedArguments[namedArguments.Count - 1].Value);
+                return GetSetterProblem(attribute, property, compilation, ct) ?? ToValue(namedArguments[namedArguments.Count - 1].Value);
             }
 
             var qualifiedName = $"{property.ContainingType.Name}.{property.Name}";
@@ -407,17 +407,18 @@ namespace Api.ToMcp.Generator.Parsing
         /// stores the value in, and no code but the setter and the constructors, which run before the named arguments are
         /// set, sets that property or field.
         /// </summary>
-        private static UnknownValue? GetSetterProblem(IPropertySymbol property, INamedTypeSymbol attributeClass, Compilation compilation, CancellationToken ct)
+        private static UnknownValue? GetSetterProblem(AttributeData attribute, IPropertySymbol property, Compilation compilation, CancellationToken ct)
         {
+            var attributeClass = attribute.AttributeClass!;
             var propertyName = $"{property.ContainingType.Name}.{property.Name}";
             if (!(property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax declaration))
             {
                 // The compiler marks the accessors it writes for an auto-property, which is all metadata shows of one.
                 return property.Locations.Any(x => x.IsInSource)
                     ? new UnknownValue($"the generator cannot read {propertyName}")
-                    : IsCompilerGenerated(property.GetMethod) && IsCompilerGenerated(property.SetMethod)
-                        ? (UnknownValue?)null
-                        : new UnknownValue($"the referenced assembly '{property.ContainingAssembly?.Name}' holds no code of {propertyName}");
+                    : !IsCompilerGenerated(property.GetMethod) || !IsCompilerGenerated(property.SetMethod)
+                        ? new UnknownValue($"the referenced assembly '{property.ContainingAssembly?.Name}' holds no code of {propertyName}")
+                        : GetReferencedSetterProblem(attribute, property, propertyName);
             }
 
             var accessors = declaration.AccessorList?.Accessors ?? default;
@@ -445,7 +446,43 @@ namespace Api.ToMcp.Generator.Parsing
 
             return isSetElsewhere
                 ? new UnknownValue($"the value {propertyName} returns is set by code other than its setter and the constructors, which the generator does not follow")
-                : null;
+                : GetReferencedSetterProblem(attribute, property, propertyName);
+        }
+
+        /// <summary>
+        /// Why the setter of another named argument of the attribute may set the property after all: one a referenced
+        /// assembly declares, whose code metadata does not hold, unless the compiler wrote it for an auto-property. The
+        /// generator finds an assignment in the project's code itself.
+        /// </summary>
+        private static UnknownValue? GetReferencedSetterProblem(AttributeData attribute, IPropertySymbol property, string propertyName)
+        {
+            var otherSetter = attribute.NamedArguments
+                .Where(x => x.Key != property.Name)
+                .Select(x => FindMember(attribute.AttributeClass!, x.Key) as IPropertySymbol)
+                .FirstOrDefault(x => x != null && x.DeclaringSyntaxReferences.IsEmpty && !IsCompilerGenerated(x.SetMethod));
+
+            return otherSetter is null
+                ? null
+                : new UnknownValue(
+                    $"the referenced assembly '{otherSetter.ContainingAssembly?.Name}' holds no code of {otherSetter.ContainingType.Name}.{otherSetter.Name}, whose setter a named argument runs, and which may set {propertyName}");
+        }
+
+        /// <summary>
+        /// The property or field of the name that a named argument of the attribute sets: the one the class declares
+        /// nearest to the attribute's own.
+        /// </summary>
+        private static ISymbol? FindMember(INamedTypeSymbol attributeClass, string name)
+        {
+            for (var type = attributeClass; type != null; type = type.BaseType)
+            {
+                var member = type.GetMembers(name).FirstOrDefault(x => x is IPropertySymbol or IFieldSymbol);
+                if (member != null)
+                {
+                    return member;
+                }
+            }
+
+            return null;
         }
 
         private static bool IsCompilerGenerated(IMethodSymbol? accessor)
