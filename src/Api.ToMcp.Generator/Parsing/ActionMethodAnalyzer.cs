@@ -15,6 +15,11 @@ namespace Api.ToMcp.Generator.Parsing
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
         private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
         internal const string RouteAttributeName = "RouteAttribute";
+        private const string HttpGetAttributeName = "HttpGetAttribute";
+        private const string HttpPostAttributeName = "HttpPostAttribute";
+        private const string HttpPutAttributeName = "HttpPutAttribute";
+        private const string HttpDeleteAttributeName = "HttpDeleteAttribute";
+        private const string HttpPatchAttributeName = "HttpPatchAttribute";
         private const string RouteTemplateProviderFullName = "Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider";
         private const string ActionNameAttributeName = "ActionNameAttribute";
         private const string ApiVersionAttributeName = "ApiVersionAttribute";
@@ -46,11 +51,11 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static readonly Dictionary<string, string> HttpMethodAttributes = new Dictionary<string, string>
         {
-            ["HttpGetAttribute"] = HttpMethodNames.Get,
-            ["HttpPostAttribute"] = HttpMethodNames.Post,
-            ["HttpPutAttribute"] = HttpMethodNames.Put,
-            ["HttpDeleteAttribute"] = HttpMethodNames.Delete,
-            ["HttpPatchAttribute"] = HttpMethodNames.Patch
+            [HttpGetAttributeName] = HttpMethodNames.Get,
+            [HttpPostAttributeName] = HttpMethodNames.Post,
+            [HttpPutAttributeName] = HttpMethodNames.Put,
+            [HttpDeleteAttributeName] = HttpMethodNames.Delete,
+            [HttpPatchAttributeName] = HttpMethodNames.Patch
         };
 
         public static ImmutableArray<ActionInfoModel> GetActions(
