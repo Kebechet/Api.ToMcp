@@ -447,7 +447,7 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ## Debugging & Inspecting Your Tools
 
-You don't need Claude, ChatGPT or another AI client to see what the generator produced. The official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connects to any MCP server: point it at your running app and it shows each tool exactly as a client receives it, and calls it against your API. The commands below were checked with Inspector 2.11.0, which needs Node.js 22.19 or later. They ask for `@latest` because on an older Node a bare `npx @modelcontextprotocol/inspector` quietly runs the deprecated v1 instead, which prints `@modelcontextprotocol/inspector v1 is deprecated` and lacks some of the flags used here.
+You don't need Claude, ChatGPT or another AI client to see what the generator produced. The official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connects to any MCP server: point it at your running app and it shows each tool exactly as a client receives it, and calls it against your API. The commands below were checked with Inspector 2.11.0, which declares Node.js 22.19 or later. They ask for `@latest` because on an older Node a bare `npx @modelcontextprotocol/inspector` runs the deprecated v1 instead, which prints `@modelcontextprotocol/inspector v1 is deprecated` and lacks some of the flags used here.
 
 ### Connecting
 
@@ -458,7 +458,7 @@ dotnet run --urls http://localhost:5080
 npx @modelcontextprotocol/inspector@latest --transport http --server-url http://localhost:5080/mcp
 ```
 
-The Inspector opens in the browser at `http://127.0.0.1:6274` with the connection filled in. Press **Connect**, open the **Tools** tab, pick a tool, fill in its arguments and press **Execute**.
+The Inspector opens in the browser at `http://127.0.0.1:6274` with the connection filled in. Where it cannot open a browser, open the full URL it prints, which carries the `MCP_INSPECTOR_API_TOKEN` the page asks for. Press **Connect**, open the **Tools** tab, pick a tool, fill in its arguments and press **Execute**.
 
 **HTTPS.** The Inspector runs on Node, which does not trust the ASP.NET Core development certificate, so an `https://localhost` URL fails with `fetch failed` (cause: `self-signed certificate`). Inspect over HTTP as above, or export the certificate (only the certificate, not its key) and let Node trust it:
 
@@ -477,8 +477,8 @@ npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --met
 ```
 
 - The transport is inferred from a URL ending in `/mcp`; for another pattern add `--transport http`.
-- `--tool-arg` reads a value as JSON where it can (`days=3` is a number), so an object argument is passed as JSON: `--tool-arg 'request={"city":"Brno","temperatureC":21}'`.
-- A call whose result is an error exits with code `5`; `--format json` prints one JSON object.
+- `--tool-arg` converts each value to the type the tool's input schema declares: numbers and booleans are parsed (`days=3` is a number), and an object or array argument is parsed as JSON, `--tool-arg 'request={"city":"Brno","temperatureC":21}'`. Anything else stays a string. `--tool-args-json` passes the arguments verbatim instead.
+- A call whose result is an error exits with code `5`. `--format json` prints one JSON object, with the whole output under its own `result` key, apart from the `{"result": ...}` wrapping of structured content described below.
 - `tools/list` also prints a schema portability summary, and `--strict` its details. The usual warnings are nullable properties written as a type array, `"type": ["string", "null"]`: valid JSON Schema, which a client that allows one type per property may reject or simplify.
 
 ### What to check
@@ -520,7 +520,7 @@ A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the
 
 - The Inspector lists what the running app registered. After changing `generator.json` or an attribute, rebuild, restart the app and connect again.
 - The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes nothing until you list actions or switch to `AllExceptExcluded`.
-- A `generator.json` that is not valid JSON (a trailing comma is enough), or has a `mode` other than those two, means `SelectedOnly` with nothing included, without a build warning.
+- A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Neither gives a build warning.
 - An action whose route contains `/mcp` anywhere, such as `api/settings/mcp-status`, is never exposed (loop prevention).
 - `AdditionalFiles`, include names and minimal APIs: see [Troubleshooting](#troubleshooting).
 
