@@ -55,6 +55,16 @@ namespace Api.ToMcp.Generator.Parsing
         private static readonly CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?> HttpMethodInfos =
             new CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?>(SymbolEqualityComparer.Default);
 
+        /// <summary>
+        /// The types MVC binds from a source of their own, resolved once per compilation, and whether a property's type is
+        /// assignable to one of them, which every complex parameter of every action asks of each of its properties.
+        /// </summary>
+        private static readonly CompilationCache<Compilation, ImmutableArray<ITypeSymbol>> OwnBindingSourceTypes =
+            new CompilationCache<Compilation, ImmutableArray<ITypeSymbol>>(EqualityComparer<Compilation>.Default);
+
+        private static readonly CompilationCache<ITypeSymbol, bool> HasOwnBindingSourceByType =
+            new CompilationCache<ITypeSymbol, bool>(SymbolEqualityComparer.Default);
+
         private static readonly CompilationCache<IMethodSymbol, string?> XmlDocSummaries =
             new CompilationCache<IMethodSymbol, string?>(SymbolEqualityComparer.Default);
 
@@ -526,6 +536,13 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static bool HasFileOrSpecialBindingSource(ITypeSymbol type, Compilation compilation)
         {
+            return HasOwnBindingSourceByType.GetOrAdd(compilation, type, x =>
+                OwnBindingSourceTypes.GetOrAdd(compilation, compilation, GetOwnBindingSourceTypes)
+                    .Any(boundType => IsAssignableTo(x, boundType, compilation)));
+        }
+
+        private static ImmutableArray<ITypeSymbol> GetOwnBindingSourceTypes(Compilation compilation)
+        {
             var formFile = compilation.GetTypeByMetadataName(KnownTypeNames.FormFile);
             var boundTypes = new[]
             {
@@ -536,7 +553,7 @@ namespace Api.ToMcp.Generator.Parsing
                 compilation.GetTypeByMetadataName(KnownTypeNames.CancellationToken)
             };
 
-            return boundTypes.OfType<ITypeSymbol>().Any(boundType => IsAssignableTo(type, boundType, compilation));
+            return boundTypes.OfType<ITypeSymbol>().ToImmutableArray();
         }
 
         /// <summary>
