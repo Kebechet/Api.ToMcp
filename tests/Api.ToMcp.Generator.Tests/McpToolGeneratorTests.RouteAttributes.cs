@@ -216,6 +216,77 @@ namespace TestApi
     {
         public IEnumerable<string> HttpMethods { get; } = new[] { ""GET"" };
     }
+
+    public sealed class StoredGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template = ""fallback"";
+
+        public StoredGetAttribute()
+        {
+            _template = ""constructed"";
+        }
+
+        public string? Template
+        {
+            get { return _template; }
+            set { this._template = value; }
+        }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class TransformedGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template;
+
+        public string? Template { get => _template; set => _template = ""v1/"" + value; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public class VirtualGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        public virtual string? Template { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class PrefixedGetAttribute : VirtualGetAttribute
+    {
+        public override string? Template { get => base.Template; set => base.Template = ""v1/"" + value; }
+    }
+
+    public sealed class OverridingGetAttribute : VirtualGetAttribute
+    {
+        public override string? Template => ""overridden"";
+    }
+
+    public sealed class SideSetGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template;
+
+        public string? Template { get => _template; set => _template = value; }
+
+        public string? Area { get => null; set => _template = value + ""/"" + _template; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
 }
 ";
 
@@ -232,6 +303,9 @@ namespace TestApi
     [InlineData("[HttpGet] [Route(\"search\")] public IActionResult Find() => Ok();", "GET", "/api/products/search")]
     [InlineData("[CustomGet(Template = \"actual\")] public IActionResult Find() => Ok();", "GET", "/api/products/actual")]
     [InlineData("[CustomGet] public IActionResult Find() => Ok();", "GET", "/api/products/fallback")]
+    [InlineData("[StoredGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
+    [InlineData("[VirtualGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
+    [InlineData("[OverridingGet] public IActionResult Find() => Ok();", "GET", "/api/products/overridden")]
     [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     public void Generator_ReadsTheRouteAndHttpMethod_FromAnyAttributeMvcReadsThemFrom(string action, string expectedMethod, string expectedRoute)
@@ -338,6 +412,30 @@ namespace TestApi
             warning.GetMessage());
     }
 
+    [Theory]
+    [InlineData("[TransformedGet(Template = \"items\")]", "the generator cannot read the route template of its [TransformedGet] attribute, as the setter of TransformedGetAttribute.Template does more than store the value for its getter to return, which the generator does not follow")]
+    [InlineData("[PrefixedGet(Template = \"items\")]", "the generator cannot read the route template of its [PrefixedGet] attribute, as the setter of PrefixedGetAttribute.Template does more than store the value for its getter to return, which the generator does not follow")]
+    [InlineData("[SideSetGet(Template = \"items\", Area = \"admin\")]", "the generator cannot read the route template of its [SideSetGet] attribute, as the value SideSetGetAttribute.Template returns is set by code other than its setter and the constructors, which the generator does not follow")]
+    public void Generator_SaysWhyItCannotReadTheTemplateANamedArgumentSets_WhenThePropertyMayNotKeepIt(string attribute, string reason)
+    {
+        // MVC serves the template the getter returns, which a setter that adds to its value, say, makes /v1/items.
+        var source = RouteAttributeUsings + CustomRouteAttributes + @"
+namespace TestApi
+{
+    [ApiController]
+    [ApiRoute]
+    public class ProductsController : ControllerBase
+    {
+        " + attribute + @"
+        public IActionResult Find() => Ok();
+    }
+}
+";
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
+
+        Assert.Equal($"No MCP tool is generated for action 'ProductsController.Find': {reason}", warning.GetMessage());
+    }
+
     private const string ReferencedRouteAttributes = @"
 using System.Collections.Generic;
 using Microsoft.AspNetCore.Mvc;
@@ -357,8 +455,61 @@ namespace Shared
         {
         }
     }
+
+    public sealed class SharedCustomRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        public string? Template { get; set; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
+    public sealed class SharedTransformedRouteAttribute : System.Attribute, IRouteTemplateProvider
+    {
+        private string? _template;
+
+        public string? Template { get => _template; set => _template = ""v1/"" + value; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
 }
 ";
+
+    [Fact]
+    public void Generator_ReadsTheTemplateANamedArgumentSets_OnlyThroughAReferencedAutoProperty()
+    {
+        // Metadata holds no accessor code, but the compiler marks the accessors it writes for an auto-property.
+        const string source = RouteAttributeUsings + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet]
+        [Shared.SharedCustomRoute(Template = ""items"")]
+        public IActionResult List() => Ok();
+
+        [HttpGet]
+        [Shared.SharedTransformedRoute(Template = ""items"")]
+        public IActionResult Find() => Ok();
+    }
+}
+";
+        var compilation = CreateCompilation(source).AddReferences(CompileToReference(RouteAttributeUsings + ReferencedRouteAttributes, "Shared"));
+
+        CreateDriver(AllExceptExcludedConfig).RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var diagnostics);
+        var generated = string.Join("\n", outputCompilation.SyntaxTrees.Skip(1).Select(x => x.ToString()));
+        var warning = Assert.Single(diagnostics, x => x.Id == UnbuildableRouteId);
+
+        Assert.Equal(
+            "No MCP tool is generated for action 'ProductsController.Find': the generator cannot read the route template of its [SharedTransformedRoute] attribute, as the referenced assembly 'Shared' holds no code of SharedTransformedRouteAttribute.Template",
+            warning.GetMessage());
+        Assert.Equal("var route = $\"/api/products/items\";", GetRouteLine(generated, "ProductsController_ListTool"));
+    }
 
     [Fact]
     public void Generator_RecognizesRouteAttributesFromAReferencedAssembly_AndWarnsThatItCannotReadTheirTemplate()

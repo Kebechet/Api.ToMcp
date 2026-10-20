@@ -305,20 +305,21 @@ namespace Api.ToMcp.Generator.Parsing
                 .GetMembers(propertyName)
                 .OfType<IPropertySymbol>()
                 .FirstOrDefault();
-            var property = interfaceProperty is null ? null : attributeClass.FindImplementationForInterfaceMember(interfaceProperty) as IPropertySymbol;
+            var implementation = interfaceProperty is null ? null : attributeClass.FindImplementationForInterfaceMember(interfaceProperty) as IPropertySymbol;
 
-            if (property is null)
+            if (implementation is null)
             {
                 return new UnknownValue($"the generator finds no {propertyName} property of {attributeClass.Name}");
             }
 
+            var property = GetOverride(implementation, attributeClass);
             var namedArguments = attribute.NamedArguments.Where(x => x.Key == property.Name).ToList();
             if (namedArguments.Count > 0 && property.ExplicitInterfaceImplementations.IsEmpty)
             {
-                return ToValue(namedArguments[namedArguments.Count - 1].Value);
+                return GetSetterProblem(property, attributeClass, compilation, ct) ?? ToValue(namedArguments[namedArguments.Count - 1].Value);
             }
 
-            if (IsAssignedInCode(property, attributeClass, compilation, ct))
+            if (IsAssignedInCode(property, attributeClass, x => false, compilation, ct))
             {
                 return new UnknownValue(
                     $"{property.ContainingType.Name}.{property.Name} is set by code other than its initializer, which the generator does not follow");
@@ -328,10 +329,127 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether code of the attribute's class, or of a class between it and the property's, assigns the property, as a
-        /// constructor may: the value the generator would read from its initializer is then not the one MVC reads.
+        /// The override of a virtual property that the attribute's class or a class between it and the property's
+        /// declares last, which a call of the property runs.
         /// </summary>
-        private static bool IsAssignedInCode(IPropertySymbol property, INamedTypeSymbol attributeClass, Compilation compilation, CancellationToken ct)
+        private static IPropertySymbol GetOverride(IPropertySymbol property, INamedTypeSymbol attributeClass)
+        {
+            for (var type = attributeClass; type != null && !SymbolEqualityComparer.Default.Equals(type, property.ContainingType); type = type.BaseType)
+            {
+                foreach (var candidate in type.GetMembers(property.Name).OfType<IPropertySymbol>())
+                {
+                    for (var overridden = candidate.OverriddenProperty; overridden != null; overridden = overridden.OverriddenProperty)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(overridden, property))
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+
+            return property;
+        }
+
+        /// <summary>
+        /// Why the getter of the property may not return the value a named argument passes its setter, or null when it
+        /// does: the property is an auto-property, or its getter returns a field of the attribute that its setter only
+        /// stores the value in, and no code but the setter and the constructors, which run before the named arguments are
+        /// set, sets that property or field.
+        /// </summary>
+        private static UnknownValue? GetSetterProblem(IPropertySymbol property, INamedTypeSymbol attributeClass, Compilation compilation, CancellationToken ct)
+        {
+            var propertyName = $"{property.ContainingType.Name}.{property.Name}";
+            if (!(property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) is PropertyDeclarationSyntax declaration))
+            {
+                // The compiler marks the accessors it writes for an auto-property, which is all metadata shows of one.
+                return property.Locations.Any(x => x.IsInSource)
+                    ? new UnknownValue($"the generator cannot read {propertyName}")
+                    : IsCompilerGenerated(property.GetMethod) && IsCompilerGenerated(property.SetMethod)
+                        ? (UnknownValue?)null
+                        : new UnknownValue($"the referenced assembly '{property.ContainingAssembly?.Name}' holds no code of {propertyName}");
+            }
+
+            var accessors = declaration.AccessorList?.Accessors ?? default;
+            var getter = accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.GetAccessorDeclaration));
+            var setter = accessors.FirstOrDefault(x => x.IsKind(SyntaxKind.SetAccessorDeclaration) || x.IsKind(SyntaxKind.InitAccessorDeclaration));
+            var semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+            var storedSymbol = getter is null || setter is null
+                ? null
+                : IsAutoAccessor(getter) && IsAutoAccessor(setter)
+                    ? (ISymbol)property
+                    : GetStoredField(getter, setter, semanticModel, ct);
+
+            if (storedSymbol is null)
+            {
+                return new UnknownValue(
+                    $"the setter of {propertyName} does more than store the value for its getter to return, which the generator does not follow");
+            }
+
+            var isSetElsewhere = IsAssignedInCode(
+                storedSymbol,
+                attributeClass,
+                x => x.Ancestors().Any(ancestor => ancestor == setter || ancestor is ConstructorDeclarationSyntax constructor && !constructor.Modifiers.Any(SyntaxKind.StaticKeyword)),
+                compilation,
+                ct);
+
+            return isSetElsewhere
+                ? new UnknownValue($"the value {propertyName} returns is set by code other than its setter and the constructors, which the generator does not follow")
+                : null;
+        }
+
+        private static bool IsCompilerGenerated(IMethodSymbol? accessor)
+        {
+            return accessor != null && accessor.GetAttributes().Any(x => x.AttributeClass?.ToDisplayString() == KnownTypeNames.CompilerGenerated);
+        }
+
+        private static bool IsAutoAccessor(AccessorDeclarationSyntax accessor)
+        {
+            return accessor.Body is null && accessor.ExpressionBody is null;
+        }
+
+        /// <summary>
+        /// The field of the attribute that the getter returns and the setter stores the value in, with nothing else in
+        /// either, or null.
+        /// </summary>
+        private static IFieldSymbol? GetStoredField(
+            AccessorDeclarationSyntax getter,
+            AccessorDeclarationSyntax setter,
+            SemanticModel semanticModel,
+            CancellationToken ct)
+        {
+            var returned = getter.ExpressionBody?.Expression ??
+                (getter.Body?.Statements.Count == 1 && getter.Body.Statements[0] is ReturnStatementSyntax returnStatement ? returnStatement.Expression : null);
+            var stored = setter.ExpressionBody?.Expression ??
+                (setter.Body?.Statements.Count == 1 && setter.Body.Statements[0] is ExpressionStatementSyntax expressionStatement ? expressionStatement.Expression : null);
+            var field = returned is null ? null : GetInstanceField(semanticModel.GetOperation(returned, ct));
+
+            return field != null &&
+                stored != null &&
+                semanticModel.GetOperation(stored, ct) is ISimpleAssignmentOperation { Value: IParameterReferenceOperation { Parameter: { IsImplicitlyDeclared: true } } } assignment &&
+                SymbolEqualityComparer.Default.Equals(GetInstanceField(assignment.Target), field)
+                    ? field
+                    : null;
+        }
+
+        private static IFieldSymbol? GetInstanceField(IOperation? operation)
+        {
+            return operation is IFieldReferenceOperation { Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } } fieldReference
+                ? fieldReference.Field
+                : null;
+        }
+
+        /// <summary>
+        /// Whether code of the attribute's class, or of a class between it and the symbol's, assigns the property or
+        /// field outside the places allowed, as a constructor may: the value the generator would read from its
+        /// initializer is then not the one MVC reads.
+        /// </summary>
+        private static bool IsAssignedInCode(
+            ISymbol symbol,
+            INamedTypeSymbol attributeClass,
+            Func<AssignmentExpressionSyntax, bool> isAllowed,
+            Compilation compilation,
+            CancellationToken ct)
         {
             for (var type = attributeClass; type != null; type = type.BaseType)
             {
@@ -342,15 +460,16 @@ namespace Api.ToMcp.Generator.Parsing
                     var isAssigned = declaration.DescendantNodes()
                         .OfType<AssignmentExpressionSyntax>()
                         .Any(x => SymbolEqualityComparer.Default.Equals(
-                            semanticModel.GetSymbolInfo(x.Left, ct).Symbol?.OriginalDefinition,
-                            property.OriginalDefinition));
+                                semanticModel.GetSymbolInfo(x.Left, ct).Symbol?.OriginalDefinition,
+                                symbol.OriginalDefinition) &&
+                            !isAllowed(x));
                     if (isAssigned)
                     {
                         return true;
                     }
                 }
 
-                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, property.ContainingType.OriginalDefinition))
+                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, symbol.ContainingType.OriginalDefinition))
                 {
                     break;
                 }
