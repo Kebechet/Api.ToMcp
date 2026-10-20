@@ -118,7 +118,14 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         }
 
         var httpContext = _httpContextAccessor.HttpContext;
-        if (httpContext?.User?.Identity?.IsAuthenticated != true)
+        if (httpContext is null)
+        {
+            throw RefuseScope(
+                "Scope validation needs the HTTP request of the tool call, and none is available. A stateful session with " +
+                "HttpServerTransportOptions.PerSessionExecutionContext = true runs its tool calls without their requests; set the option to false.");
+        }
+
+        if (httpContext.User?.Identity?.IsAuthenticated != true)
         {
             throw RefuseScope("User is not authenticated. Scope validation requires authentication.");
         }

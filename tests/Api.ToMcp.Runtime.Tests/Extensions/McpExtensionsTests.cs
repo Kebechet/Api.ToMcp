@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
+using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Server;
 using Xunit;
 
@@ -266,6 +267,48 @@ public class McpExtensionsTests
         Assert.Contains("\"structuredOutput\": false", warning.Message);
     }
 
+    [Theory]
+    [InlineData(HttpServerSessionMode.Stateful)]
+    [InlineData(HttpServerSessionMode.StatefulForInitializeClients)]
+    public async Task StartupCheck_Warns_WhenAStatefulSessionRunsToolCallsWithoutTheirRequests(HttpServerSessionMode sessionMode)
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+                services.Configure<HttpServerTransportOptions>(options => UsePerSessionExecutionContext(options, sessionMode));
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("PerSessionExecutionContext", warning.Message);
+        Assert.Contains(sessionMode.ToString(), warning.Message);
+        Assert.Contains("Authorization", warning.Message);
+        Assert.Contains("scope validation", warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_DoesNotWarnAboutPerSessionExecutionContext_InStatelessMode_WhichIgnoresIt()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+                services.Configure<HttpServerTransportOptions>(options => UsePerSessionExecutionContext(options, HttpServerSessionMode.Stateless));
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
     [Fact]
     public async Task StartupCheck_StaysSilent_WhenTheOptionIsOff()
     {
@@ -276,6 +319,14 @@ public class McpExtensionsTests
         await startupCheck.StartAsync(CancellationToken.None);
 
         Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
+    private static void UsePerSessionExecutionContext(HttpServerTransportOptions options, HttpServerSessionMode sessionMode)
+    {
+        options.SessionMode = sessionMode;
+#pragma warning disable MCP9006 // The obsolete option is what the tests are about.
+        options.PerSessionExecutionContext = true;
+#pragma warning restore MCP9006
     }
 
     private static List<McpServerTool> BuildTools(Action<IServiceCollection> register)

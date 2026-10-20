@@ -123,8 +123,9 @@ public class McpHttpInvokerScopeTests
     }
 
     [Fact]
-    public async Task BeforeInvokeAsync_HttpContextNull_ThrowsUnauthorizedAccessException()
+    public async Task BeforeInvokeAsync_HttpContextNull_ThrowsUnauthorizedAccessException_NamingTheOptionThatCausesIt()
     {
+        // A stateful session with PerSessionExecutionContext = true runs its tool calls without their HTTP requests.
         _httpContextAccessorMock.Setup(x => x.HttpContext).Returns((HttpContext?)null);
 
         var options = new McpScopeOptions
@@ -137,7 +138,8 @@ public class McpHttpInvokerScopeTests
         var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
 
-        Assert.Contains("not authenticated", exception.Message);
+        Assert.DoesNotContain("not authenticated", exception.Message);
+        Assert.Contains("HttpServerTransportOptions.PerSessionExecutionContext", exception.Message);
     }
 
     #endregion

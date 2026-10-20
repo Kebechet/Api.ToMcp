@@ -21,6 +21,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Xunit;
@@ -277,6 +278,48 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 
         Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
         Assert.Equal("Laptop", result["structuredContent"]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_ChecksScopes_InAStatefulSession()
+    {
+        await using var client = await ConnectMcpClientAsync(OlderProtocolVersion, services =>
+        {
+            RequireScopes(services);
+            services.Configure<HttpServerTransportOptions>(options => options.SessionMode = HttpServerSessionMode.Stateful);
+        }, grantedScopes: "read");
+
+        var result = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+
+        Assert.NotNull(client.SessionId);
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        Assert.Equal("Laptop", result["structuredContent"]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_NamesPerSessionExecutionContext_WhenAStatefulSessionRunsTheCallWithoutItsRequest()
+    {
+        // The session runs every call in the context of its initialize request, whose HttpContext is gone by then.
+        await using var client = await ConnectMcpClientAsync(OlderProtocolVersion, services =>
+        {
+            RequireScopes(services);
+            services.Configure<HttpServerTransportOptions>(options =>
+            {
+                options.SessionMode = HttpServerSessionMode.Stateful;
+#pragma warning disable MCP9006 // The obsolete option is what the test is about.
+                options.PerSessionExecutionContext = true;
+#pragma warning restore MCP9006
+            });
+        }, grantedScopes: "read");
+
+        var result = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+
+        Assert.NotNull(client.SessionId);
+        Assert.True(result["isError"]!.GetValue<bool>());
+        Assert.Equal(
+            "Scope validation needs the HTTP request of the tool call, and none is available. A stateful session with " +
+            "HttpServerTransportOptions.PerSessionExecutionContext = true runs its tool calls without their requests; set the option to false.",
+            result["content"]![0]!["text"]!.GetValue<string>());
     }
 
     [Fact]

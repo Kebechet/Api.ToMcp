@@ -612,7 +612,7 @@ POST mcp/                              server   the MCP request
 
 ### When the link breaks
 
-With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The internal request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. No `Authorization` header is forwarded at all, because that request's `HttpContext` is gone by then, so scope checks fail too. Leave the option at its default, `false`.
+With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The internal request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. No `Authorization` header is forwarded at all, because that request's `HttpContext` is gone by then, and with scope validation on every call is refused with `Scope validation needs the HTTP request of the tool call, and none is available. ...`. The host logs a startup warning when the option is set this way. Leave the option at its default, `false`.
 
 Turning off .NET's activity propagation, with the `System.Net.Http.EnableActivityPropagation` switch set to `false` or `DOTNET_SYSTEM_NET_HTTP_ENABLEACTIVITYPROPAGATION=0`, stops `HttpClient` from sending `traceparent` and `baggage`, so the internal request starts a trace of its own.
 
@@ -693,6 +693,7 @@ A refused call comes back as `isError: true`:
 | Scope validation on, no token | `User is not authenticated. Scope validation requires authentication.` | In the result |
 | The token has no `ClaimName` claim | `Claim 'permissions' not found. Required scope: Read` | In the result |
 | The claim grants too little | `Insufficient scope. Required: Write, Granted: Read` | In the result |
+| A stateful session with `PerSessionExecutionContext = true` | `Scope validation needs the HTTP request of the tool call, and none is available. ...` | In the result, and a startup warning; see [When the link breaks](#when-the-link-breaks) |
 
 A scope rejection comes back like a failed API call, as an error result whose text is the reason: the scope the tool requires, the scope the caller was granted, or the claim it lacks, never the token or the claim's value. The app logs the same reason as a warning from `Api.ToMcp.Runtime.Services.McpHttpInvoker`: `MCP tool call refused by scope validation: <reason>`. `IMcpHttpInvoker.BeforeInvokeAsync` still throws an `UnauthorizedAccessException`; a call filter that `AddMcpTools` adds to the MCP server turns the default invoker's into that result. See [Scope-Based Access Control](#scope-based-access-control).
 
@@ -783,6 +784,9 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 **Startup warning `Assembly '...' has types in MCP tool schemas but no XML documentation file`.**
 - A type used in a tool argument or response lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, comes from a NuGet package while the app lacks `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>`, or the `.xml` was not deployed next to the assembly. Enable the matching property and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
 - The variant `... could not be read (...)` means the file is there but damaged; rebuild and redeploy it.
+
+**Startup warning `HttpServerTransportOptions.PerSessionExecutionContext is true and SessionMode is ...`.**
+- A stateful session then runs every tool call without the HTTP request that carried it, so the tools forward no `Authorization` header and scope validation refuses every call. Set `PerSessionExecutionContext` to `false`, its default; see [When the link breaks](#when-the-link-breaks).
 
 **Tool calls return `401`/`403`.**
 - Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim.
