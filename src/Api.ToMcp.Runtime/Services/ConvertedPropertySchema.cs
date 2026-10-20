@@ -15,8 +15,6 @@ namespace Api.ToMcp.Runtime.Services;
 /// </summary>
 internal static class ConvertedPropertySchema
 {
-    private const string DescriptionKeyword = "description";
-
     /// <summary>
     /// <paramref name="options"/>, or the defaults, with this schema applied before their own
     /// <see cref="AIJsonSchemaCreateOptions.TransformSchemaNode"/>, so that one can still describe the property.
@@ -47,9 +45,9 @@ internal static class ConvertedPropertySchema
             return schema;
         }
 
-        if (schema is JsonObject schemaObject && schemaObject[DescriptionKeyword] is { } description)
+        if (schema is JsonObject schemaObject && schemaObject[JsonSchemaKeywords.Description] is { } description)
         {
-            return new JsonObject { [DescriptionKeyword] = description.DeepClone() };
+            return new JsonObject { [JsonSchemaKeywords.Description] = description.DeepClone() };
         }
 
         return JsonValue.Create(true);

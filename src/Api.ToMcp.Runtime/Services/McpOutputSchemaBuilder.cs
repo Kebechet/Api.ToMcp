@@ -19,18 +19,16 @@ internal sealed class McpOutputSchemaBuilder
 {
     private const string TypeKeyword = "type";
     private const string AnyOfKeyword = "anyOf";
-    private const string RefKeyword = "$ref";
     private const string RequiredKeyword = "required";
     private const string FormatKeyword = "format";
     private const string SchemaKeyword = "$schema";
-    private const string DescriptionKeyword = "description";
     private const string NullType = "null";
 
     /// <summary>
     /// Keywords that describe the schema document or the response as a whole, so they stay at the root when the
     /// value's schema moves into an <c>anyOf</c> branch.
     /// </summary>
-    private static readonly string[] RootKeywords = [SchemaKeyword, DescriptionKeyword];
+    private static readonly string[] RootKeywords = [SchemaKeyword, JsonSchemaKeywords.Description];
 
     private const string RootPointer = "#";
     private const string RootPointerPrefix = "#/";
@@ -302,15 +300,15 @@ internal sealed class McpOutputSchemaBuilder
     {
         if (node is JsonObject jsonObject)
         {
-            if (jsonObject[RefKeyword] is JsonValue refValue && refValue.TryGetValue<string>(out var reference))
+            if (jsonObject[JsonSchemaKeywords.Ref] is JsonValue refValue && refValue.TryGetValue<string>(out var reference))
             {
                 if (reference == RootPointer)
                 {
-                    jsonObject[RefKeyword] = ValueBranchPointer;
+                    jsonObject[JsonSchemaKeywords.Ref] = ValueBranchPointer;
                 }
                 else if (reference.StartsWith(RootPointerPrefix, StringComparison.Ordinal))
                 {
-                    jsonObject[RefKeyword] = ValueBranchPointer + reference.Substring(1);
+                    jsonObject[JsonSchemaKeywords.Ref] = ValueBranchPointer + reference.Substring(1);
                 }
             }
 

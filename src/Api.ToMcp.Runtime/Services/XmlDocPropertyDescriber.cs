@@ -15,8 +15,6 @@ namespace Api.ToMcp.Runtime.Services;
 /// </summary>
 internal sealed class XmlDocPropertyDescriber
 {
-    private const string DescriptionKeyword = "description";
-
     private readonly XmlDocSummaryReader _summaryReader;
 
     public XmlDocPropertyDescriber(XmlDocSummaryReader summaryReader)
@@ -61,7 +59,7 @@ internal sealed class XmlDocPropertyDescriber
         }
 
         var schemaObject = schema as JsonObject ?? new JsonObject();
-        schemaObject[DescriptionKeyword] = summary;
+        schemaObject[JsonSchemaKeywords.Description] = summary;
 
         return schemaObject;
     }
