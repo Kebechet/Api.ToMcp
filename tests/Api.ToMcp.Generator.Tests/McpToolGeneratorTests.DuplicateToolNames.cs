@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
 using Xunit;
 
 namespace Api.ToMcp.Generator.Tests;
@@ -47,7 +48,7 @@ namespace TestApi
             "The MCP SDK keeps only one tool per name and drops the others without an error.",
             warning.GetMessage());
         // Both tools come from the one base action that declares the name.
-        Assert.Equal("GetAll", GetLocatedText(warning.Location));
+        Assert.Equal("GetAll", GetLocatedText(warning.Location, source));
         Assert.Empty(warning.AdditionalLocations);
 
         // The warning only makes the collision visible: both tools are still generated.
@@ -88,8 +89,8 @@ namespace TestApi
         Assert.Contains(
             "Tool name 'export' is given to 2 tools: ReportsController.Export (GET /api/reports/export), InvoicesController.Download (POST /api/invoices/download).",
             warning.GetMessage());
-        Assert.Equal("Export", GetLocatedText(warning.Location));
-        Assert.Equal("Download", GetLocatedText(Assert.Single(warning.AdditionalLocations)));
+        Assert.Equal("Export", GetLocatedText(warning.Location, source));
+        Assert.Equal("Download", GetLocatedText(Assert.Single(warning.AdditionalLocations), source));
     }
 
     [Fact]
@@ -209,10 +210,16 @@ namespace TestApi
             .Diagnostics;
     }
 
-    private static string GetLocatedText(Location location)
+    /// <summary>
+    /// The text of the source that the location points at, after checking that the line and column it reports, which a
+    /// build prints, are those of its span.
+    /// </summary>
+    private static string GetLocatedText(Location location, string source)
     {
-        Assert.True(location.IsInSource, $"Not a source location: {location}");
+        Assert.NotEqual(Location.None, location);
+        var sourceText = SourceText.From(source);
+        Assert.Equal(sourceText.Lines.GetLinePositionSpan(location.SourceSpan), location.GetLineSpan().Span);
 
-        return location.SourceTree!.GetText().ToString(location.SourceSpan);
+        return sourceText.ToString(location.SourceSpan);
     }
 }

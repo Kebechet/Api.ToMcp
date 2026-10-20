@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Api.ToMcp.Generator.Models
 {
@@ -76,9 +77,44 @@ namespace Api.ToMcp.Generator.Models
         /// Where the action is declared in source, which an inherited action shares with every controller that inherits
         /// it, or null for an action declared in a referenced assembly.
         /// </summary>
-        public Location? Location { get; set; }
+        public SourceLocationModel? SourceLocation { get; set; }
 
         public string ToolClassName => $"{ControllerName}_{Name}Tool";
+    }
+
+    /// <summary>
+    /// A place in a source file, as plain values: a <c>Location</c> would hold its syntax tree, and the compilation
+    /// with it, in the generator's pipeline from one compilation to the next.
+    /// </summary>
+    internal sealed class SourceLocationModel
+    {
+        public string FilePath { get; set; } = "";
+        public TextSpan TextSpan { get; set; }
+        public LinePositionSpan LineSpan { get; set; }
+
+        /// <summary>
+        /// The place of a source location, or null for one outside source, such as in a referenced assembly.
+        /// </summary>
+        public static SourceLocationModel? From(Location? location)
+        {
+            if (location?.SourceTree is null)
+            {
+                return null;
+            }
+
+            var lineSpan = location.GetLineSpan();
+            return new SourceLocationModel
+            {
+                FilePath = lineSpan.Path,
+                TextSpan = location.SourceSpan,
+                LineSpan = lineSpan.Span
+            };
+        }
+
+        public Location ToLocation()
+        {
+            return Location.Create(FilePath, TextSpan, LineSpan);
+        }
     }
 
     /// <summary>

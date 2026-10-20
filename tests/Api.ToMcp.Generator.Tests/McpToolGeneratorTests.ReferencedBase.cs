@@ -92,7 +92,7 @@ namespace TestApi
         // The inherited name collides. Of the two actions, only the override is declared in this compilation.
         var warning = Assert.Single(diagnostics, x => x.Id == DuplicateToolNameId);
         Assert.Contains("ProductsController.Get (GET /api/products/{id}), OrdersController.Get (GET /api/orders/{id})", warning.GetMessage());
-        Assert.Equal("Get", GetLocatedText(warning.Location));
+        Assert.Equal("Get", GetLocatedText(warning.Location, source));
         Assert.Equal(source.IndexOf("Get(Guid id)", StringComparison.Ordinal), warning.Location.SourceSpan.Start);
         Assert.Empty(warning.AdditionalLocations);
     }

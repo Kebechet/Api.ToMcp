@@ -128,7 +128,7 @@ namespace Api.ToMcp.Generator.Parsing
                     IsOutputNullable = responseType.SuccessType is null ||
                         responseType.HasBodylessSuccess ||
                         EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct),
-                    Location = method.Locations.FirstOrDefault(x => x.IsInSource)
+                    SourceLocation = SourceLocationModel.From(method.Locations.FirstOrDefault(x => x.IsInSource))
                 });
             }
 
