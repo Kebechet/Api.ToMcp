@@ -145,6 +145,17 @@ namespace TestApi
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
             => new { isNaN = double.IsNaN(value), inf = float.IsPositiveInfinity(inf), negInf = double.IsNegativeInfinity(negInf), query = Request.QueryString.Value };
 
+        // MVC refuses 99, which no member of OrderStatus has, from text, but applies it as the default of a value not sent.
+        [HttpGet(""defaults"")]
+        public object GetDefaults(OrderStatus unknown = (OrderStatus)99, int page = 2, string text = ""x"")
+            => new { unknown, page, text, query = Request.QueryString.Value };
+
+        [HttpGet(""default-route/{status?}"")]
+        public object GetDefaultRoute(OrderStatus status = (OrderStatus)99) => new { status, path = Request.Path.Value };
+
+        [HttpPost(""default-body"")]
+        public object PostDefaultBody([FromBody] OrderStatus status = (OrderStatus)99) => new { status };
+
         [HttpGet(""optional/{id?}"")]
         public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
@@ -310,6 +321,11 @@ namespace TestApi
     [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
     [InlineData("EchoController_GetOptionalTool", @"{}", @"{""id"":null,""path"":""/api/optional""}")]
+    [InlineData("EchoController_GetDefaultsTool", @"{}", @"{""unknown"":99,""page"":2,""text"":""x"",""query"":""""}")]
+    [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":1,""page"":3}", @"{""unknown"":1,""page"":3,""text"":""x"",""query"":""?unknown=Closed&page=3""}")]
+    [InlineData("EchoController_GetDefaultRouteTool", @"{}", @"{""status"":99,""path"":""/api/default-route/""}")]
+    [InlineData("EchoController_GetDefaultRouteTool", @"{""status"":1}", @"{""status"":1,""path"":""/api/default-route/Closed""}")]
+    [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]
     [InlineData("EchoController_GetNanTool", @"{}", @"{""isNaN"":true,""inf"":true,""negInf"":true,""query"":""""}")]
     [InlineData("EchoController_GetNanTool", @"{""value"":1.5}", @"{""isNaN"":false,""inf"":true,""negInf"":true,""query"":""?value=1.5""}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]

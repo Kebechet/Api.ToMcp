@@ -122,11 +122,12 @@ namespace Api.ToMcp.Generator.Emitting
             var definition = content.TrimStart(CatchAllMarker);
             var nameEnd = definition.IndexOfAny(new[] { ConstraintSeparator, DefaultValueSeparator, OptionalMarker });
             var name = nameEnd < 0 ? definition : definition.Substring(0, nameEnd);
+            var hasDefaultValue = HasDefaultValue(definition);
             var isOptional = isCatchAll ||
                 definition.EndsWith(OptionalMarker.ToString(), StringComparison.Ordinal) ||
-                HasDefaultValue(definition);
+                hasDefaultValue;
 
-            return RouteTemplatePart.Parameter(name, isOptional, isCatchAll);
+            return RouteTemplatePart.Parameter(name, isOptional, isCatchAll, hasDefaultValue);
         }
 
         /// <summary>
@@ -151,12 +152,13 @@ namespace Api.ToMcp.Generator.Emitting
 
     internal sealed class RouteTemplatePart
     {
-        private RouteTemplatePart(string text, bool isParameter, bool isOptional, bool isCatchAll)
+        private RouteTemplatePart(string text, bool isParameter, bool isOptional, bool isCatchAll, bool hasDefaultValue)
         {
             Text = text;
             IsParameter = isParameter;
             IsOptional = isOptional;
             IsCatchAll = isCatchAll;
+            HasDefaultValue = hasDefaultValue;
         }
 
         /// <summary>
@@ -168,14 +170,19 @@ namespace Api.ToMcp.Generator.Emitting
         public bool IsOptional { get; }
         public bool IsCatchAll { get; }
 
+        /// <summary>
+        /// Whether the template gives the parameter a default value, <c>{page=1}</c>, which MVC binds when a URL leaves it out.
+        /// </summary>
+        public bool HasDefaultValue { get; }
+
         public static RouteTemplatePart Literal(string text)
         {
-            return new RouteTemplatePart(text, isParameter: false, isOptional: false, isCatchAll: false);
+            return new RouteTemplatePart(text, isParameter: false, isOptional: false, isCatchAll: false, hasDefaultValue: false);
         }
 
-        public static RouteTemplatePart Parameter(string name, bool isOptional, bool isCatchAll)
+        public static RouteTemplatePart Parameter(string name, bool isOptional, bool isCatchAll, bool hasDefaultValue)
         {
-            return new RouteTemplatePart(name, isParameter: true, isOptional, isCatchAll);
+            return new RouteTemplatePart(name, isParameter: true, isOptional, isCatchAll, hasDefaultValue);
         }
     }
 }

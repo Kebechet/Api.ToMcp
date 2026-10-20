@@ -168,7 +168,7 @@ namespace Api.ToMcp.Generator.Emitting
                 else if (param.Source == ParameterSourceModel.Query ||
                     (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && param.IsSimpleType))
                 {
-                    queryValues.Add((param.QueryName ?? param.Name, EscapeIdentifier(param.Name)));
+                    queryValues.Add((param.QueryName ?? param.Name, GetSentValue(param)));
                 }
                 else if (param.Source == ParameterSourceModel.Route)
                 {
@@ -251,7 +251,12 @@ namespace Api.ToMcp.Generator.Emitting
 
                 if (directParam != null)
                 {
-                    placeholderSources[placeholder] = (EscapeIdentifier(directParam.Name), directParam.Name);
+                    // An optional route value at the end of the URL, without a default of the route's own, MVC binds as
+                    // the action's default when the URL leaves it out, as it does a query value.
+                    var lastPart = template.Parts.Count == 0 ? null : template.Parts[template.Parts.Count - 1];
+                    var canBeLeftOut = lastPart is { IsParameter: true, IsOptional: true, HasDefaultValue: false } &&
+                        string.Equals(lastPart.Text, placeholder, StringComparison.OrdinalIgnoreCase);
+                    placeholderSources[placeholder] = (canBeLeftOut ? GetSentValue(directParam) : EscapeIdentifier(directParam.Name), directParam.Name);
                 }
                 else
                 {
@@ -341,6 +346,20 @@ namespace Api.ToMcp.Generator.Emitting
             }
 
             return "$\"" + (route.Length == 0 ? PathSeparator : route.ToString()) + "\"";
+        }
+
+        /// <summary>
+        /// The value of a parameter the tool sends as a query value, or as an optional route value at the end of the URL:
+        /// nothing when it equals the action's default. MVC applies that default itself to a value it is not sent, and it
+        /// may refuse the same value as text, such as an enum value that no member has.
+        /// </summary>
+        private static string GetSentValue(ParameterInfoModel parameter)
+        {
+            var name = EscapeIdentifier(parameter.Name);
+
+            return parameter.DefaultValueExpression is { } defaultValue && defaultValue != NullLiteral
+                ? $"{name} == {defaultValue} ? null : {name}"
+                : name;
         }
 
         /// <summary>

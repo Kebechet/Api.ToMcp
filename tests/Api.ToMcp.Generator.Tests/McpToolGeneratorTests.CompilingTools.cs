@@ -148,6 +148,31 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_SendsNoQueryValueOrOptionalRouteValue_ThatEqualsTheActionsDefault()
+    {
+        // MVC applies the action's default to a value it is not sent, and may refuse the same value as text: 99, which no
+        // member of OrderStatus has, answers 400.
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpGet(\"d/{status?}\")] public Task<string> Find([FromQuery] OrderStatus unknown = (OrderStatus)99, int page = 2, string text = \"x\", " +
+            "string? none = null, OrderStatus status = OrderStatus.Closed) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("AddQueryValue(queryParts, \"unknown\", unknown == (global::TestApi.OrderStatus)99 ? null : unknown);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"page\", page == 2 ? null : page);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"text\", text == \"x\" ? null : text);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"none\", none);", tool);
+        Assert.Contains($"var routestatus = System.Uri.EscapeDataString({Formatter}.Format(status == global::TestApi.OrderStatus.Closed ? null : status));", tool);
+    }
+
+    [Fact]
+    public void Generator_SendsARequiredRouteValue_ThatEqualsTheActionsDefault()
+    {
+        // The URL needs the segment.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"p/{page}\")] public Task<string> Find(int page = 1) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routepage = System.Uri.EscapeDataString({Formatter}.Format(page));", tool);
+    }
+
+    [Fact]
     public void Generator_WritesADefaultValue_WithTheInvariantCulture()
     {
         // A comma as the decimal separator would end the default value in the middle of the number.
