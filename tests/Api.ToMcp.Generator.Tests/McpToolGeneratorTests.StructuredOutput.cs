@@ -70,6 +70,14 @@ namespace TestApi
     [InlineData("[Produces(\"application/json; charset=utf-8\")] public ActionResult<Product> Get() => new Product();", "global::TestApi.Product")]
     [InlineData("[Produces(\"application/vnd.shop.product+json\")] public ActionResult<Product> Get() => new Product();", "global::TestApi.Product")]
     [InlineData("[ProducesResponseType(typeof(Product), 200, \"application/hal+json; charset=utf-8\")] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces(typeof(Product))] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces<Product>] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces(\"application/json\", Type = typeof(Product))] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces<Product>] [ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces(typeof(Product), Order = 0)] public IActionResult Get() => Ok(new Product());", "global::TestApi.Product")]
+    [InlineData("[Produces(typeof(Order))] public ActionResult<Product> Get() => new Product();", "global::TestApi.Order")]
+    [InlineData("[Produces(typeof(Product), Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
+    [InlineData("[Produces<Product>(Type = null)] public ActionResult<Order> Get() => new Order();", "global::TestApi.Order")]
     public void Generator_AdvertisesTheSuccessResponseType_AsTheOutputSchema(string action, string expectedType)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
@@ -111,6 +119,9 @@ namespace TestApi
     [InlineData("[ProducesResponseType(StatusCodes.Status204NoContent)] public ActionResult<Product> Get() => Ok(new Product());")]
     [InlineData("[ProducesResponseType(typeof(Hidden), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
     [InlineData("[ProducesResponseType(typeof(List<Hidden>), 200)] public IActionResult Get() => Ok(); private sealed class Hidden { }")]
+    [InlineData("[Produces(\"text/csv\", Type = typeof(Product))] public IActionResult Get() => Ok();")]
+    [InlineData("[Produces(typeof(Product))] [ProducesResponseType(typeof(Order), 201)] public IActionResult Get() => Ok();")]
+    [InlineData("[Produces(typeof(Product), Type = null)] public IActionResult Get() => Ok();")]
     public void Generator_AdvertisesNoOutputSchema_WhenTheSuccessBodyIsNotReliablyTypedJson(string action)
     {
         var tool = GenerateCompilingToolClass(StructuredOutputSource(action), AllExceptExcludedConfig);
@@ -361,6 +372,275 @@ namespace TestApi
 ";
 
         AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Theory]
+    [InlineData("[Produces(typeof(Product))]")]
+    [InlineData("[Produces<Product>]")]
+    [InlineData("[Produces(\"application/json\", Type = typeof(Product))]")]
+    public void Generator_TakesTheControllersProducesType_ForAnActionWhoseReturnTypeNamesNoBody(string controllerAttributes)
+    {
+        var source = StructuredOutputSource("public IActionResult Get() => Ok(new Product());", controllerAttributes);
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheControllerProducesATypeTheActionDoesNotReturn()
+    {
+        // A type in the controller's [Produces] is a 200 of every action, like its [ProducesResponseType].
+        var source = StructuredOutputSource("public ActionResult<Product> Get() => new Product();", controllerAttributes: "[Produces(typeof(Order))]");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_LetsTheActionsProducesType_WinOverTheControllersResponseTypeForTheSameStatus()
+    {
+        var source = StructuredOutputSource(
+            "[Produces<Product>] public IActionResult Get() => Ok(new Product());",
+            controllerAttributes: "[ProducesResponseType(typeof(Order), 200)]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_KeepsTheControllersProducesType_UnderAnActionsProducesWhoseTypeIsSetToNull()
+    {
+        // Type = null clears the type the constructor set, so the action's [Produces] declares no 200 to replace the
+        // controller's.
+        var source = StructuredOutputSource(
+            "[Produces(typeof(Order), Type = null)] public IActionResult Get() => Ok(new Product());",
+            controllerAttributes: "[Produces(typeof(Product))]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_LetsTheActionsResponseType_WinOverTheControllersProducesType()
+    {
+        var source = StructuredOutputSource(
+            "[ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());",
+            controllerAttributes: "[Produces(typeof(Order))]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Theory]
+    [InlineData("[Produces(typeof(Order))] [ProducesResponseType(typeof(Product), 200)]")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200)] [Produces(typeof(Order))]")]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheActionsProducesAndResponseTypeNameDifferentTypes(string attributes)
+    {
+        // ApiExplorer up to .NET 10 keeps whichever of the two is declared last, so the 200's type is an accident of
+        // order rather than something to promise.
+        var source = StructuredOutputSource($"{attributes} public IActionResult Get() => Ok(new Product());");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_ReadsTheProducesTypeOfTheOverriddenAction()
+    {
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+        [Produces<Product>]
+        public virtual IActionResult Get() => Ok(new Product());
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CatalogControllerBase
+    {
+        [HttpGet]
+        public override IActionResult Get() => Ok(new Product());
+    }
+}
+";
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_ReadsTheProducesTypeOfABaseController()
+    {
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [Produces(typeof(Product))]
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CatalogControllerBase
+    {
+        [HttpGet]
+        public IActionResult Get() => Ok(new Product());
+    }
+}
+";
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_LetsTheActionsGenericProducesWin_OverTheControllersContentTypes()
+    {
+        // [Produces<T>] declares no content types, and so clears the controller's, as [Produces("application/json")] would.
+        var source = StructuredOutputSource("[Produces<Product>] public IActionResult Get() => Ok(new Product());", controllerAttributes: "[Produces(\"text/csv\")]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Product)", tool);
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheActionProducesANonJsonContentTypeForTheControllersType()
+    {
+        var source = StructuredOutputSource("[Produces(\"text/csv\")] public IActionResult Get() => Ok();", controllerAttributes: "[Produces<Product>]");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenAGenericProducesSitsNextToANonJsonOne()
+    {
+        // [Produces] and [Produces<T>] are different attribute classes, so one target can carry both and MVC applies both.
+        var source = StructuredOutputSource("[Produces<Product>] [Produces(\"text/csv\")] public IActionResult Get() => Ok();");
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenTheOverriddenActionProducesANonJsonContentTypeUnderAGenericProduces()
+    {
+        // Being of another class, the override's [Produces<T>] does not replace the base's [Produces]: reflection returns
+        // both, the base's last, so MVC writes text/csv.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class ReportControllerBase : ControllerBase
+    {
+        [Produces(""text/csv"")]
+        public virtual IActionResult Get() => Ok();
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ReportControllerBase
+    {
+        [HttpGet]
+        [Produces<Product>]
+        public override IActionResult Get() => Ok();
+    }
+}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Theory]
+    [InlineData("[Produces(typeof(Product), Order = -1)] public IActionResult Get() => Ok(new Product());", "[Produces(\"text/csv\")]")]
+    [InlineData("[ProducesResponseType(typeof(Product), 200)] public IActionResult Get() => Ok(new Product());", "[Produces(typeof(Order), Order = 1)]")]
+    [InlineData("[ProducesResponseType(typeof(Order), 200)] public IActionResult Get() => Ok(new Order());", "[Produces<Product>(Order = 1)]")]
+    public void Generator_AdvertisesNoOutputSchema_WhenAProducesSetsItsOrder(string action, string controllerAttributes)
+    {
+        // MVC sorts filters by Order before scope, so an Order can run an action's [Produces] before its controller's.
+        var source = StructuredOutputSource(action, controllerAttributes);
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Theory]
+    [InlineData("[ProducesCsv]", "")]
+    [InlineData("", "[ProducesCsv]")]
+    [InlineData("[ProducesProduct]", "")]
+    public void Generator_AdvertisesNoOutputSchema_UnderASubclassOfProduces(string controllerAttributes, string actionAttributes)
+    {
+        // A subclass hands its content types to the base constructor in code, which attribute data does not show.
+        var source = StructuredOutputUsings + StructuredOutputModels + $@"
+namespace TestApi
+{{
+    public sealed class ProducesCsvAttribute : ProducesAttribute
+    {{
+        public ProducesCsvAttribute() : base(""text/csv"") {{ }}
+    }}
+
+    public sealed class ProducesProductAttribute : ProducesAttribute<Product>
+    {{
+        public ProducesProductAttribute() => ContentTypes = new Microsoft.AspNetCore.Mvc.Formatters.MediaTypeCollection {{ ""text/csv"" }};
+    }}
+
+    {controllerAttributes}
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {{
+        [HttpGet]
+        [ProducesResponseType(typeof(Product), 200)]
+        {actionAttributes}
+        public IActionResult Get() => Ok(new Product());
+    }}
+}}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_AdvertisesNoOutputSchema_WhenABaseAndADerivedControllerProduceDifferentGenericTypes()
+    {
+        // [Produces<Product>] and [Produces<Order>] are different classes, so the derived one does not replace the base's:
+        // MVC applies both.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [Produces<Product>]
+    public abstract class CatalogControllerBase : ControllerBase
+    {
+    }
+
+    [Produces<Order>]
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : CatalogControllerBase
+    {
+        [HttpGet]
+        public IActionResult Get() => Ok(new Order());
+    }
+}
+";
+
+        AssertHasNoOutputSchema(GenerateCompilingToolClass(source, AllExceptExcludedConfig));
+    }
+
+    [Fact]
+    public void Generator_TakesTheControllersProducesType_UnderTheActionsJsonContentType()
+    {
+        // The action's [Produces] replaces only the controller's content types; the controller's type stays its 200.
+        var source = StructuredOutputSource(
+            "[Produces(\"application/json\")] public IActionResult Get() => Ok(new Order());",
+            controllerAttributes: "[Produces(\"text/csv\", Type = typeof(Order))]");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig);
+
+        Assert.Contains("OutputSchemaType = typeof(global::TestApi.Order)", tool);
     }
 
     [Fact]

@@ -33,8 +33,11 @@ namespace Api.ToMcp.Generator.Parsing
         private const string ProducesResponseTypeAttribute = "Microsoft.AspNetCore.Mvc.ProducesResponseTypeAttribute";
         private const string GenericProducesResponseTypeAttribute = "Microsoft.AspNetCore.Mvc.ProducesResponseTypeAttribute<T>";
         private const string ProducesAttribute = "Microsoft.AspNetCore.Mvc.ProducesAttribute";
+        private const string GenericProducesAttribute = "Microsoft.AspNetCore.Mvc.ProducesAttribute<T>";
         private const string StatusCodePropertyName = "StatusCode";
         private const string TypePropertyName = "Type";
+        private const string OrderPropertyName = "Order";
+        private const int DefaultFilterOrder = 0;
 
         private const string JsonSubtype = "json";
         private const string JsonStructuredSuffix = "+json";
@@ -71,10 +74,13 @@ namespace Api.ToMcp.Generator.Parsing
         public static ResponseTypeInfo Resolve(IMethodSymbol method, INamedTypeSymbol controller, Compilation compilation)
         {
             // An action's [Produces] replaces its controller's: it runs later and sets the content types last. Both are
-            // inherited, from the action an override replaces and from base controllers.
-            var produces = ActionMethodAnalyzer.FindNearestAttribute(method, x => x.OverriddenMethod, IsProducesAttribute) ??
-                ActionMethodAnalyzer.FindNearestAttribute(controller, x => x.BaseType, IsProducesAttribute);
-            if (produces != null && !CanBeJson(GetContentTypes(produces, firstContentTypeArgument: 0)))
+            // inherited, from the action an override replaces and from base controllers. [Produces] and [Produces<T>] are
+            // different classes, so one chain can apply several, a base's after its override's: every one has to allow JSON.
+            var actionProduces = GetProducesAttributes(method, x => x.OverriddenMethod);
+            var controllerProduces = GetProducesAttributes(controller, x => x.BaseType);
+            var produces = actionProduces.Count > 0 ? actionProduces : controllerProduces;
+            if (!actionProduces.Concat(controllerProduces).All(CanReadProduces) ||
+                !produces.All(x => CanBeJson(GetContentTypes(x, firstContentTypeArgument: 0))))
             {
                 return new ResponseTypeInfo(null, hasBodylessSuccess: false);
             }
@@ -86,9 +92,10 @@ namespace Api.ToMcp.Generator.Parsing
 
             // MVC applies a controller's [ProducesResponseType] to every action, and an action's own declaration of a
             // status replaces it. Both are inherited, from the action an override replaces and from base controllers.
-            var actionResponses = ReadSuccessResponses(GetInheritedAttributes(method, x => x.OverriddenMethod));
+            // A [Produces] that names a type declares a 200 the same way.
+            var actionResponses = ReadSuccessResponses(GetInheritedAttributes(method, x => x.OverriddenMethod), actionProduces);
             var actionStatusCodes = new HashSet<int>(actionResponses.Select(x => x.StatusCode));
-            var controllerResponses = ReadSuccessResponses(GetInheritedAttributes(controller, x => x.BaseType))
+            var controllerResponses = ReadSuccessResponses(GetInheritedAttributes(controller, x => x.BaseType), controllerProduces)
                 .Where(x => !actionStatusCodes.Contains(x.StatusCode));
 
             foreach (var (statusCode, type, contentTypes) in actionResponses.Concat(controllerResponses))
@@ -187,7 +194,26 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
-        private static List<(int StatusCode, ITypeSymbol? Type, IReadOnlyList<string> ContentTypes)> ReadSuccessResponses(IEnumerable<AttributeData> attributes)
+        /// <summary>
+        /// The <c>[Produces]</c> attributes MVC applies to the symbol, its own and those it inherits. As with reflection,
+        /// a nearer symbol's attribute replaces a base's only when of the same class, and <c>[Produces]</c> and each
+        /// <c>[Produces&lt;T&gt;]</c> are classes of their own.
+        /// </summary>
+        private static List<AttributeData> GetProducesAttributes<TSymbol>(TSymbol symbol, Func<TSymbol, TSymbol?> next)
+            where TSymbol : class, ISymbol
+        {
+            var produces = new List<AttributeData>();
+            for (var current = symbol; current != null; current = next(current))
+            {
+                var nearerClasses = produces.Select(x => x.AttributeClass).ToList();
+                produces.AddRange(current.GetAttributes()
+                    .Where(x => IsProducesAttribute(x) && !nearerClasses.Contains(x.AttributeClass, SymbolEqualityComparer.Default)));
+            }
+
+            return produces;
+        }
+
+        private static List<(int StatusCode, ITypeSymbol? Type, IReadOnlyList<string> ContentTypes)> ReadSuccessResponses(IEnumerable<AttributeData> attributes, IEnumerable<AttributeData> produces)
         {
             var responses = new List<(int StatusCode, ITypeSymbol? Type, IReadOnlyList<string> ContentTypes)>();
             foreach (var attribute in attributes)
@@ -196,12 +222,63 @@ namespace Api.ToMcp.Generator.Parsing
                     responses.Add((statusCode, type, contentTypes));
             }
 
+            // A [Produces]'s content types apply to every response, not only to its 200, and Resolve checks them.
+            foreach (var attribute in produces)
+            {
+                var type = GetProducesType(attribute);
+                if (type != null)
+                    responses.Add((HttpStatusCodes.Status200OK, type, Array.Empty<string>()));
+            }
+
             return responses;
         }
 
         private static bool IsProducesAttribute(AttributeData attribute)
         {
-            return attribute.AttributeClass?.ToDisplayString() == ProducesAttribute;
+            return attribute.AttributeClass != null && IsOrImplements(attribute.AttributeClass, ProducesAttribute);
+        }
+
+        /// <summary>
+        /// Whether attribute data shows what MVC does with the <c>[Produces]</c>. A subclass hands its content types to the
+        /// base constructor in code, and an <c>Order</c> sorts it before or after the others whatever its scope, so with
+        /// either the content types MVC writes are unknown.
+        /// </summary>
+        private static bool CanReadProduces(AttributeData attribute)
+        {
+            var definition = attribute.AttributeClass?.OriginalDefinition.ToDisplayString();
+            if (definition is not (ProducesAttribute or GenericProducesAttribute))
+                return false;
+
+            return !attribute.NamedArguments.Any(x => x.Key == OrderPropertyName && x.Value.Value is int order && order != DefaultFilterOrder);
+        }
+
+        /// <summary>
+        /// The type a <c>[Produces]</c> names, through <c>[Produces(typeof(T))]</c>, its <c>Type</c> property or
+        /// <c>[Produces&lt;T&gt;]</c>, or null when it names only content types or sets <c>Type = null</c>.
+        /// </summary>
+        private static ITypeSymbol? GetProducesType(AttributeData attribute)
+        {
+            ITypeSymbol? type = null;
+            var attributeClass = attribute.AttributeClass;
+            var arguments = attribute.ConstructorArguments;
+
+            if (attributeClass is { IsGenericType: true })
+            {
+                type = attributeClass.TypeArguments[0];
+            }
+            else if (arguments.Length > 0 && arguments[0].Kind == TypedConstantKind.Type)
+            {
+                type = arguments[0].Value as ITypeSymbol;
+            }
+
+            // Type = null clears the constructor's type, and with it the 200: ApiExplorer adds no response for a null type.
+            foreach (var namedArgument in attribute.NamedArguments)
+            {
+                if (namedArgument.Key == TypePropertyName)
+                    type = namedArgument.Value.Value as ITypeSymbol;
+            }
+
+            return type;
         }
 
         private static bool TryReadProducesResponseType(AttributeData attribute, out int statusCode, out ITypeSymbol? type, out IReadOnlyList<string> contentTypes)
