@@ -68,7 +68,7 @@ namespace Api.ToMcp.Generator
                 }
                 else if (selectedActions.IsEmpty)
                 {
-                    ReportNoToolsGenerated(ctx, controllers, config);
+                    ReportNoToolsGenerated(ctx, controllers, config, entryNames);
                 }
 
                 // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
@@ -249,7 +249,8 @@ namespace Api.ToMcp.Generator
         private static void ReportNoToolsGenerated(
             SourceProductionContext context,
             ImmutableArray<ControllerInfoModel> controllers,
-            GeneratorConfigModel config)
+            GeneratorConfigModel config,
+            HashSet<string> entryNames)
         {
             var example = controllers
                 .SelectMany(controller => controller.Actions
@@ -264,7 +265,7 @@ namespace Api.ToMcp.Generator
                 DiagnosticDescriptors.NoToolsGenerated,
                 CreateConfigLocation(config, default(LinePosition)),
                 config.Mode.ToString(),
-                GetNoToolsAdvice(config, example.Controller, example.Action)));
+                GetNoToolsAdvice(config, entryNames, example.Controller, example.Action)));
         }
 
         private static Location CreateConfigLocation(GeneratorConfigModel config, LinePosition position)
@@ -282,7 +283,11 @@ namespace Api.ToMcp.Generator
         /// <summary>
         /// What made the config select nothing and how to fix it, naming one of the project's own actions as the example.
         /// </summary>
-        private static string GetNoToolsAdvice(GeneratorConfigModel config, string exampleController, string exampleAction)
+        private static string GetNoToolsAdvice(
+            GeneratorConfigModel config,
+            HashSet<string> entryNames,
+            string exampleController,
+            string exampleAction)
         {
             var examples = $"controllers such as '{exampleController}' or actions such as '{exampleAction}'";
 
@@ -295,8 +300,20 @@ namespace Api.ToMcp.Generator
             if (config.Include.IsEmpty)
                 return $"The include list in generator.json is empty: add {examples} to it, or mark actions with [McpExpose]";
 
-            var entries = string.Join(", ", config.Include.Select(entry => $"'{entry}'"));
-            return $"None of the include entries in generator.json ({entries}) selects an action: entries are case-sensitive controller names such as '{exampleController}' or action names such as '{exampleAction}'";
+            // MCP008 says at each entry that names nothing what is wrong with it, so this only points there.
+            var entries = config.Include.Where(x => x != null).Distinct(StringComparer.Ordinal).ToList();
+            var keptFromMcp = entries.Where(entryNames.Contains).ToList();
+            var unmatched = entries.Where(x => !entryNames.Contains(x)).ToList();
+            var reasons = new List<string>();
+
+            if (keptFromMcp.Count > 0)
+                reasons.Add($"{QuoteAll(keptFromMcp)} {(keptFromMcp.Count == 1 ? "names" : "name")} no [Http*] action without [McpIgnore] or '{McpRouteSegment}' in its route");
+
+            if (unmatched.Count > 0)
+                reasons.Add($"{QuoteAll(unmatched)} {(unmatched.Count == 1 ? "names" : "name")} no controller or action of the project, as {DiagnosticDescriptors.UnmatchedConfigEntry.Id} reports");
+
+            var why = reasons.Count == 0 ? "" : $": {string.Join(", and ", reasons)}";
+            return $"No include entry in generator.json selects an action{why}. List {examples} in it, or mark actions with [McpExpose]";
         }
 
         /// <summary>

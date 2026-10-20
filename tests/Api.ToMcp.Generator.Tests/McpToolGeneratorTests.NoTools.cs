@@ -65,10 +65,29 @@ namespace TestApi
         var diagnostic = Assert.Single(diagnostics, x => x.Id == NoToolsGeneratedId);
 
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        // MCP008 says at each entry what is wrong with it, so this does not repeat that entries are case-sensitive.
         Assert.Equal(
-            "No MCP tools are generated: SelectedOnly mode selects none of the project's HTTP actions. None of the include entries in generator.json ('Prodcts', 'ProductsController.getById') selects an action: entries are case-sensitive controller names such as 'ProductsController' or action names such as 'ProductsController.GetById'.",
+            "No MCP tools are generated: SelectedOnly mode selects none of the project's HTTP actions. No include entry in generator.json selects an action: 'Prodcts' and 'ProductsController.getById' name no controller or action of the project, as MCP008 reports. List controllers such as 'ProductsController' or actions such as 'ProductsController.GetById' in it, or mark actions with [McpExpose].",
             diagnostic.GetMessage());
         Assert.Equal(2, diagnostics.Count(x => x.Id == UnmatchedConfigEntryId));
+    }
+
+    [Theory]
+    [InlineData(@"""Admin""", "'Admin' names no [Http*] action without [McpIgnore] or '/mcp' in its route")]
+    [InlineData(@"""Admin"", ""Health"", ""Products.Delete""", "'Admin', 'Health' and 'Products.Delete' name no [Http*] action without [McpIgnore] or '/mcp' in its route")]
+    [InlineData(@"""Admin"", ""Prodcts""", "'Admin' names no [Http*] action without [McpIgnore] or '/mcp' in its route, and 'Prodcts' names no controller or action of the project, as MCP008 reports")]
+    public void Generator_WarnsThatNoToolsAreGenerated_WhenTheIncludeEntriesNameOnlyActionsKeptFromMcp(string entries, string reason)
+    {
+        // These entries name a controller or action, so they get no MCP008, and MCP006 says why they still select nothing.
+        var config = $@"{{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [{entries}] }}";
+
+        var diagnostic = Assert.Single(
+            GetGeneratorDiagnostics(Usings + ControllersKeptFromMcp, config),
+            x => x.Id == NoToolsGeneratedId);
+
+        Assert.Equal(
+            $"No MCP tools are generated: SelectedOnly mode selects none of the project's HTTP actions. No include entry in generator.json selects an action: {reason}. List controllers such as 'ProductsController' or actions such as 'ProductsController.GetById' in it, or mark actions with [McpExpose].",
+            diagnostic.GetMessage());
     }
 
     [Fact]
