@@ -25,6 +25,13 @@ namespace Api.ToMcp.Generator.Parsing
         private const string FromServicesAttributeName = "FromServicesAttribute";
         private const string FromQueryNamePropertyName = "Name";
         private const string ScopePropertyName = "Scope";
+        private const string XmlDocSummaryStartTag = "<summary>";
+        private const string XmlDocSummaryEndTag = "</summary>";
+
+        /// <summary>
+        /// A <c>&lt;param name="..."&gt;</c> element of an XML doc comment: its name, then its text.
+        /// </summary>
+        private const string XmlDocParamPattern = "<param name=\"([^\"]+)\">(.*?)</param>";
         private const string ToolNamePropertyName = "ToolName";
         private const string TitlePropertyName = "Title";
         private const string DescriptionPropertyName = "Description";
@@ -468,17 +475,34 @@ namespace Api.ToMcp.Generator.Parsing
                 : name;
         }
 
+        /// <summary>
+        /// The action's XML <c>&lt;summary&gt;</c>, else that of the method it overrides, and so on up: an override
+        /// without one of its own, or with only <c>&lt;inheritdoc/&gt;</c>, means the description of the action it replaces.
+        /// </summary>
         private static string? GetXmlDocSummary(IMethodSymbol method)
+        {
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                var summary = GetDeclaredXmlDocSummary(current);
+                if (!string.IsNullOrEmpty(summary))
+                    return summary;
+            }
+
+            return null;
+        }
+
+        private static string? GetDeclaredXmlDocSummary(IMethodSymbol method)
         {
             var xml = method.GetDocumentationCommentXml();
             if (string.IsNullOrEmpty(xml))
                 return null;
 
-            var start = xml!.IndexOf("<summary>");
-            var end = xml.IndexOf("</summary>");
+            var start = xml!.IndexOf(XmlDocSummaryStartTag);
+            var end = xml.IndexOf(XmlDocSummaryEndTag);
             if (start >= 0 && end > start)
             {
-                var summary = xml.Substring(start + 9, end - start - 9).Trim();
+                var contentStart = start + XmlDocSummaryStartTag.Length;
+                var summary = xml.Substring(contentStart, end - contentStart).Trim();
                 // Clean up whitespace
                 summary = string.Join(" ", summary.Split(new[] { '\r', '\n', ' ' }, StringSplitOptions.RemoveEmptyEntries));
                 return summary;
@@ -527,7 +551,29 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
+        /// <summary>
+        /// The XML <c>&lt;param&gt;</c> docs of the action's parameters, by name. A parameter the action leaves undocumented
+        /// takes the docs of the method it overrides, and so on up, matched by position, as an override may rename it.
+        /// </summary>
         private static Dictionary<string, string> GetXmlDocParams(IMethodSymbol method)
+        {
+            var result = new Dictionary<string, string>();
+
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                var declaredDocs = GetDeclaredXmlDocParams(current);
+                for (var i = 0; i < method.Parameters.Length; i++)
+                {
+                    var name = method.Parameters[i].Name;
+                    if (!result.ContainsKey(name) && declaredDocs.TryGetValue(current.Parameters[i].Name, out var text))
+                        result[name] = text;
+                }
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, string> GetDeclaredXmlDocParams(IMethodSymbol method)
         {
             var result = new Dictionary<string, string>();
 
@@ -536,7 +582,7 @@ namespace Api.ToMcp.Generator.Parsing
                 return result;
 
             var matches = System.Text.RegularExpressions.Regex.Matches(
-                xml!, "<param name=\"([^\"]+)\">(.*?)</param>",
+                xml!, XmlDocParamPattern,
                 System.Text.RegularExpressions.RegexOptions.Singleline);
 
             foreach (System.Text.RegularExpressions.Match match in matches)

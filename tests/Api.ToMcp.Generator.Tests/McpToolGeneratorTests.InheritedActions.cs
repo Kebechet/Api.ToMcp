@@ -202,6 +202,74 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_DescribesAnOverride_ByTheDocsOfTheActionItOverrides_WhereItHasNoneOfItsOwn()
+    {
+        // The description the base action's author wrote is the one an override without docs, or with <inheritdoc/>, means.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    public abstract class ReportsControllerBase : ControllerBase
+    {
+        /// <summary>Gets the daily report.</summary>
+        /// <param name=""day"">The day to report on.</param>
+        [HttpGet(""daily"")]
+        public virtual ActionResult<Product> GetDaily(DateOnly day) => new Product();
+
+        /// <summary>Gets the weekly report.</summary>
+        /// <param name=""week"">The week to report on.</param>
+        [HttpGet(""weekly"")]
+        public virtual ActionResult<Product> GetWeekly(int week) => new Product();
+
+        /// <summary>Gets the monthly report.</summary>
+        /// <param name=""month"">The month to report on.</param>
+        /// <param name=""region"">The region to report on.</param>
+        [HttpGet(""monthly"")]
+        public virtual ActionResult<Product> GetMonthly(int month, string region) => new Product();
+    }
+
+    public abstract class SalesControllerBase : ReportsControllerBase
+    {
+        /// <inheritdoc />
+        public override ActionResult<Product> GetDaily(DateOnly day) => new Product();
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class SalesController : SalesControllerBase
+    {
+        /// <inheritdoc />
+        public override ActionResult<Product> GetDaily(DateOnly day) => new Product();
+
+        // A parameter's docs follow it by position, as an override may rename it.
+        public override ActionResult<Product> GetWeekly(int number) => new Product();
+
+        /// <summary>Gets the sales of a month.</summary>
+        /// <param name=""region"">The sales region.</param>
+        public override ActionResult<Product> GetMonthly(int month, string region) => new Product();
+    }
+}
+";
+        AssertCompiles(source, AllExceptExcludedConfig);
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        var daily = GetToolClass(generated, "SalesController_GetDailyTool");
+        Assert.Contains("[Description(\"Gets the daily report.\")]", daily);
+        Assert.Contains("[Description(\"The day to report on.\")] System.DateOnly day", daily);
+
+        var weekly = GetToolClass(generated, "SalesController_GetWeeklyTool");
+        Assert.Contains("[Description(\"Gets the weekly report.\")]", weekly);
+        Assert.Contains("[Description(\"The week to report on.\")] int number", weekly);
+
+        // The override's own docs win, and a parameter it leaves undocumented keeps the base's.
+        var monthly = GetToolClass(generated, "SalesController_GetMonthlyTool");
+        Assert.Contains("[Description(\"Gets the sales of a month.\")]", monthly);
+        Assert.Contains("[Description(\"The month to report on.\")] int month", monthly);
+        Assert.Contains("[Description(\"The sales region.\")] string region", monthly);
+        Assert.DoesNotContain("Invokes SalesController", generated);
+    }
+
+    [Fact]
     public void Generator_NamesTheToolOfAnAbstractBaseWithALiteralRoute_AfterTheControllerThatServesIt()
     {
         // The base's own tool worked here, as the route names no [controller]; it comes back under the derived controller.

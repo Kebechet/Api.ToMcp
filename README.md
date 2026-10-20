@@ -269,6 +269,8 @@ public Task<ActionResult<Product>> GetById(Guid id) { ... }
 
 Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`). Titles are derived from the action name instead; see [Tool titles](#tool-titles).
 
+An override without a `<summary>` of its own, or with only `<inheritdoc/>`, is described by the `<summary>` of the action it overrides, and a parameter it leaves undocumented takes that action's `<param>` for the parameter in the same position, as an override may rename it.
+
 > **Requires XML documentation generation.** The source generator can only read doc comments when the compiler produces them. Enable it in the project that hosts your controllers, otherwise descriptions fall back to the generic values:
 >
 > ```xml
