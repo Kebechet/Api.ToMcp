@@ -138,7 +138,6 @@ namespace Api.ToMcp.Generator.Emitting
                     // Check complex types (FromRoute or Body) for matching property
                     var complexParam = parameters.FirstOrDefault(p =>
                         (p.Source == ParameterSourceModel.Route || p.Source == ParameterSourceModel.Body) &&
-                        !p.IsSimpleType &&
                         p.Properties.Any(prop => string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase)));
 
                     if (complexParam != null)

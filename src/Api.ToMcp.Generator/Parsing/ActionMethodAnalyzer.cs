@@ -178,8 +178,9 @@ namespace Api.ToMcp.Generator.Parsing
 
                 var properties = ImmutableArray<PropertyInfoModel>.Empty;
 
-                // Extract properties from complex types with [FromRoute] or [FromBody]
-                if ((source == ParameterSourceModel.Route || source == ParameterSourceModel.Body) && IsComplexType(param.Type))
+                // A [FromRoute] or [FromBody] parameter's properties fill route values whatever its type, as a body is JSON
+                // even for a type MVC reads from one string.
+                if (source == ParameterSourceModel.Route || source == ParameterSourceModel.Body)
                 {
                     properties = ExtractProperties(param.Type);
                 }
