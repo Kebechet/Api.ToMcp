@@ -397,6 +397,8 @@ public ActionResult<Product> GetCheapest(string category)   // output schema: Pr
 }
 ```
 
+`null` is valid structured content: protocol `2026-07-28` allows any JSON value there. A client that takes it for missing structured content, as MCP Inspector 2.11.0 does in its modern mode, reports an error instead; see [What to check](#what-to-check).
+
 ### Clients on an older protocol
 
 Before protocol version `2026-07-28`, an output schema had to describe an object and structured content had to be one. For a client that negotiates an older version, the MCP SDK sends any other schema (an array, a number, or one that also allows null) wrapped as `{"type": "object", "properties": {"result": <schema>}, "required": ["result"]}`, and the content as `{"result": <value>}`. An object schema is sent as it is.
@@ -673,7 +675,7 @@ npx @modelcontextprotocol/inspector@latest --cli http://localhost:5080/mcp --met
 | A call's `structuredContent` | The response body as JSON, next to the same body as text. |
 | A call with `isError: true` | `HTTP <status>: <reason> - <body>` is your API's own answer, for example `HTTP 404: Not Found - {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404,...}`. `An error occurred invoking '<tool>'.` means the tool threw instead; see [A call fails](#a-call-fails). |
 
-The Inspector negotiates protocol `2025-11-25` unless told otherwise, so a tool whose result is not an object, such as a list or a body that can be `null`, shows its `outputSchema` and `structuredContent` wrapped in `{"result": ...}` (see [Clients on an older protocol](#clients-on-an-older-protocol)). Add `--protocol-era modern` to negotiate `2026-07-28` and see them unwrapped. In that mode Inspector 2.11.0 rejects a success without a body: the server sends `"structuredContent": null`, which the schema allows, and the Inspector reports `declares an output schema but returned no structured content`. The default mode shows the same call as `{"result": null}`.
+The Inspector negotiates protocol `2025-11-25` unless told otherwise, so a tool whose result is not an object, such as a list or a body that can be `null`, shows its `outputSchema` and `structuredContent` wrapped in `{"result": ...}` (see [Clients on an older protocol](#clients-on-an-older-protocol)). Add `--protocol-era modern` to negotiate `2026-07-28` and see them unwrapped. In that mode Inspector 2.11.0 rejects a success without a body: the server sends `"structuredContent": null`, which the schema allows and protocol `2026-07-28` permits, as structured content can be any JSON value, `null` included, but the Inspector's own check takes `null` for no structured content and reports `declares an output schema but returned no structured content`. That is a limitation of the Inspector, not an error of the server: the TypeScript SDK's client accepts `null` there. The default mode shows the same call as `{"result": null}`.
 
 ### Auth and scopes
 
