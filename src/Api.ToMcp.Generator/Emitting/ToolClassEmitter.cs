@@ -123,8 +123,13 @@ namespace Api.ToMcp.Generator.Emitting
             // Build mapping from placeholder to source expression
             var placeholderSources = new Dictionary<string, (string expression, string type, bool isNullable, string varName)>();
 
-            // The properties of parameters bound from the route, query and form values that fill a route value
-            var routeProperties = new HashSet<PropertyInfoModel>();
+            // MVC reads a property of a parameter bound from the route, query and form values from the route value of its
+            // name whenever the parameter carries no prefix, whichever parameter fills that route value. Such a property is
+            // sent only in the route, and the other properties of its parameter under their own names.
+            var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action)).ToList();
+            var routeProperties = new HashSet<PropertyInfoModel>(valueProviderParams
+                .SelectMany(p => p.Properties)
+                .Where(prop => routePlaceholders.Any(placeholder => ReadsRouteValue(prop, placeholder))));
 
             foreach (var placeholder in routePlaceholders)
             {
@@ -138,35 +143,17 @@ namespace Api.ToMcp.Generator.Emitting
                 }
                 else
                 {
-                    // Check complex types (FromRoute or Body) for matching property
-                    var complexParam = parameters.FirstOrDefault(p =>
-                        (p.Source == ParameterSourceModel.Route || p.Source == ParameterSourceModel.Body) &&
-                        p.Properties.Any(prop => string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase)));
+                    // Else a property: of a [FromRoute] or [FromBody] parameter first, then of one bound from the route,
+                    // query and form values.
+                    var propertySource = parameters
+                        .Where(p => p.Source is ParameterSourceModel.Route or ParameterSourceModel.Body)
+                        .Concat(valueProviderParams)
+                        .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => FillsPlaceholder(p, prop, placeholder))))
+                        .FirstOrDefault(x => x.Property != null);
 
-                    if (complexParam != null)
+                    if (propertySource.Property != null)
                     {
-                        var matchingProperty = complexParam.Properties.First(prop =>
-                            string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase));
-
-                        placeholderSources[placeholder] = GetRouteValueSource(complexParam, matchingProperty);
-                    }
-                    else
-                    {
-                        // A property MVC reads from the route values under the name it binds by: a [FromRoute] one, or one
-                        // without a binding attribute, which reads every value provider.
-                        var routeProperty = parameters
-                            .Where(p => IsBoundFromValueProviders(p, action))
-                            .SelectMany(p => p.Properties
-                                .Where(prop => prop.Source is ParameterSourceModel.Auto or ParameterSourceModel.Route &&
-                                    string.Equals(GetBinderModelName(prop), placeholder, StringComparison.OrdinalIgnoreCase))
-                                .Select(prop => (Parameter: p, Property: prop)))
-                            .FirstOrDefault();
-
-                        if (routeProperty.Property != null)
-                        {
-                            placeholderSources[placeholder] = GetRouteValueSource(routeProperty.Parameter, routeProperty.Property);
-                            routeProperties.Add(routeProperty.Property);
-                        }
+                        placeholderSources[placeholder] = GetRouteValueSource(propertySource.Parameter, propertySource.Property);
                     }
                 }
             }
@@ -199,12 +186,21 @@ namespace Api.ToMcp.Generator.Emitting
             var queryValues = new List<(string Key, string Expression)>();
             foreach (var param in parameters)
             {
+                var isNamedByRoute = RouteContainsParameter(route, param.Name);
                 if (param.Source == ParameterSourceModel.Query ||
-                    (param.Source == ParameterSourceModel.Auto && !RouteContainsParameter(route, param.Name) && param.IsSimpleType))
+                    (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && param.IsSimpleType))
                 {
                     queryValues.Add((param.QueryName ?? param.Name, EscapeIdentifier(param.Name)));
                 }
-                else if (param.Source == ParameterSourceModel.Auto && !RouteContainsParameter(route, param.Name) && IsBoundFromValueProviders(param, action))
+                else if (param.Source == ParameterSourceModel.Route)
+                {
+                    // MVC reads a [FromQuery] property of a [FromRoute] parameter from the query string, under its own name,
+                    // as no route value carries the parameter's.
+                    queryValues.AddRange(param.Properties
+                        .Where(x => x.Source == ParameterSourceModel.Query)
+                        .Select(x => (GetBinderModelName(x), GetPropertyAccess(param, x))));
+                }
+                else if (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && IsBoundFromValueProviders(param, action))
                 {
                     queryValues.AddRange(GetQueryValues(param, routeProperties));
                 }
@@ -258,6 +254,28 @@ namespace Api.ToMcp.Generator.Emitting
         private static (string expression, string type, bool isNullable, string varName) GetRouteValueSource(ParameterInfoModel parameter, PropertyInfoModel property)
         {
             return (GetPropertyAccess(parameter, property), property.Type, property.IsNullable, $"{parameter.Name}_{property.Name}");
+        }
+
+        /// <summary>
+        /// Whether a property fills a route placeholder. A [FromBody] parameter's does by its name, as MVC reads it from
+        /// the body and the route value only completes the URL. Any other's does when MVC reads it from the route values
+        /// under the placeholder's name.
+        /// </summary>
+        private static bool FillsPlaceholder(ParameterInfoModel parameter, PropertyInfoModel property, string placeholder)
+        {
+            return parameter.Source == ParameterSourceModel.Body
+                ? string.Equals(property.Name, placeholder, StringComparison.OrdinalIgnoreCase)
+                : ReadsRouteValue(property, placeholder);
+        }
+
+        /// <summary>
+        /// Whether MVC reads a property from the route value a placeholder names: a [FromRoute] one, or one without a
+        /// binding attribute, which reads every value provider, by the name it binds it under.
+        /// </summary>
+        private static bool ReadsRouteValue(PropertyInfoModel property, string placeholder)
+        {
+            return property.Source is ParameterSourceModel.Auto or ParameterSourceModel.Route &&
+                string.Equals(GetBinderModelName(property), placeholder, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

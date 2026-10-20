@@ -110,39 +110,24 @@ public partial class McpToolGeneratorTests
     [Theory]
     [InlineData("[FromBody]")]
     [InlineData("[FromRoute]")]
-    public void Generator_FillsARoutePlaceholderFromAPropertyOfASimpleTypeBoundByAnAttribute(string bindingAttribute)
+    public void Generator_FillsAPlaceholderNoParameterNames_FromAPropertyOfABoundSimpleType_SoTheToolCompiles(string bindingAttribute)
     {
-        // Left unfilled, {value} names no variable in the emitted string and the tool does not compile.
+        // Left unfilled, {value} names no variable in the emitted string and the tool does not compile. The route then
+        // only reaches the action: MVC reads the [FromBody] id from the body, but a [FromRoute] one from a route value
+        // named id, which this route has none of, so that id binds as its default.
         var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"{{value}}\")] public Task<string> Find({bindingAttribute} OrderId id) => Task.FromResult(string.Empty);");
 
         Assert.Contains($"var routeid_Value = System.Uri.EscapeDataString({Formatter}.Format(id.Value));", tool);
     }
 
-    [Theory]
-    [InlineData("HttpGet")]
-    [InlineData("HttpPost")]
-    public void Generator_SendsAParameterTheRouteNamesInAnotherCase_OnlyAsTheRouteValue(string httpAttribute)
+    [Fact]
+    public void Generator_FillsTheRouteOfAFromRouteParameter_ByTheNamesItsPropertiesBind_AndSendsItsQueryProperties()
     {
-        // MVC matches route values ignoring case, so {Id} binds the parameter id.
-        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"{{Id}}\")] public Task<string> Find(int id) => Task.FromResult(string.Empty);");
+        // MVC reads [FromRoute(Name = "orderId")] Order from {orderId}, and the [FromQuery(Name = "c")] property from ?c=.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"aliased/{orderId}\")] public Task<string> Find([FromRoute] AliasedRouteQuery q) => Task.FromResult(string.Empty);");
 
-        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", tool);
-        Assert.DoesNotContain("queryParts", tool);
-    }
-
-    [Theory]
-    [InlineData("string name")]
-    [InlineData("int? count")]
-    [InlineData("OrderId orderId")]
-    public void Generator_SendsAParameterOfASimpleType_OnPost_OfAControllerWithoutApiController_AsAQueryValue(string parameter)
-    {
-        var tool = GenerateCompilingSimpleTypeTool(
-            $"[HttpPost(\"search\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
-            PlainControllerDeclaration);
-
-        var name = parameter.Split(' ')[1];
-        Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
-        Assert.DoesNotContain("bodyJson", tool);
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"c\", q.City);", tool);
     }
 
     [Theory]
@@ -172,16 +157,6 @@ public partial class McpToolGeneratorTests
     }
 
     [Fact]
-    public void Generator_LeavesOutAPropertyWhoseGetterIsNotPublic()
-    {
-        // MVC does not bind it either, and the generated tool could not read it.
-        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"priv/{id}\")] public Task<string> Find(PrivateGetterQuery q) => Task.FromResult(string.Empty);");
-
-        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
-        Assert.DoesNotContain("\"Note\"", tool);
-    }
-
-    [Fact]
     public void Generator_EscapesNamesThatAreCSharpKeywords_WhereverItWritesThemAsIdentifiers()
     {
         var tool = GenerateCompilingSimpleTypeTool(
@@ -193,5 +168,66 @@ public partial class McpToolGeneratorTests
         // await is a keyword only inside an async method, which the tool is.
         Assert.Contains("AddQueryValue(queryParts, \"await\", @await);", tool);
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(@object);", tool);
+    }
+
+    [Fact]
+    public void Generator_LeavesOutAPropertyWhoseGetterIsNotPublic()
+    {
+        // MVC does not bind it either, and the generated tool could not read it.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"priv/{id}\")] public Task<string> Find(PrivateGetterQuery q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+        Assert.DoesNotContain("\"Note\"", tool);
+    }
+
+    [Fact]
+    public void Generator_SendsEveryParameterWithAPropertyReadFromTheRoute_UnderItsOwnNames()
+    {
+        // MVC fills a.Id and b.Id from {id} alike; under the b. prefix b.Id would bind as 0.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"two/{id}\")] public Task<string> Find(AttributedQuery a, NotedShipment b) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routea_Id = System.Uri.EscapeDataString({Formatter}.Format(a.Id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", a.City);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"Note\", b.Note);", tool);
+        Assert.DoesNotContain("\"b\"", tool);
+        Assert.DoesNotContain("\"Id\"", tool);
+    }
+
+    [Fact]
+    public void Generator_SendsAParameterWithAPropertyReadFromTheRoute_UnderItsOwnNames_WhenAParameterFillsTheRoute()
+    {
+        // The parameter id fills {id}; MVC still reads q.Id from it, but only without the q. prefix.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"direct/{id}\")] public Task<string> Find(int id, AttributedQuery q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", q.City);", tool);
+        Assert.DoesNotContain("\"q\"", tool);
+    }
+
+    [Theory]
+    [InlineData("HttpGet")]
+    [InlineData("HttpPost")]
+    public void Generator_SendsAParameterTheRouteNamesInAnotherCase_OnlyAsTheRouteValue(string httpAttribute)
+    {
+        // MVC matches route values ignoring case, so {Id} binds the parameter id.
+        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"{{Id}}\")] public Task<string> Find(int id) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", tool);
+        Assert.DoesNotContain("queryParts", tool);
+    }
+
+    [Theory]
+    [InlineData("string name")]
+    [InlineData("int? count")]
+    [InlineData("OrderId orderId")]
+    public void Generator_SendsAParameterOfASimpleType_OnPost_OfAControllerWithoutApiController_AsAQueryValue(string parameter)
+    {
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[HttpPost(\"search\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        var name = parameter.Split(' ')[1];
+        Assert.Contains($"AddQueryValue(queryParts, \"{name}\", {name});", tool);
+        Assert.DoesNotContain("bodyJson", tool);
     }
 }
