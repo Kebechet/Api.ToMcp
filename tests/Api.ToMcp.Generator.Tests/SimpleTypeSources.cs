@@ -399,6 +399,13 @@ namespace TestApi
         public string? Echo => Note;
     }
 
+    public sealed class PrivateGetterFilter
+    {
+        public string? City { get; set; }
+
+        public string? Secret { private get; set; }
+    }
+
     public sealed class NotedShipment
     {
         public int Id { get; set; }

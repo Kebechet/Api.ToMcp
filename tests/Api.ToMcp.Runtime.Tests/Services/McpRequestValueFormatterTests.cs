@@ -274,6 +274,18 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_LeavesOutAPropertyWhoseGetterIsNotPublic()
+    {
+        // MVC binds only the properties with a public getter, as the generator sends them; a value under the prefix that
+        // it never binds would still make it bind the parameter under the prefix.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new PrivateGetterFilter { City = "Brno", Secret = "s1", Code = "c1" });
+
+        Assert.Equal(new[] { "filter.City=Brno" }, queryParts);
+    }
+
+    [Fact]
     public void AddQueryValue_KeysAPropertyARecordsConstructorSets_ByTheNameItsConstructorParameterBindsUnder()
     {
         // MVC binds such a property through the constructor parameter, with the parameter's binding attributes, and
@@ -410,6 +422,15 @@ public class McpRequestValueFormatterTests
     private sealed class Label
     {
         public string? Text { get; set; }
+    }
+
+    private sealed class PrivateGetterFilter
+    {
+        public string? City { get; set; }
+
+        public string? Secret { private get; set; }
+
+        public string? Code { internal get; set; }
     }
 
     private sealed class AliasedFilter

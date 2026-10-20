@@ -132,7 +132,9 @@ public static class McpRequestValueFormatter
         var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
         foreach (var property in properties)
         {
-            if (!property.CanRead || property.GetIndexParameters().Length > 0)
+            // MVC binds only a property whose getter is public (PropertyHelper.GetVisibleProperties). A value it never
+            // binds would still carry the prefix, which makes MVC bind the whole parameter under it.
+            if (property.GetMethod is not { IsPublic: true } || property.GetIndexParameters().Length > 0)
             {
                 continue;
             }

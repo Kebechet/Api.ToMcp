@@ -160,6 +160,9 @@ namespace TestApi
         [HttpGet(""record-property-named"")]
         public object GetRecordPropertyNamed(RecordPropertyNamedCity filter) => filter;
 
+        [HttpGet(""private-getter"")]
+        public object GetPrivateGetter(PrivateGetterFilter filter) => new { filter.City, query = Request.QueryString.Value };
+
         [HttpGet(""record-query-id/{id}"")]
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
     }
@@ -288,6 +291,7 @@ namespace TestApi
     [InlineData("PlainEchoController_GetSameTool", @"{""a"":{""id"":7,""note"":""na""},""b"":{""id"":9,""note"":""nb""}}", @"{""aId"":7,""aNote"":""na"",""bId"":9,""bNote"":""nb""}")]
     [InlineData("PlainEchoController_GetRecordNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
     [InlineData("PlainEchoController_GetRecordPropertyNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
+    [InlineData("PlainEchoController_GetPrivateGetterTool", @"{""filter"":{""city"":""Brno"",""secret"":""s1""}}", @"{""city"":""Brno"",""query"":""?filter.City=Brno""}")]
     [InlineData("PlainEchoController_GetRecordQueryIdTool", @"{""id"":7,""filter"":{""id"":9,""city"":""Brno""}}", @"{""id"":7,""filterId"":9,""city"":""Brno""}")]
     [InlineData("OrderEchoController_GetByIdTool", @"{""id"":{""value"":""" + OrderGuid + @"""}}", @"{""id"":{""value"":""" + OrderGuid + @"""}}")]
     [InlineData("OrderEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
