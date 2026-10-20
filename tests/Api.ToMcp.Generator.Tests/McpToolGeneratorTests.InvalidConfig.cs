@@ -54,9 +54,39 @@ public partial class McpToolGeneratorTests
     }
 
     [Fact]
+    public void Generator_ReportsTheColumnInCharacters_WhereTheLineHoldsNonAsciiText()
+    {
+        // The parser counts UTF-8 bytes, two for each of the three accented letters, which would put the column 3 too far.
+        const string config = "{\"include\": [\"P\u0159\u00edli\u0161\",]}";
+
+        var diagnostic = Assert.Single(GetGeneratorDiagnostics(Usings + ProductsController, config));
+
+        Assert.Equal(InvalidConfigId, diagnostic.Id);
+        Assert.Equal(new LinePosition(0, config.IndexOf(']')), diagnostic.Location.GetLineSpan().StartLinePosition);
+    }
+
+    [Theory]
+    [InlineData("", "the file is empty")]
+    [InlineData(" \r\n\t", "the file is empty")]
+    [InlineData("null", "the file holds null instead of a JSON object")]
+    public void Generator_ReportsAConfigFileWithoutAnObject_InsteadOfIncludeAdvice(string config, string expectedReason)
+    {
+        // The default config would select nothing, and MCP006 would blame an include list the file does not have.
+        var diagnostic = Assert.Single(GetGeneratorDiagnostics(Usings + ProductsController, config));
+
+        Assert.Equal(InvalidConfigId, diagnostic.Id);
+        Assert.Equal(DefaultConfigFallbackMessage + expectedReason, diagnostic.GetMessage());
+        Assert.Equal("Mcp/generator.json", diagnostic.Location.GetLineSpan().Path);
+    }
+
+    [Fact]
     public void Generator_ReportsAnUnknownMode_InsteadOfIncludeAdvice()
     {
-        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExclude"", ""exclude"": [""ProductsController.GetAll""] }";
+        const string config = @"{
+  ""schemaVersion"": 1,
+  ""mode"": ""AllExceptExclude"",
+  ""exclude"": [""ProductsController.GetAll""]
+}";
 
         var diagnostic = Assert.Single(GetGeneratorDiagnostics(Usings + ProductsController, config));
 
@@ -66,6 +96,8 @@ public partial class McpToolGeneratorTests
             "generator.json cannot be used as written, so SelectedOnly mode applies: mode 'AllExceptExclude' must be one of SelectedOnly, AllExceptExcluded",
             diagnostic.GetMessage());
         Assert.Equal("Mcp/generator.json", diagnostic.Location.GetLineSpan().Path);
+        // At the mode's value, the part to correct.
+        Assert.Equal(new LinePosition(2, 10), diagnostic.Location.GetLineSpan().StartLinePosition);
     }
 
     [Fact]

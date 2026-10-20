@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
+using System.Text;
 using System.Text.Json;
 using Api.ToMcp.Generator.Models;
 using Microsoft.CodeAnalysis.Text;
@@ -12,6 +14,8 @@ namespace Api.ToMcp.Generator.Parsing
         private const string DefaultConfigFallback = "the default config applies, which is SelectedOnly mode with an empty include list";
         private const string UnknownModeFallback = "SelectedOnly mode applies";
         private const string UnreadableFileReason = "the file could not be read";
+        private const string EmptyFileReason = "the file is empty";
+        private const string NullFileReason = "the file holds null instead of a JSON object";
 
         /// <summary>
         /// Starts what System.Text.Json appends to a <see cref="JsonException"/>'s message: the JSON path and a line and
@@ -32,13 +36,13 @@ namespace Api.ToMcp.Generator.Parsing
                 return CreateDefaultConfig(UnreadableFileReason, default);
 
             if (string.IsNullOrWhiteSpace(json))
-                return new GeneratorConfigModel();
+                return CreateDefaultConfig(EmptyFileReason, default);
 
             try
             {
                 var dto = JsonSerializer.Deserialize<ConfigDto>(json, Options);
                 if (dto == null)
-                    return new GeneratorConfigModel();
+                    return CreateDefaultConfig(NullFileReason, default);
 
                 var mode = ParseMode(dto.Mode);
 
@@ -58,15 +62,15 @@ namespace Api.ToMcp.Generator.Parsing
                         ? new ConfigErrorModel
                         {
                             Fallback = UnknownModeFallback,
-                            Reason = $"mode '{dto.Mode}' must be one of {string.Join(", ", Enum.GetNames(typeof(SelectionModeModel)))}"
+                            Reason = $"mode '{dto.Mode}' must be one of {string.Join(", ", Enum.GetNames(typeof(SelectionModeModel)))}",
+                            Position = FindModeValue(json)
                         }
                         : null
                 };
             }
             catch (JsonException ex)
             {
-                // Both count from zero, as LinePosition does.
-                return CreateDefaultConfig(GetReason(ex), new LinePosition((int)(ex.LineNumber ?? 0), (int)(ex.BytePositionInLine ?? 0)));
+                return CreateDefaultConfig(GetReason(ex), GetPosition(json, ex.LineNumber ?? 0, ex.BytePositionInLine ?? 0));
             }
             catch (Exception ex)
             {
@@ -79,6 +83,53 @@ namespace Api.ToMcp.Generator.Parsing
             var pathStart = exception.Message.LastIndexOf(JsonExceptionPathMarker, StringComparison.Ordinal);
 
             return pathStart < 0 ? exception.Message : exception.Message.Substring(0, pathStart);
+        }
+
+        /// <summary>
+        /// Converts the parser's position, which counts from zero in lines and in the line's UTF-8 bytes, to the character
+        /// column that the build output and editors show.
+        /// </summary>
+        private static LinePosition GetPosition(string json, long lineNumber, long bytePositionInLine)
+        {
+            var lines = json.Split('\n');
+            if (lineNumber >= lines.Length)
+                return new LinePosition((int)lineNumber, 0);
+
+            var lineBytes = Encoding.UTF8.GetBytes(lines[lineNumber]);
+            var byteCount = (int)Math.Min(bytePositionInLine, lineBytes.Length);
+
+            return new LinePosition((int)lineNumber, Encoding.UTF8.GetCharCount(lineBytes, 0, byteCount));
+        }
+
+        /// <summary>
+        /// Where the value of the top-level mode property starts, or the file's start when there is none to find.
+        /// </summary>
+        private static LinePosition FindModeValue(string json)
+        {
+            var utf8 = Encoding.UTF8.GetBytes(json);
+            var reader = new Utf8JsonReader(utf8, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Skip });
+
+            try
+            {
+                while (reader.Read())
+                {
+                    if (reader.TokenType == JsonTokenType.PropertyName &&
+                        reader.CurrentDepth == 1 &&
+                        string.Equals(reader.GetString(), nameof(ConfigDto.Mode), StringComparison.OrdinalIgnoreCase) &&
+                        reader.Read())
+                    {
+                        var textBefore = Encoding.UTF8.GetString(utf8, 0, (int)reader.TokenStartIndex);
+                        var lineStart = textBefore.LastIndexOf('\n') + 1;
+
+                        return new LinePosition(textBefore.Count(x => x == '\n'), textBefore.Length - lineStart);
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+            }
+
+            return default;
         }
 
         private static GeneratorConfigModel CreateDefaultConfig(string reason, LinePosition position)
