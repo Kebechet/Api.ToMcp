@@ -90,6 +90,8 @@ namespace Api.ToMcp.Generator
             var diagnostics = new List<DiagnosticInfoModel>();
             var selectedActions = SelectActions(controllers, config);
             var entryNames = GetEntryNames(controllers);
+            var unbuildableRouteDiagnostics = new List<DiagnosticInfoModel>();
+            var toolActions = SkipActionsWithoutARoute(unbuildableRouteDiagnostics, selectedActions);
 
             // An invalid config gets MCP001 instead of MCP006: MCP006 would advise on the fallback, not on what the
             // file says.
@@ -102,18 +104,18 @@ namespace Api.ToMcp.Generator
                     config.Error.Fallback,
                     config.Error.Reason));
             }
-            else if (selectedActions.IsEmpty)
+            else if (toolActions.IsEmpty)
             {
-                ReportNoToolsGenerated(diagnostics, controllers, config, entryNames);
+                ReportNoToolsGenerated(diagnostics, controllers, config, entryNames, selectedActions);
             }
 
             // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
             ReportUnmatchedEntries(diagnostics, controllers, config, entryNames);
-            selectedActions = SkipActionsWithoutARoute(diagnostics, selectedActions);
-            ReportDuplicateToolNames(diagnostics, selectedActions, config);
+            diagnostics.AddRange(unbuildableRouteDiagnostics);
+            ReportDuplicateToolNames(diagnostics, toolActions, config);
 
-            var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(selectedActions);
-            var tools = selectedActions.Select((action, i) => new ToolSourceModel
+            var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(toolActions);
+            var tools = toolActions.Select((action, i) => new ToolSourceModel
             {
                 ClassName = toolClassNames[i],
                 Action = action with { SourceLocation = null },
@@ -289,30 +291,46 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// Reports MCP006, unless no action could become a tool: a project without controllers, or one that keeps every
-        /// action from MCP by attribute or route, gets no tools by its own code rather than by a config mistake.
+        /// Reports MCP006 when no tool is generated, as the config selects no action or only actions MCP009 leaves without
+        /// a tool, unless no action could become a tool: a project without controllers, or one that keeps every action from
+        /// MCP by attribute or route, gets no tools by its own code rather than by a config mistake.
         /// </summary>
+        /// <param name="selectedActions">
+        /// The actions the config selects, each of which, when there are any, MCP009 leaves without a tool.
+        /// </param>
         private static void ReportNoToolsGenerated(
             List<DiagnosticInfoModel> diagnostics,
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
-            HashSet<string> entryNames)
+            HashSet<string> entryNames,
+            ImmutableArray<ActionInfoModel> selectedActions)
         {
+            // The example is an action that becomes a tool if the project has one.
             var example = controllers
                 .SelectMany(controller => controller.Actions
                     .Where(action => IsSelectable(controller, action))
-                    .Select(action => new { Controller = controller.Name, Action = $"{controller.Name}.{action.Name}" }))
+                    .Select(action => new
+                    {
+                        Controller = controller.Name,
+                        Action = $"{controller.Name}.{action.Name}",
+                        HasRoute = ToolClassEmitter.GetUnbuildableRouteReason(action) is null
+                    }))
+                .OrderBy(x => x.HasRoute ? 0 : 1)
                 .FirstOrDefault();
 
             if (example == null)
                 return;
 
+            var selection = selectedActions.IsEmpty
+                ? $"{config.Mode} mode selects none of the project's HTTP actions"
+                : $"{config.Mode} mode selects only HTTP actions whose route the generator cannot build";
+
             diagnostics.Add(DiagnosticInfoModel.InFile(
                 DiagnosticDescriptors.NoToolsGenerated,
                 config.FilePath,
                 default,
-                config.Mode.ToString(),
-                GetNoToolsAdvice(config, entryNames, example.Controller, example.Action)));
+                selection,
+                GetNoToolsAdvice(config, controllers, entryNames, selectedActions, example.Controller, example.Action)));
         }
 
         /// <summary>
@@ -320,11 +338,16 @@ namespace Api.ToMcp.Generator
         /// </summary>
         private static string GetNoToolsAdvice(
             GeneratorConfigModel config,
+            ImmutableArray<ControllerInfoModel> controllers,
             HashSet<string> entryNames,
+            ImmutableArray<ActionInfoModel> selectedActions,
             string exampleController,
             string exampleAction)
         {
             var examples = $"controllers such as '{exampleController}' or actions such as '{exampleAction}'";
+
+            if (!selectedActions.IsEmpty && (config.FilePath == null || config.Mode != SelectionModeModel.SelectedOnly || config.Include.IsEmpty))
+                return GetUnbuildableRoutesAdvice(config, examples);
 
             if (config.FilePath == null)
                 return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create Mcp/generator.json and list {examples} in its include";
@@ -335,9 +358,14 @@ namespace Api.ToMcp.Generator
             if (config.Include.IsEmpty)
                 return $"The include list in generator.json is empty: add {examples} to it, or mark actions with [McpExpose]";
 
-            // MCP008 says at each entry that names nothing what is wrong with it, so this only points there.
+            // MCP008 says at each entry that names nothing what is wrong with it, and MCP009 at each action whose route
+            // cannot be built, so this only points there.
             var entries = config.Include.Where(x => x != null).Distinct(StringComparer.Ordinal).ToList();
-            var keptFromMcp = entries.Where(entryNames.Contains).ToList();
+            var selectingUnbuildable = entries
+                .Where(entry => controllers.Any(controller => controller.Actions.Any(action =>
+                    selectedActions.Contains(action) && GetEntryNames(controller, action).Contains(entry))))
+                .ToList();
+            var keptFromMcp = entries.Where(x => entryNames.Contains(x) && !selectingUnbuildable.Contains(x)).ToList();
             var unmatched = entries.Where(x => !entryNames.Contains(x)).ToList();
             var reasons = new List<string>();
 
@@ -347,8 +375,29 @@ namespace Api.ToMcp.Generator
             if (unmatched.Count > 0)
                 reasons.Add($"{QuoteAll(unmatched)} {(unmatched.Count == 1 ? "names" : "name")} no controller or action of the project, as {DiagnosticDescriptors.UnmatchedConfigEntry.Id} reports");
 
+            if (selectingUnbuildable.Count > 0)
+                reasons.Add($"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route the generator cannot build, as {DiagnosticDescriptors.UnbuildableRoute.Id} reports");
+
             var why = reasons.Count == 0 ? "" : $": {string.Join(", and ", reasons)}";
-            return $"No include entry in generator.json selects an action{why}. List {examples} in it, or mark actions with [McpExpose]";
+            var selected = selectedActions.IsEmpty ? "an action" : "an action that becomes a tool";
+            return $"No include entry in generator.json selects {selected}{why}. List {examples} in it, or mark actions with [McpExpose]";
+        }
+
+        /// <summary>
+        /// The advice when the config selects actions, by its mode or by [McpExpose], but MCP009 leaves each without a tool:
+        /// MCP009 says why at each, so this only points there and at what else to select.
+        /// </summary>
+        private static string GetUnbuildableRoutesAdvice(GeneratorConfigModel config, string examples)
+        {
+            var pointer = $"{DiagnosticDescriptors.UnbuildableRoute.Id} says at each of them why";
+
+            if (config.FilePath == null)
+                return $"{pointer}. Create Mcp/generator.json and list {examples} in its include";
+
+            if (config.Mode == SelectionModeModel.AllExceptExcluded)
+                return $"{pointer}. Remove entries from the exclude list in generator.json, or mark actions with [McpExpose]";
+
+            return $"{pointer}. Add {examples} to the include list in generator.json, or mark other actions with [McpExpose]";
         }
 
         /// <summary>

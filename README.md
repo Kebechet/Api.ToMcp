@@ -729,7 +729,7 @@ The build reports these warnings:
 | Code | From | When |
 |------|------|------|
 | `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, an empty file, or an unreadable one |
-| `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
+| `MCP006` | Generator | The config selects none of the project's actions, or only actions `MCP009` leaves without a tool, so no tools are generated |
 | `MCP007` | Generator | Two or more generated tools get the same name, and the MCP SDK keeps only one of them |
 | `MCP008` | Generator | An `include` or `exclude` entry names no controller or action of the project, so it selects or excludes nothing |
 | `MCP009` | Generator | An action gets no tool, as the generator cannot build its route: a route value no parameter fills, or a routing attribute whose code it cannot read |
@@ -743,6 +743,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
 - In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case, where `Controller` is the controller that serves the action, not a base class it inherits the action from.
 - Each `include` entry that names no controller or action gets build warning `MCP008`, which says what is wrong with it; `MCP006` then only points there.
+- When every action the config selects gets build warning `MCP009`, as its route cannot be built, no tool is generated either, and `MCP006` says so and points at `MCP009`, naming the `include` entries that select only such actions.
 - Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). Minimal APIs are not supported.
 - With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
 

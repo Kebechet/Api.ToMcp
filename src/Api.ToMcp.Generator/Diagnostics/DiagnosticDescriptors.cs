@@ -47,7 +47,7 @@ namespace Api.ToMcp.Generator.Diagnostics
         public static readonly DiagnosticDescriptor NoToolsGenerated = new DiagnosticDescriptor(
             id: "MCP006",
             title: "No MCP Tools Generated",
-            messageFormat: "No MCP tools are generated: {0} mode selects none of the project's HTTP actions. {1}.",
+            messageFormat: "No MCP tools are generated: {0}. {1}.",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
