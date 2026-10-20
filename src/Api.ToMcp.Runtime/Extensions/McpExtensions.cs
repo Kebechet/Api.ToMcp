@@ -48,7 +48,8 @@ public static class McpExtensions
 
         // Register the official MCP server with HTTP transport
         services.AddMcpServer()
-            .WithHttpTransport();
+            .WithHttpTransport()
+            .WithRequestFilters(filters => filters.AddCallToolFilter(McpScopeValidationFilter.Create));
 
         // Same discovery as the SDK's WithToolsFromAssembly, with the XML doc schema hook passed to each tool.
         // A tool is created lazily from the built provider, as the SDK does it, because the SDK decides which

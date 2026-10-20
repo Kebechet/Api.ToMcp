@@ -2,13 +2,16 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Net;
 using System.Reflection;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Tests.Shared;
 using DemoApi.Models;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
@@ -249,6 +252,31 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             new Dictionary<string, object?> { ["id"] = "ffffffff-ffff-ffff-ffff-ffffffffffff" });
         Assert.True(failed.IsError);
         Assert.Contains("404", ((TextContentBlock)failed.Content[0]).Text);
+    }
+
+    [Theory]
+    [InlineData(null, "User is not authenticated. Scope validation requires authentication.")]
+    [InlineData("write", "Insufficient scope. Required: Read, Granted: Write")]
+    public async Task McpProtocol_ToolsCall_TellsTheClientWhyTheScopeCheckRefusedIt(string? grantedScopes, string expectedText)
+    {
+        await using var client = await ConnectMcpClientAsync(configureServices: RequireScopes, grantedScopes: grantedScopes);
+
+        var result = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+
+        Assert.True(result["isError"]!.GetValue<bool>());
+        Assert.False(result.AsObject().ContainsKey("structuredContent"));
+        Assert.Equal(expectedText, Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_PassesTheScopeCheck_WithTheRequiredScope()
+    {
+        await using var client = await ConnectMcpClientAsync(configureServices: RequireScopes, grantedScopes: "read");
+
+        var result = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        Assert.Equal("Laptop", result["structuredContent"]!["name"]!.GetValue<string>());
     }
 
     [Fact]
@@ -509,7 +537,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             : null;
     }
 
-    private async Task<McpClient> ConnectMcpClientAsync(string? protocolVersion = null)
+    private async Task<McpClient> ConnectMcpClientAsync(string? protocolVersion = null, Action<IServiceCollection>? configureServices = null, string? grantedScopes = null)
     {
         // Route the invoker's internal self-call back into the in-memory server (otherwise it
         // uses a real HttpClient that can't reach the TestServer, and every call "fails").
@@ -521,14 +549,23 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
                 services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()
                     .ConfigurePrimaryHttpMessageHandler(sp =>
                         ((TestServer)sp.GetRequiredService<IServer>()).CreateHandler());
+                services.AddTransient<IStartupFilter, TestUserStartupFilter>();
+                configureServices?.Invoke(services);
             });
         });
+
+        var headers = new Dictionary<string, string>();
+        if (grantedScopes is not null)
+        {
+            headers[TestUserStartupFilter.ScopeHeader] = grantedScopes;
+        }
 
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
                 Endpoint = new Uri("http://localhost/mcp"),
-                TransportMode = HttpTransportMode.StreamableHttp
+                TransportMode = HttpTransportMode.StreamableHttp,
+                AdditionalHeaders = headers
             },
             factory.CreateClient(),
             NullLoggerFactory.Instance,
@@ -563,6 +600,42 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             .GetField("ToolTypes", BindingFlags.Public | BindingFlags.Static)!
             .GetValue(null)!;
         return toolTypes.Select(t => t.Name).ToArray();
+    }
+
+    /// <summary>
+    /// Scope validation as an app turns it on: the "scope" claim lists the granted scopes, separated by spaces.
+    /// </summary>
+    private static void RequireScopes(IServiceCollection services)
+    {
+        services.Configure<McpScopeOptions>(options => options.ClaimToScopeMapper = claimValue => claimValue
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Aggregate(McpScope.None, (granted, scope) => granted | Enum.Parse<McpScope>(scope, ignoreCase: true)));
+    }
+
+    /// <summary>
+    /// Signs the request in as a user whose "scope" claim is the <see cref="ScopeHeader"/> header, as an authentication
+    /// handler would from a token; a request without the header stays anonymous.
+    /// </summary>
+    private sealed class TestUserStartupFilter : IStartupFilter
+    {
+        public const string ScopeHeader = "X-Test-Scope";
+
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
+        {
+            return app =>
+            {
+                app.Use((context, nextMiddleware) =>
+                {
+                    if (context.Request.Headers.TryGetValue(ScopeHeader, out var scopes))
+                    {
+                        context.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("scope", scopes.ToString())], authenticationType: "Test"));
+                    }
+
+                    return nextMiddleware(context);
+                });
+                next(app);
+            };
+        }
     }
 
     private sealed class FixedBaseUrlProvider : ISelfBaseUrlProvider

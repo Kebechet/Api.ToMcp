@@ -120,25 +120,35 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         var httpContext = _httpContextAccessor.HttpContext;
         if (httpContext?.User?.Identity?.IsAuthenticated != true)
         {
-            throw new UnauthorizedAccessException("User is not authenticated. Scope validation requires authentication.");
+            throw RefuseScope("User is not authenticated. Scope validation requires authentication.");
         }
 
         var claimValue = httpContext.User.FindFirst(_scopeOptions.ClaimName)?.Value;
         if (string.IsNullOrEmpty(claimValue))
         {
-            throw new UnauthorizedAccessException($"Claim '{_scopeOptions.ClaimName}' not found. Required scope: {requiredScope}");
+            throw RefuseScope($"Claim '{_scopeOptions.ClaimName}' not found. Required scope: {requiredScope}");
         }
 
         var grantedScope = _scopeOptions.ClaimToScopeMapper(claimValue);
 
         if ((grantedScope & requiredScope) != requiredScope)
         {
-            throw new UnauthorizedAccessException($"Insufficient scope. Required: {requiredScope}, Granted: {grantedScope}");
+            throw RefuseScope($"Insufficient scope. Required: {requiredScope}, Granted: {grantedScope}");
         }
 
         _logger.LogDebug("Scope validation passed. Required: {Required}, Granted: {Granted}", requiredScope, grantedScope);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The exception that refuses the call, whose message the MCP client gets as the tool's error result.
+    /// </summary>
+    private McpScopeValidationException RefuseScope(string reason)
+    {
+        _logger.LogWarning("MCP tool call refused by scope validation: {Reason}", reason);
+
+        return new McpScopeValidationException(reason);
     }
 
     private string BuildUrl(string route)

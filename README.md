@@ -445,7 +445,7 @@ builder.Services.AddMcpTools(Assembly.GetExecutingAssembly(), options =>
 1. MCP request arrives with JWT containing claims
 2. The configured `ClaimName` is read from the user's claims
 3. `ClaimToScopeMapper` converts the claim value to `McpScope`
-4. If the tool's required scope (based on HTTP method) isn't granted, an error is returned
+4. If the tool's required scope (based on HTTP method) isn't granted, the call returns `isError: true` with the reason as its text, such as `Insufficient scope. Required: Write, Granted: Read`
 
 ### Example JWT Claim
 
@@ -690,11 +690,11 @@ A refused call comes back as `isError: true`:
 | Situation | Result text | Where the reason is |
 |---|---|---|
 | No scope validation, and the API refuses the call | `HTTP 401: Unauthorized` | In the result |
-| Scope validation on, no token | `An error occurred invoking '<tool>'.` | App log: `User is not authenticated. Scope validation requires authentication.` |
-| The token has no `ClaimName` claim | `An error occurred invoking '<tool>'.` | App log: `Claim 'permissions' not found. Required scope: Read` |
-| The claim grants too little | `An error occurred invoking '<tool>'.` | App log: `Insufficient scope. Required: Write, Granted: Read` |
+| Scope validation on, no token | `User is not authenticated. Scope validation requires authentication.` | In the result |
+| The token has no `ClaimName` claim | `Claim 'permissions' not found. Required scope: Read` | In the result |
+| The claim grants too little | `Insufficient scope. Required: Write, Granted: Read` | In the result |
 
-A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the client only that generic text. The reason is in the app's log, as an error from `ModelContextProtocol.Server.McpServer`: `"<tool>" threw an unhandled exception.`, followed by the exception. See [Scope-Based Access Control](#scope-based-access-control).
+A scope rejection comes back like a failed API call, as an error result whose text is the reason: the scope the tool requires, the scope the caller was granted, or the claim it lacks, never the token or the claim's value. The app logs the same reason as a warning from `Api.ToMcp.Runtime.Services.McpHttpInvoker`: `MCP tool call refused by scope validation: <reason>`. `IMcpHttpInvoker.BeforeInvokeAsync` still throws an `UnauthorizedAccessException`; a call filter that `AddMcpTools` adds to the MCP server turns the default invoker's into that result. See [Scope-Based Access Control](#scope-based-access-control).
 
 ### A tool is missing
 
@@ -713,7 +713,7 @@ To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerG
 
 ### A call fails
 
-`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. Apart from a scope rejection, the usual cause is the tool's HTTP call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
+`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. The usual cause is the tool's HTTP call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
 
 `HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation.
 
