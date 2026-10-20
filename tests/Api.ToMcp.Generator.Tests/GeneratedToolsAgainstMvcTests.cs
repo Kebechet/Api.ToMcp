@@ -117,6 +117,18 @@ namespace TestApi
         [HttpGet(""star/{*path}"")]
         public object GetStar(string path) => new { path };
 
+        [HttpPost(""typed-binder"")]
+        public object PostTypedBinder(TypedBinderQuery q) => q;
+
+        [HttpPost(""nullable-binder"")]
+        public object PostNullableBinder(NullableBinderQuery q) => q;
+
+        [HttpPost(""file-query"")]
+        public object PostFileQuery(FileQuery q) => new { q.City, hasAttachment = q.Attachment is not null };
+
+        [HttpPost(""file-list-query"")]
+        public object PostFileListQuery(FileListQuery q) => new { q.City };
+
         [HttpGet(""optional/{id?}"")]
         public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
@@ -258,6 +270,10 @@ namespace TestApi
     [InlineData("EchoController_PostUpperTool", @"{""id"":7}", @"{""id"":7}")]
     [InlineData("EchoController_GetOrderedTool", @"{""name"":""a"",""count"":2,""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""name"":""a"",""count"":2,""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostClashTool", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""bodyJson"":{""city"":""Brno""},""cancellationToken"":""c1"",""routeroute"":""rr"",""System"":""s1"",""JsonSerializer"":""j1"",""McpScope"":""m1""}", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""city"":""Brno"",""cancellationToken"":""c1"",""routeroute"":""rr"",""system"":""s1"",""jsonSerializer"":""j1"",""mcpScope"":""m1""}")]
+    [InlineData("EchoController_PostTypedBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
+    [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
+    [InlineData("EchoController_PostFileQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno"",""hasAttachment"":false}")]
+    [InlineData("EchoController_PostFileListQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
     [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
     [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]

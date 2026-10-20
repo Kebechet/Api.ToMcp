@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Api.ToMcp.Generator.Models;
 
 namespace Api.ToMcp.Generator.Parsing
@@ -76,7 +77,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var routeProblem = httpInfo.Value.Problem ??
                     (IsAbsoluteTemplate(httpInfo.Value.Template) ? null : routePrefixProblem);
 
-                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController);
+                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation);
                 var returnType = AnalyzeReturnType(method);
                 var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
@@ -332,7 +333,8 @@ namespace Api.ToMcp.Generator.Parsing
         private static ImmutableArray<ParameterInfoModel> AnalyzeParameters(
             IMethodSymbol method,
             string httpMethod,
-            bool isApiController)
+            bool isApiController,
+            Compilation compilation)
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
             var paramDocs = GetXmlDocParams(method);
@@ -357,7 +359,7 @@ namespace Api.ToMcp.Generator.Parsing
                 // the body, and which of them fill the route or the query string when it does not.
                 var properties = isSimpleType && declaredSource is not (ParameterSourceModel.Route or ParameterSourceModel.Body)
                     ? ImmutableArray<PropertyInfoModel>.Empty
-                    : ExtractProperties(param.Type);
+                    : ExtractProperties(param.Type, compilation);
 
                 builder.Add(new ParameterInfoModel
                 {
@@ -411,7 +413,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// The properties MVC binds a type through, each with where its binding attribute makes MVC read it from and the
         /// name it binds it under.
         /// </summary>
-        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type)
+        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type, Compilation compilation)
         {
             if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
             {
@@ -430,9 +432,12 @@ namespace Api.ToMcp.Generator.Parsing
                 .Select(property =>
                 {
                     // MVC binds a property the record's constructor sets through the constructor parameter, with the
-                    // parameter's binding attributes; a [property: ...] one it ignores.
+                    // parameter's binding attributes; a [property: ...] one it ignores. After those it reads the attributes
+                    // of the type (ModelAttributes), so a [ModelBinder(typeof(...))] on an id type binds every property of it.
                     var isSetByConstructor = constructorParameters.TryGetValue(property, out var constructorParameter);
-                    var attributes = isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes();
+                    var attributes = (isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes())
+                        .Concat(GetTypeAttributes(property.Type))
+                        .ToList();
 
                     return new PropertyInfoModel
                     {
@@ -441,11 +446,57 @@ namespace Api.ToMcp.Generator.Parsing
                         IsNullable = property.Type.NullableAnnotation == NullableAnnotation.Annotated ||
                                      property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
                         ModelName = attributes.Select(GetModelName).FirstOrDefault(x => x is not null),
-                        Source = GetBindingSource(attributes),
+                        Source = HasFileOrSpecialBindingSource(property.Type, compilation) ? ParameterSourceModel.Other : GetBindingSource(attributes),
                         IsSetByConstructor = isSetByConstructor
                     };
                 })
                 .ToImmutableArray();
+        }
+
+        /// <summary>
+        /// The attributes reflection's <c>GetCustomAttributes(true)</c> returns for a type: its own, and those of its base
+        /// classes that are inherited. A <c>Nullable&lt;T&gt;</c> has none of <c>T</c>'s.
+        /// </summary>
+        private static IEnumerable<AttributeData> GetTypeAttributes(ITypeSymbol type)
+        {
+            return type.GetAttributes().Concat(GetBaseTypes(type).SelectMany(x => x.GetAttributes()).Where(IsInheritedAttribute));
+        }
+
+        private static IEnumerable<INamedTypeSymbol> GetBaseTypes(ITypeSymbol type)
+        {
+            for (var baseType = type.BaseType; baseType != null; baseType = baseType.BaseType)
+                yield return baseType;
+        }
+
+        /// <summary>
+        /// Whether MVC gives a value of the type a binding source of its own (<c>BindingSourceMetadataProvider</c>), over any
+        /// attribute: a form file for <c>IFormFile</c>, <c>IFormFileCollection</c>, <c>IFormCollection</c> and any
+        /// <c>IEnumerable&lt;IFormFile&gt;</c>, a special one for a <c>CancellationToken</c>; each counts for a type assigned
+        /// to it.
+        /// </summary>
+        private static bool HasFileOrSpecialBindingSource(ITypeSymbol type, Compilation compilation)
+        {
+            var formFile = compilation.GetTypeByMetadataName(KnownTypeNames.FormFile);
+            var boundTypes = new[]
+            {
+                formFile,
+                compilation.GetTypeByMetadataName(KnownTypeNames.FormFileCollection),
+                compilation.GetTypeByMetadataName(KnownTypeNames.FormCollection),
+                formFile is null ? null : compilation.GetSpecialType(SpecialType.System_Collections_Generic_IEnumerable_T).Construct(formFile),
+                compilation.GetTypeByMetadataName(KnownTypeNames.CancellationToken)
+            };
+
+            return boundTypes.OfType<ITypeSymbol>().Any(boundType => IsAssignableTo(type, boundType, compilation));
+        }
+
+        /// <summary>
+        /// Reflection's <c>IsAssignableFrom</c>: an identity, reference or boxing conversion, not a user-defined one.
+        /// </summary>
+        private static bool IsAssignableTo(ITypeSymbol type, ITypeSymbol target, Compilation compilation)
+        {
+            var conversion = compilation.ClassifyConversion(type, target);
+
+            return conversion.IsIdentity || (conversion.IsImplicit && (conversion.IsReference || conversion.IsBoxing));
         }
 
         /// <summary>
@@ -540,7 +591,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// Where the first of a property's or constructor parameter's attributes that gives a binding source makes MVC read
         /// it from, as <c>DefaultBindingMetadataProvider</c> takes that one.
         /// </summary>
-        private static ParameterSourceModel GetBindingSource(ImmutableArray<AttributeData> attributes)
+        private static ParameterSourceModel GetBindingSource(IEnumerable<AttributeData> attributes)
         {
             foreach (var attribute in attributes)
             {

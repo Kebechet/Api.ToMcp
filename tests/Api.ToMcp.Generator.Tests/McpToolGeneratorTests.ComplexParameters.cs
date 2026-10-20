@@ -156,6 +156,20 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain("bodyJson", tool);
     }
 
+    [Theory]
+    [InlineData("TypedBinderQuery")]
+    [InlineData("FileQuery")]
+    [InlineData("FileListQuery")]
+    public void Generator_SendsAComplexParameterInTheQuery_WhenThePropertyTypeOfAPropertyNamesABindingSource(string type)
+    {
+        // MVC takes a property's binding source from its type's attributes as well as its own, and gives IFormFile and its
+        // collections one of their own; either counts among the bound properties that keep it off the body.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"search\")] public Task<string> Find({type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("AddQueryValue(queryParts, \"q\", q);", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
     [Fact]
     public void Generator_EscapesNamesThatAreCSharpKeywords_WhereverItWritesThemAsIdentifiers()
     {
