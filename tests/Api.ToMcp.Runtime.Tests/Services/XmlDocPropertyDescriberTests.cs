@@ -73,7 +73,9 @@ public class XmlDocPropertyDescriberTests
     public void DescribeProperty_LeavesParameterNodesAndUndocumentedPropertiesAlone()
     {
         Assert.Equal("Order to create.", GetDescription("properties", "order"));
-        Assert.Null(GetDescription("properties", "note"));
+        // Named like the documented OrderRequest.Customer: a tool parameter described from a same-named property, as a
+        // ParameterDescriptionProvider could do, would take that property's summary.
+        Assert.Null(GetDescription("properties", "customer"));
         Assert.Null(GetDescription("properties", "order", "properties", "undocumented"));
         Assert.False(InputSchema.GetProperty("properties").TryGetProperty("cancellationToken", out _));
     }
@@ -107,9 +109,9 @@ public class XmlDocPropertyDescriberTests
     }
 
     [Description("Creates an order.")]
-    private static string CreateOrder([Description("Order to create.")] OrderRequest order, string note, CancellationToken cancellationToken)
+    private static string CreateOrder([Description("Order to create.")] OrderRequest order, string customer, CancellationToken cancellationToken)
     {
-        return $"{order.Customer}:{note}";
+        return $"{order.Customer}:{customer}";
     }
 
     public sealed class OrderRequest

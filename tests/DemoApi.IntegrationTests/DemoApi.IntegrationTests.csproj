@@ -28,4 +28,8 @@
     <ProjectReference Include="..\..\src\Api.ToMcp.Runtime\Api.ToMcp.Runtime.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\Shared\ListLoggerProvider.cs" Link="Shared\ListLoggerProvider.cs" />
+  </ItemGroup>
+
 </Project>
