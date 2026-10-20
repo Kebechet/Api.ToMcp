@@ -509,14 +509,36 @@ namespace Api.ToMcp.Generator.Parsing
                 (getter.Body?.Statements.Count == 1 && getter.Body.Statements[0] is ReturnStatementSyntax returnStatement ? returnStatement.Expression : null);
             var stored = setter.ExpressionBody?.Expression ??
                 (setter.Body?.Statements.Count == 1 && setter.Body.Statements[0] is ExpressionStatementSyntax expressionStatement ? expressionStatement.Expression : null);
-            var field = returned is null ? null : GetInstanceField(semanticModel.GetOperation(returned, ct));
+            var field = returned is null ? null : GetInstanceField(GetOperation(semanticModel, returned, ct));
 
             return field != null &&
                 stored != null &&
-                semanticModel.GetOperation(stored, ct) is ISimpleAssignmentOperation { Value: IParameterReferenceOperation { Parameter: { IsImplicitlyDeclared: true } } } assignment &&
+                GetOperation(semanticModel, stored, ct) is ISimpleAssignmentOperation { Value: IParameterReferenceOperation { Parameter: { IsImplicitlyDeclared: true } } } assignment &&
                 SymbolEqualityComparer.Default.Equals(GetInstanceField(assignment.Target), field)
                     ? field
                     : null;
+        }
+
+        /// <summary>
+        /// The operation of an expression, inside the parentheses and null-forgiving operators around it, which Roslyn
+        /// gives no operation of their own.
+        /// </summary>
+        private static IOperation? GetOperation(SemanticModel semanticModel, ExpressionSyntax expression, CancellationToken ct)
+        {
+            while (true)
+            {
+                switch (expression)
+                {
+                    case ParenthesizedExpressionSyntax parenthesized:
+                        expression = parenthesized.Expression;
+                        continue;
+                    case PostfixUnaryExpressionSyntax suppressed when suppressed.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                        expression = suppressed.Operand;
+                        continue;
+                    default:
+                        return semanticModel.GetOperation(expression, ct);
+                }
+            }
         }
 
         private static IFieldSymbol? GetInstanceField(IOperation? operation)
@@ -604,7 +626,7 @@ namespace Api.ToMcp.Generator.Parsing
                 return new UnknownValue($"{propertyName} returns it from more than one expression, of which the generator reads only one");
             }
 
-            var operation = compilation.GetSemanticModel(declaration.SyntaxTree).GetOperation(returnedExpression, ct);
+            var operation = GetOperation(compilation.GetSemanticModel(declaration.SyntaxTree), returnedExpression, ct);
 
             return operation is null
                 ? new UnknownValue($"the generator cannot read {propertyName}")

@@ -224,6 +224,15 @@ namespace TestApi
         }
     }
 
+    public sealed class WrappedDocsRouteAttribute : Attribute, IRouteTemplateProvider
+    {
+        public string Template => (""wrapped/[controller]"")!;
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
     public sealed class DocsRouteAttribute : Attribute, IRouteTemplateProvider
     {
         public string Template => ""docs/[controller]"";
@@ -280,6 +289,32 @@ namespace TestApi
             get { return _template; }
             set { this._template = value; }
         }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class BangGetterAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template;
+
+        public string? Template { get => _template!; set => _template = value!; }
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class ParenthesizedGetAttribute : Attribute, IRouteTemplateProvider, IActionHttpMethodProvider
+    {
+        private string? _template;
+
+        public string? Template { get { return (_template); } set { _template = (value); } }
 
         public int? Order => null;
 
@@ -395,6 +430,8 @@ namespace TestApi
     [InlineData("[CustomGet] public IActionResult Find() => Ok();", "GET", "/api/products/fallback")]
     [InlineData("[StoredGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
     [InlineData("[VirtualGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
+    [InlineData("[BangGetter(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
+    [InlineData("[ParenthesizedGet(Template = \"stored\")] public IActionResult Find() => Ok();", "GET", "/api/products/stored")]
     [InlineData("[OverridingGet] public IActionResult Find() => Ok();", "GET", "/api/products/overridden")]
     [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
@@ -410,6 +447,7 @@ namespace TestApi
     [InlineData("[VersionedRoute(\"orders\")] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v1/orders")]
     [InlineData("[SectionRoute(\"orders\")] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/sections/orders")]
     [InlineData("[DocsRoute] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/docs/orders")]
+    [InlineData("[WrappedDocsRoute] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/wrapped/orders")]
     [InlineData("[ApiRoute] public abstract class ApiControllerBase : ControllerBase { } public class OrdersController : ApiControllerBase", "OrdersController_FindTool", "/api/orders")]
     [InlineData("[NumberedRoute(2)] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v2/orders")]
     [InlineData("[InterpolatedRoute(5000000000, '-')] public class OrdersController : ControllerBase", "OrdersController_FindTool", "/api/v5000000000-True/orders")]
