@@ -172,6 +172,8 @@ Entries are case-sensitive, and the `Controller` suffix may be left out (`"Produ
 
 An inherited action is named by the controller that serves it, as MVC names it: `ProductsController.GetAll` for the `GetAll` that `ProductsController` inherits from `CrudController<T>`. The base class's name selects nothing, since it serves no endpoint of its own.
 
+An entry that names no controller or action of the project, such as a misspelled name or a base class's, makes the build warn with `MCP008` at the entry, in either list whatever the mode. An entry naming a controller or action that `[McpIgnore]` or an `/mcp` route keeps from MCP names something, so it gets no `MCP008`: the attribute or route decides, as always. See [Troubleshooting](#troubleshooting).
+
 ### Config file location
 
 | MSBuild property | Default | Description |
@@ -690,6 +692,7 @@ A scope rejection is an `UnauthorizedAccessException`, and the MCP SDK sends the
 - An action that is not `public`, or whose HTTP method comes from anything but `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpPatch]` or `[HttpDelete]` (`[AcceptVerbs]`, `[HttpHead]`, `[HttpOptions]`, conventional routing), is skipped without a diagnostic.
 - An action declared on a base controller is a tool of each concrete controller that inherits it, named after that controller (`Products_GetAll`, not `Crud_GetAll`); an abstract base class gets none. Classes and methods MVC does not serve get no tool, among them `[NonController]` classes, `[NonAction]` methods, overrides of `ToString`, `Equals` or `GetHashCode`, and the `IDisposable.Dispose` implementation. See [Controllers and Actions](#controllers-and-actions).
 - Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
+- An `include` entry that names no controller or action, through a typo or a base controller's name, selects nothing. The build warns with `MCP008`; see [Troubleshooting](#troubleshooting).
 - `AdditionalFiles`, include names and minimal APIs: see [Troubleshooting](#troubleshooting).
 
 To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the project. A build then writes it to `obj/<Configuration>/<TargetFramework>/generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`, one file per tool, such as `ProductsController_GetByIdTool.g.cs`. A project can move it with `<CompilerGeneratedFilesOutputPath>`: the demo sets `$(BaseIntermediateOutputPath)Generated`, so its files are in `obj/Generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`. A file stays there after its tool is gone; `McpToolsRegistration.g.cs` lists the current tools.
@@ -709,6 +712,7 @@ The build reports these warnings:
 | `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, an empty file, or an unreadable one |
 | `MCP006` | Generator | The config selects none of the project's actions, so no tools are generated |
 | `MCP007` | Generator | Two or more generated tools get the same name, and the MCP SDK keeps only one of them |
+| `MCP008` | Generator | An `include` or `exclude` entry names no controller or action of the project, so it selects or excludes nothing |
 | `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
 | `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
 
@@ -718,6 +722,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - Look for build warning `MCP006`, which names the mode and the cause: an empty `include`, `include` entries that match no controller or action, an `exclude` list that covers every action, or no `generator.json` among the `AdditionalFiles`. A `generator.json` the generator cannot use as written gets `MCP001` instead (see below). `MCP006` points at the config file it read, and comes only when the project has an action that could become a tool, so a project without controllers, or whose actions are all `[McpIgnore]` or under `/mcp`, gets none.
 - Confirm `Mcp/generator.json` is registered as an `AdditionalFiles` item in your `.csproj`.
 - In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case, where `Controller` is the controller that serves the action, not a base class it inherits the action from.
+- Each `include` entry that names no controller or action gets build warning `MCP008`, which says what is wrong with it; `MCP006` then only points there.
 - Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). Minimal APIs are not supported.
 - With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
 
@@ -729,6 +734,13 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - Several generated tools have the same name, and the MCP SDK keeps only one of them, dropping the others without an error. The warning names every action that produces the name and points at its declaration. The generator still generates them all, so a name a client already calls does not change under it.
 - The usual causes: a `ToolName` on a base action that several controllers inherit, two actions with the same `ToolName`, overloads (both get `{Controller}_{Action}`), or a `toolNameFormat` without `{Controller}`. Give each tool its own name with `[McpExpose(ToolName = ...)]`, on an override for an inherited action, or exclude the ones you do not need.
 - To accept a collision, suppress the warning like any other: `#pragma warning disable MCP007` in the file it points at, `dotnet_diagnostic.MCP007.severity = none` in an `.editorconfig` section for that file, or `<NoWarn>` for the project.
+
+**Build warning `MCP008: The include entry '...' in generator.json names no controller or action of the project`.**
+- The entry matches nothing, so an `include` entry selects nothing, and an `exclude` entry hides nothing: in `AllExceptExcluded` mode, what it was meant to hide is exposed. The warning points at the entry in `generator.json`, and covers both lists whichever one the mode reads, as the other takes effect once the mode changes.
+- A typo: entries are case-sensitive, so `"products"` or `"ProductsController.getById"` match nothing. The warning names the nearest name the project has, when one differs from the entry by a letter or two, case aside.
+- A base controller: an action a controller inherits is matched by that controller's name, not by its base class's. An entry such as `"CrudController"` or `"Crud.Delete"` matched the base's own tools while the generator gave base classes tools, before https://github.com/Kebechet/Api.ToMcp/pull/43, and matches nothing since then, so an `exclude` entry like it now exposes the base's actions under every controller that inherits them. The warning names those controllers and how to write the entry: `"ProductCrud.Delete"` and `"OrderCrud.Delete"` for `"Crud.Delete"`, or a whole controller.
+- An entry naming a controller or action that `[McpIgnore]` or an `/mcp` route keeps from MCP, or a controller without `[Http*]` actions, names something and gets no `MCP008`. When no tool is generated, `MCP006` says that it names no action that can become one.
+- With `TreatWarningsAsErrors`, `MCP008` fails the build until the entry is fixed or removed. To keep an entry anyway, add `MCP008` to `<NoWarn>` or `<WarningsNotAsErrors>`.
 
 **Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**
 - No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning points at that file, and comes only from the build that writes it. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.
