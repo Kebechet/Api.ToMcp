@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using Api.ToMcp.Generator.Models;
@@ -19,6 +20,7 @@ namespace Api.ToMcp.Generator.Emitting
         private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
         private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
         private const string NullLiteral = "null";
+        private const string RouteVariablePrefix = "route";
 
         private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
 
@@ -71,9 +73,10 @@ namespace Api.ToMcp.Generator.Emitting
             // Emitted last so its default value doesn't violate parameter ordering.
             // MCP passes arguments by name, so the required parameters come first, wherever the action declares them:
             // a nullable one without a default is optional, and C# wants every optional parameter after the required ones.
-            var paramDecls = new List<string> { "IMcpHttpInvoker invoker" };
+            var names = new ToolNames(parameters);
+            var paramDecls = new List<string> { $"IMcpHttpInvoker {names.Invoker}" };
             paramDecls.AddRange(parameters.Where(x => !IsOptional(x)).Concat(parameters.Where(IsOptional)).Select(FormatParameterDeclaration));
-            paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
+            paramDecls.Add($"System.Threading.CancellationToken {names.CancellationToken} = default");
 
             var annotations = FormatAnnotationArguments(action.Annotations);
             var title = FormatTitleArgument(action.Title);
@@ -102,8 +105,8 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        )");
             sb.AppendLine("        {");
 
-            EmitRouteBuilding(sb, action, parameters);
-            EmitHttpCall(sb, action, parameters, hasOutputSchema);
+            EmitRouteBuilding(sb, action, parameters, names);
+            EmitHttpCall(sb, action, parameters, hasOutputSchema, names);
 
             sb.AppendLine("        }");
         }
@@ -111,7 +114,8 @@ namespace Api.ToMcp.Generator.Emitting
         private static void EmitRouteBuilding(
             StringBuilder sb,
             ActionInfoModel action,
-            List<ParameterInfoModel> parameters)
+            List<ParameterInfoModel> parameters,
+            ToolNames names)
         {
             var route = action.RouteTemplate;
 
@@ -175,25 +179,27 @@ namespace Api.ToMcp.Generator.Emitting
             }
 
             // Generate route variables
+            var routeVariables = new Dictionary<string, string>();
             foreach (var kvp in placeholderSources)
             {
                 var (expression, _, _, varName) = kvp.Value;
+                var routeVariable = names.Declare(RouteVariablePrefix + varName);
+                routeVariables[kvp.Key] = routeVariable;
 
-                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({RequestValueFormatter}.Format({expression}));");
+                sb.AppendLine($"            var {routeVariable} = {names.SystemNamespace}.Uri.EscapeDataString({RequestValueFormatter}.Format({expression}));");
             }
 
             // Convert route template - replace placeholders with generated variable names
             var convertedRoute = route;
-            foreach (var kvp in placeholderSources)
+            foreach (var kvp in routeVariables)
             {
                 var placeholder = kvp.Key;
-                var varName = kvp.Value.varName;
                 var pattern = @"\{" + placeholder + @"(:[^}]+)?\??\}";
                 convertedRoute = System.Text.RegularExpressions.Regex.Replace(
-                    convertedRoute, pattern, "{route" + varName + "}",
+                    convertedRoute, pattern, _ => "{" + kvp.Value + "}",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             }
-            sb.AppendLine($"            var route = $\"{convertedRoute}\";");
+            sb.AppendLine($"            var {names.Route} = $\"{convertedRoute}\";");
 
             // Build query string. MVC binds a simple type that names no route value from the query string on every
             // HTTP method: [ApiController] infers [FromQuery] for it, and in a controller without [ApiController] the
@@ -224,15 +230,15 @@ namespace Api.ToMcp.Generator.Emitting
 
             if (queryValues.Any())
             {
-                sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
+                sb.AppendLine($"            var {names.QueryParts} = new {names.SystemNamespace}.Collections.Generic.List<string>();");
                 foreach (var (key, expression) in queryValues)
                 {
                     // A [FromQuery(Name)] alias is any string, so it is written as an escaped C# literal.
                     var queryKeyLiteral = SymbolDisplay.FormatLiteral(key, quote: true);
-                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, {queryKeyLiteral}, {expression});");
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue({names.QueryParts}, {queryKeyLiteral}, {expression});");
                 }
-                sb.AppendLine("            if (queryParts.Count > 0)");
-                sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");
+                sb.AppendLine($"            if ({names.QueryParts}.Count > 0)");
+                sb.AppendLine($"                {names.Route} += \"?\" + string.Join(\"&\", {names.QueryParts});");
             }
         }
 
@@ -330,17 +336,21 @@ namespace Api.ToMcp.Generator.Emitting
             StringBuilder sb,
             ActionInfoModel action,
             List<ParameterInfoModel> parameters,
-            bool hasOutputSchema)
+            bool hasOutputSchema,
+            ToolNames names)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
+            var invoker = names.Invoker;
+            var route = names.Route;
+            var cancellationToken = names.CancellationToken;
 
-            sb.AppendLine($"            await invoker.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope)}, cancellationToken);");
+            sb.AppendLine($"            await {invoker}.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope, names.McpScope)}, {cancellationToken});");
 
             string invokerCall;
             switch (action.HttpMethod)
             {
                 case HttpMethodNames.Get:
-                    invokerCall = "await invoker.GetAsync(route, cancellationToken)";
+                    invokerCall = $"await {invoker}.GetAsync({route}, {cancellationToken})";
                     break;
                 case HttpMethodNames.Post:
                 case HttpMethodNames.Put:
@@ -348,12 +358,12 @@ namespace Api.ToMcp.Generator.Emitting
                     var invokerMethod = action.HttpMethod == HttpMethodNames.Post ? "PostAsync" : action.HttpMethod == HttpMethodNames.Put ? "PutAsync" : "PatchAsync";
                     if (bodyParam != null)
                     {
-                        sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({EscapeIdentifier(bodyParam.Name)});");
+                        sb.AppendLine($"            var {names.BodyJson} = {names.JsonSerializer}.Serialize({EscapeIdentifier(bodyParam.Name)});");
                     }
-                    invokerCall = $"await invoker.{invokerMethod}(route, {(bodyParam != null ? "bodyJson" : "null")}, cancellationToken)";
+                    invokerCall = $"await {invoker}.{invokerMethod}({route}, {(bodyParam != null ? names.BodyJson : NullLiteral)}, {cancellationToken})";
                     break;
                 case HttpMethodNames.Delete:
-                    invokerCall = "await invoker.DeleteAsync(route, cancellationToken)";
+                    invokerCall = $"await {invoker}.DeleteAsync({route}, {cancellationToken})";
                     break;
                 default:
                     return;
@@ -369,11 +379,11 @@ namespace Api.ToMcp.Generator.Emitting
         /// A combination of named flags is written as <c>McpScope.Read | McpScope.Write</c>, and a value with bits no
         /// flag names as a cast, so the generated tool always compiles.
         /// </summary>
-        private static string GetScopeExpression(McpScopeModel scope)
+        private static string GetScopeExpression(McpScopeModel scope, string mcpScope)
         {
             if (Enum.IsDefined(typeof(McpScopeModel), scope))
             {
-                return $"McpScope.{scope}";
+                return $"{mcpScope}.{scope}";
             }
 
             var includedFlags = SingleScopes
@@ -382,10 +392,10 @@ namespace Api.ToMcp.Generator.Emitting
             var includedBits = includedFlags.Aggregate(McpScopeModel.None, (combined, x) => combined | x);
             if (includedBits != scope)
             {
-                return $"(McpScope){(int)scope}";
+                return $"({mcpScope}){(int)scope}";
             }
 
-            return string.Join(" | ", includedFlags.Select(x => $"McpScope.{x}"));
+            return string.Join(" | ", includedFlags.Select(x => $"{mcpScope}.{x}"));
         }
 
         private static string FormatAnnotationArguments(ToolAnnotationsModel annotations)
@@ -539,6 +549,59 @@ namespace Api.ToMcp.Generator.Emitting
         private static string EscapeString(string s)
         {
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "");
+        }
+
+        /// <summary>
+        /// The names a tool method gives its own parameters and variables, and the ones it refers to by a simple name. The
+        /// action's parameters keep their names, as MCP passes arguments by them, and share the method's scope with these:
+        /// a parameter named <c>route</c> would collide with the variable, and one named <c>System</c> would hide the
+        /// namespace. So each own name an action parameter already has gets a number, and a name it hides is qualified.
+        /// </summary>
+        private sealed class ToolNames
+        {
+            private const string SystemNamespaceName = "System";
+            private const string JsonSerializerName = "JsonSerializer";
+            private const string McpScopeName = "McpScope";
+
+            private readonly HashSet<string> _usedNames;
+
+            public ToolNames(IEnumerable<ParameterInfoModel> parameters)
+            {
+                var parameterNames = new HashSet<string>(parameters.Select(x => x.Name), StringComparer.Ordinal);
+                _usedNames = new HashSet<string>(parameterNames, StringComparer.Ordinal);
+
+                Invoker = Declare("invoker");
+                CancellationToken = Declare("cancellationToken");
+                Route = Declare("route");
+                QueryParts = Declare("queryParts");
+                BodyJson = Declare("bodyJson");
+                SystemNamespace = parameterNames.Contains(SystemNamespaceName) ? "global::System" : SystemNamespaceName;
+                JsonSerializer = parameterNames.Contains(JsonSerializerName) ? "global::System.Text.Json.JsonSerializer" : JsonSerializerName;
+                McpScope = parameterNames.Contains(McpScopeName) ? "global::Api.ToMcp.Abstractions.Scopes.McpScope" : McpScopeName;
+            }
+
+            public string Invoker { get; }
+            public string CancellationToken { get; }
+            public string Route { get; }
+            public string QueryParts { get; }
+            public string BodyJson { get; }
+            public string SystemNamespace { get; }
+            public string JsonSerializer { get; }
+            public string McpScope { get; }
+
+            /// <summary>
+            /// The name, or the name with the lowest number from 2 up that neither a parameter nor another own name has.
+            /// </summary>
+            public string Declare(string name)
+            {
+                var uniqueName = name;
+                for (var number = 2; !_usedNames.Add(uniqueName); number++)
+                {
+                    uniqueName = name + number.ToString(CultureInfo.InvariantCulture);
+                }
+
+                return uniqueName;
+            }
         }
     }
 }

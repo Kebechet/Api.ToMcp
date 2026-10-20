@@ -57,6 +57,54 @@ public partial class McpToolGeneratorTests
         Assert.Equal(expectedOrder, string.Join(", ", declaredNames));
     }
 
+    [Theory]
+    [InlineData("[HttpPost(\"clash/{id}\")]", "int id, string route, string invoker, string queryParts, [FromBody] ProductFilter bodyJson, string cancellationToken, string routeid")]
+    [InlineData("[HttpGet(\"clash/{route}\")]", "string route, string route2, string routeroute, string invoker, string invoker2, [FromQuery] string? queryParts")]
+    [InlineData("[HttpPut(\"clash/{id}\")]", "int id, string System, string JsonSerializer, string McpScope, [FromBody] ProductFilter filter")]
+    [InlineData("[HttpGet(\"clash/{id}\")]", "AttributedQuery q, string routeq_Id")]
+    public void Generator_GivesTheToolsOwnVariablesNamesNoParameterHas_SoAToolWithAnyParameterNamesCompiles(string httpAttribute, string parameters)
+    {
+        GenerateCompilingSimpleTypeTool($"{httpAttribute} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+    }
+
+    [Fact]
+    public void Generator_NumbersAToolsOwnName_ThatAParameterHas()
+    {
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpGet(\"clash/{route}\")] public Task<string> Find(string route, string route2, string routeroute, string invoker, string invoker2) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("            IMcpHttpInvoker invoker3,", tool);
+        Assert.Contains($"var routeroute2 = System.Uri.EscapeDataString({Formatter}.Format(route));", tool);
+        Assert.Contains("var route3 = $\"/api/orders/clash/{routeroute2}\";", tool);
+        Assert.Contains("return await invoker3.GetAsync(route3, cancellationToken);", tool);
+    }
+
+    [Fact]
+    public void Generator_QualifiesANameTheToolRefersTo_ThatAParameterHides()
+    {
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpPut(\"clash/{id}\")] public Task<string> Find(int id, string System, string JsonSerializer, string McpScope, [FromBody] ProductFilter filter) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeid = global::System.Uri.EscapeDataString({Formatter}.Format(id));", tool);
+        Assert.Contains("var queryParts = new global::System.Collections.Generic.List<string>();", tool);
+        Assert.Contains("var bodyJson = global::System.Text.Json.JsonSerializer.Serialize(filter);", tool);
+        Assert.Contains("await invoker.BeforeInvokeAsync(global::Api.ToMcp.Abstractions.Scopes.McpScope.Write, cancellationToken);", tool);
+    }
+
+    [Fact]
+    public void Generator_KeepsTheToolsOwnVariableNames_WhenNoParameterTakesThem()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpPost(\"x/{id}\")] public Task<string> Find(int id, [FromQuery] string? city, [FromBody] ProductFilter filter) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("            IMcpHttpInvoker invoker,", tool);
+        Assert.Contains($"var routeid = System.Uri.EscapeDataString({Formatter}.Format(id));", tool);
+        Assert.Contains("var route = $\"/api/orders/x/{routeid}\";", tool);
+        Assert.Contains("var queryParts = new System.Collections.Generic.List<string>();", tool);
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(filter);", tool);
+        Assert.Contains("await invoker.BeforeInvokeAsync(McpScope.Write, cancellationToken);", tool);
+        Assert.Contains("return await invoker.PostAsync(route, bodyJson, cancellationToken);", tool);
+    }
+
     [Fact]
     public void Generator_AnnotatesAReferenceParameterWithANullDefault_OfANullableObliviousAction_SoTheToolCompilesWithoutWarnings()
     {

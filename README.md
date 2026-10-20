@@ -833,6 +833,8 @@ public static class ProductsController_GetByIdTool
 
 On success `McpStructuredOutput.FromResult` returns the parsed body, which the SDK sends as structured content; on an error it returns the invoker's `CallToolResult` unchanged. `[McpGeneratedTool]` is for `AddMcpTools`, which builds the output schema from it. A tool without an output schema returns the invoker's `CallToolResult` directly, as `Task<CallToolResult>`.
 
+The tool's arguments keep the names of the action's parameters, as MCP passes them by name. The tool's own parameters and variables, `invoker`, `cancellationToken`, `route`, `queryParts`, `bodyJson` and `route<name>` for each route value, give way to them: one that an action parameter already has gets a number, such as `route2`, and a type the tool refers to, `System`, `JsonSerializer` or `McpScope`, is written as `global::...` when a parameter has its name.
+
 ## Requirements
 
 - .NET 8.0 or later
