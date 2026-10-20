@@ -778,8 +778,6 @@ namespace Api.ToMcp.Generator.Parsing
                     return true;
                 case ArgumentSyntax { Parent: TupleExpressionSyntax tuple }:
                     return IsWritten(tuple);
-                case ForEachVariableStatementSyntax forEach:
-                    return forEach.Variable == expression;
                 case RefExpressionSyntax:
                     return true;
                 case PrefixUnaryExpressionSyntax prefix:

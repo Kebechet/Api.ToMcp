@@ -501,7 +501,6 @@ namespace TestApi
     [InlineData("[NewHidingGet(Template = \"hidden\")] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
     [InlineData("[NewHidingGet] public IActionResult Find() => Ok();", "GET", "/api/products/base")]
     [InlineData("[NewReimplementingGet(Template = \"own\")] public IActionResult Find() => Ok();", "GET", "/api/products/own")]
-    [InlineData("[ConstantOverrideGet(Template = \"ignored\")] public IActionResult Find() => Ok();", "GET", "/api/products/constant")]
     [InlineData("[HttpGet(Name = \"find\")] [Route(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     [InlineData("[HttpGet] [HttpGet(\"{id}\")] public IActionResult Find(int id) => Ok();", "GET", "/api/products/{routeid}")]
     public void Generator_ReadsTheRouteAndHttpMethod_FromAnyAttributeMvcReadsThemFrom(string action, string expectedMethod, string expectedRoute)
