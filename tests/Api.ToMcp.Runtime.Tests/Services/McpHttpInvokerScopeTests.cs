@@ -138,8 +138,9 @@ public class McpHttpInvokerScopeTests
         var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
 
+        // A hand-written tool called from a background service has no request either, so the option is one cause.
         Assert.DoesNotContain("not authenticated", exception.Message);
-        Assert.Contains("HttpServerTransportOptions.PerSessionExecutionContext", exception.Message);
+        Assert.Contains("the call runs outside one, as it does in a stateful session with HttpServerTransportOptions.PerSessionExecutionContext = true", exception.Message);
     }
 
     #endregion

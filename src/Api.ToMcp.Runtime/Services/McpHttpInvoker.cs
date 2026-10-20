@@ -121,8 +121,8 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         if (httpContext is null)
         {
             throw RefuseScope(
-                "Scope validation needs the HTTP request of the tool call, and none is available. A stateful session with " +
-                "HttpServerTransportOptions.PerSessionExecutionContext = true runs its tool calls without their requests; set the option to false.");
+                "Scope validation needs the HTTP request of the tool call, and the call runs outside one, as it does in a stateful session with " +
+                "HttpServerTransportOptions.PerSessionExecutionContext = true; set that option to false.");
         }
 
         if (httpContext.User?.Identity?.IsAuthenticated != true)

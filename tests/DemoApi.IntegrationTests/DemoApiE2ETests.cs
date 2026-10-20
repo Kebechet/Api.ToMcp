@@ -317,8 +317,8 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         Assert.NotNull(client.SessionId);
         Assert.True(result["isError"]!.GetValue<bool>());
         Assert.Equal(
-            "Scope validation needs the HTTP request of the tool call, and none is available. A stateful session with " +
-            "HttpServerTransportOptions.PerSessionExecutionContext = true runs its tool calls without their requests; set the option to false.",
+            "Scope validation needs the HTTP request of the tool call, and the call runs outside one, as it does in a stateful session with " +
+            "HttpServerTransportOptions.PerSessionExecutionContext = true; set that option to false.",
             result["content"]![0]!["text"]!.GetValue<string>());
     }
 
