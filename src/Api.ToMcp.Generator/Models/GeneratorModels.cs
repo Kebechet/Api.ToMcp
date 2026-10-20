@@ -189,8 +189,20 @@ namespace Api.ToMcp.Generator.Models
         public string Name { get; set; } = "";
         public string Type { get; set; } = "";
         public bool IsNullable { get; set; }
+
+        /// <summary>
+        /// Whether the type is a struct, <c>Nullable&lt;T&gt;</c> included, which the tool has to make nullable to give it
+        /// the default <c>null</c>.
+        /// </summary>
+        public bool IsValueType { get; set; }
+
         public bool HasDefaultValue { get; set; }
-        public object? DefaultValue { get; set; }
+
+        /// <summary>
+        /// The action's default value as a C# expression of the parameter's type, or null when it declares none.
+        /// </summary>
+        public string? DefaultValueExpression { get; set; }
+
         public ParameterSourceModel Source { get; set; }
 
         /// <summary>

@@ -198,6 +198,13 @@ namespace TestApi
         public string? City { get; set; }
     }
 
+    public struct Point
+    {
+        public int X { get; set; }
+
+        public int Y { get; set; }
+    }
+
     // A property with a binding source of its own keeps [ApiController] from reading the type from the body.
     public sealed class AttributedQuery
     {

@@ -304,8 +304,9 @@ namespace Api.ToMcp.Generator.Parsing
                     Type = param.Type.ToDisplayString(),
                     IsNullable = param.Type.NullableAnnotation == NullableAnnotation.Annotated ||
                                  param.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
+                    IsValueType = param.Type.IsValueType,
                     HasDefaultValue = param.HasExplicitDefaultValue,
-                    DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
+                    DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
                     Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
                     IsSimpleType = isSimpleType,
                     Properties = properties,

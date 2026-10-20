@@ -802,6 +802,10 @@ Route and query values are written with the invariant culture. A type with a `[T
 
 The generator finds the converter in the type's `[TypeConverter]` at compile time. One registered at runtime with `TypeDescriptor.AddAttributes` is invisible to it, so mark such a parameter `[FromQuery]`. What a converter answers MVC is only known when it runs, so the generator counts as simple two types MVC treats as complex: one whose converter overrides `CanConvertFrom` to accept only another source type, such as an `int`, and one whose `[TypeConverter("...")]` names a type that does not exist. Give such a parameter the binding attribute MVC should use.
 
+### Required and optional arguments
+
+An argument is optional when the action's parameter has a default value or a nullable type, and required otherwise. A client that leaves an optional argument out gets the action's default value, which the tool writes into its own signature, constants and enum members included (`OrderStatus status = OrderStatus.Open`). A struct parameter with a default value accepts `null` as well, which sends nothing, so MVC binds the action's default: `Point origin = default` becomes `Point? origin = null`, as a struct's `default` has no constant to write.
+
 ### Generated Code Example
 
 For `ProductsController.GetById(Guid id)` in the demo, the generator creates:

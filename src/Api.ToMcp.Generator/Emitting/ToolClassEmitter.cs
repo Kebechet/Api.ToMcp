@@ -18,6 +18,7 @@ namespace Api.ToMcp.Generator.Emitting
 
         private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
         private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
+        private const string NullLiteral = "null";
 
         private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
 
@@ -470,43 +471,22 @@ namespace Api.ToMcp.Generator.Emitting
         {
             var type = param.Type;
 
-            // Make type nullable if it has a default value but isn't already nullable
-            if (param.HasDefaultValue && !param.IsNullable && !type.EndsWith("?"))
+            // A struct with a default is made nullable, so a call can leave it out and the action falls back to its own
+            // default; a struct's default(T) has no constant, so it becomes null. A reference type whose default is null
+            // is annotated, as a nullable-oblivious project declares it without the annotation.
+            if (param.HasDefaultValue && !param.IsNullable && (param.IsValueType || param.DefaultValueExpression == NullLiteral))
             {
-                // For value types, make them nullable
-                if (IsValueType(type))
-                {
-                    type += "?";
-                }
+                type += "?";
             }
 
             var defaultPart = "";
             if (param.HasDefaultValue)
             {
-                if (param.DefaultValue == null)
-                {
-                    defaultPart = " = null";
-                }
-                else if (param.DefaultValue is string s)
-                {
-                    defaultPart = $" = \"{s}\"";
-                }
-                else if (param.DefaultValue is bool b)
-                {
-                    defaultPart = $" = {(b ? "true" : "false")}";
-                }
-                else if (param.DefaultValue is char c)
-                {
-                    defaultPart = $" = '{c}'";
-                }
-                else
-                {
-                    defaultPart = $" = {param.DefaultValue}";
-                }
+                defaultPart = $" = {param.DefaultValueExpression}";
             }
             else if (param.IsNullable)
             {
-                defaultPart = " = null";
+                defaultPart = $" = {NullLiteral}";
             }
 
             var description = string.IsNullOrEmpty(param.Description)
@@ -548,38 +528,6 @@ namespace Api.ToMcp.Generator.Emitting
         private static string EscapeString(string s)
         {
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "");
-        }
-
-        internal static bool IsValueType(string typeName)
-        {
-            var valueTypes = new[]
-            {
-                "int", "Int32", "System.Int32",
-                "long", "Int64", "System.Int64",
-                "short", "Int16", "System.Int16",
-                "byte", "Byte", "System.Byte",
-                "sbyte", "SByte", "System.SByte",
-                "ushort", "UInt16", "System.UInt16",
-                "uint", "UInt32", "System.UInt32",
-                "ulong", "UInt64", "System.UInt64",
-                "nint", "IntPtr", "System.IntPtr",
-                "nuint", "UIntPtr", "System.UIntPtr",
-                "bool", "Boolean", "System.Boolean",
-                "double", "Double", "System.Double",
-                "float", "Single", "System.Single",
-                "decimal", "Decimal", "System.Decimal",
-                "Half", "System.Half",
-                "Int128", "System.Int128",
-                "UInt128", "System.UInt128",
-                "char", "Char", "System.Char",
-                "DateTime", "System.DateTime",
-                "DateTimeOffset", "System.DateTimeOffset",
-                "TimeSpan", "System.TimeSpan",
-                "Guid", "System.Guid",
-                "DateOnly", "System.DateOnly",
-                "TimeOnly", "System.TimeOnly"
-            };
-            return valueTypes.Any(t => typeName == t || typeName.EndsWith("." + t));
         }
     }
 }

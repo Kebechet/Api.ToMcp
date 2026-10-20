@@ -130,76 +130,6 @@ public class ToolClassEmitterTests
 
     #endregion
 
-    #region IsValueType Tests
-
-    [Theory]
-    [InlineData("int", true)]
-    [InlineData("Int32", true)]
-    [InlineData("System.Int32", true)]
-    [InlineData("long", true)]
-    [InlineData("System.Int64", true)]
-    [InlineData("short", true)]
-    [InlineData("System.Int16", true)]
-    [InlineData("byte", true)]
-    [InlineData("System.Byte", true)]
-    [InlineData("sbyte", true)]
-    [InlineData("SByte", true)]
-    [InlineData("System.SByte", true)]
-    [InlineData("ushort", true)]
-    [InlineData("UInt16", true)]
-    [InlineData("System.UInt16", true)]
-    [InlineData("uint", true)]
-    [InlineData("UInt32", true)]
-    [InlineData("System.UInt32", true)]
-    [InlineData("ulong", true)]
-    [InlineData("UInt64", true)]
-    [InlineData("System.UInt64", true)]
-    [InlineData("nint", true)]
-    [InlineData("IntPtr", true)]
-    [InlineData("System.IntPtr", true)]
-    [InlineData("nuint", true)]
-    [InlineData("UIntPtr", true)]
-    [InlineData("System.UIntPtr", true)]
-    [InlineData("bool", true)]
-    [InlineData("System.Boolean", true)]
-    [InlineData("double", true)]
-    [InlineData("decimal", true)]
-    [InlineData("float", true)]
-    [InlineData("Single", true)]
-    [InlineData("System.Single", true)]
-    [InlineData("Half", true)]
-    [InlineData("System.Half", true)]
-    [InlineData("Int128", true)]
-    [InlineData("System.Int128", true)]
-    [InlineData("UInt128", true)]
-    [InlineData("System.UInt128", true)]
-    [InlineData("char", true)]
-    [InlineData("System.Char", true)]
-    [InlineData("Guid", true)]
-    [InlineData("System.Guid", true)]
-    [InlineData("DateTime", true)]
-    [InlineData("System.DateTime", true)]
-    [InlineData("DateTimeOffset", true)]
-    [InlineData("System.DateTimeOffset", true)]
-    [InlineData("TimeSpan", true)]
-    [InlineData("System.TimeSpan", true)]
-    [InlineData("DateOnly", true)]
-    [InlineData("System.DateOnly", true)]
-    [InlineData("TimeOnly", true)]
-    [InlineData("System.TimeOnly", true)]
-    [InlineData("string", false)]
-    [InlineData("String", false)]
-    [InlineData("System.String", false)]
-    [InlineData("object", false)]
-    [InlineData("MyClass", false)]
-    public void IsValueType_IdentifiesValueTypesCorrectly(string typeName, bool expected)
-    {
-        var result = ToolClassEmitter.IsValueType(typeName);
-        Assert.Equal(expected, result);
-    }
-
-    #endregion
-
     #region Emit Integration Tests
 
     [Fact]
@@ -271,7 +201,7 @@ public class ToolClassEmitterTests
                 IsSimpleType = true,
                 IsNullable = true,
                 HasDefaultValue = true,
-                DefaultValue = null
+                DefaultValueExpression = "null"
             })
         };
 
