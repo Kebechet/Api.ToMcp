@@ -16,6 +16,17 @@ namespace Api.ToMcp.Runtime;
 public static class McpExtensions
 {
     /// <summary>
+    /// The class the generator emits into the app with the list of the tools it generated, and that list.
+    /// </summary>
+    private const string GeneratedToolsInfoTypeName = "Api.ToMcp.Generated.McpToolsInfo";
+    private const string GeneratedToolTypesFieldName = "ToolTypes";
+
+    /// <summary>
+    /// The pattern <see cref="MapMcpEndpoint"/> maps the MCP endpoint at unless told otherwise.
+    /// </summary>
+    internal const string DefaultMcpPattern = "mcp";
+
+    /// <summary>
     /// Registers MCP tool services including HTTP invoker and base URL provider, and every tool of the assembly:
     /// the generated ones and any hand-written <see cref="McpServerToolTypeAttribute"/> class.
     /// </summary>
@@ -48,21 +59,25 @@ public static class McpExtensions
 
         // Register the official MCP server with HTTP transport
         services.AddMcpServer()
-            .WithHttpTransport();
+            .WithHttpTransport()
+            .WithRequestFilters(filters => filters.AddCallToolFilter(McpScopeValidationFilter.Create));
 
         // Same discovery as the SDK's WithToolsFromAssembly, with the XML doc schema hook passed to each tool.
         // A tool is created lazily from the built provider, as the SDK does it, because the SDK decides which
         // parameters are injected from DI (and so left out of the schema) by asking that provider.
+        var generatedToolTypes = FindGeneratedToolTypes(toolAssembly);
         foreach (var (toolType, toolMethod) in FindToolMethods(toolAssembly))
         {
-            services.AddSingleton<McpServerTool>(serviceProvider => CreateTool(serviceProvider, toolType, toolMethod));
+            var isGenerated = generatedToolTypes.Contains(toolType);
+            services.AddSingleton<McpServerTool>(serviceProvider => CreateTool(serviceProvider, toolType, toolMethod, isGenerated));
         }
 
         return services;
     }
 
     /// <summary>
-    /// Adds middleware to prevent infinite loops when MCP tools call back to the API.
+    /// Adds middleware to prevent infinite loops when MCP tools call back to the API: the MCP endpoint
+    /// <see cref="MapMcpEndpoint"/> maps refuses a request a tool sent, wherever it is mapped.
     /// </summary>
     public static IApplicationBuilder UseMcpLoopPrevention(this IApplicationBuilder app)
     {
@@ -70,14 +85,22 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Maps the MCP endpoint at the specified path.
+    /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
+    /// a tool sent.
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
     /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint.</param>
-    public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = "mcp", bool allowAnonymous = false)
+    public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = DefaultMcpPattern, bool allowAnonymous = false)
     {
         var endpoint = endpoints.MapMcp(pattern);
+        endpoint.Add(builder =>
+        {
+            if (builder.RequestDelegate is { } requestDelegate)
+            {
+                builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
+            }
+        });
         if (allowAnonymous)
         {
             endpoint.AllowAnonymous();
@@ -99,15 +122,30 @@ public static class McpExtensions
                 .Select(toolMethod => (toolType, toolMethod)));
     }
 
-    private static McpServerTool CreateTool(IServiceProvider serviceProvider, Type toolType, MethodInfo toolMethod)
+    /// <summary>
+    /// The tool classes the generator lists in the app's <c>McpToolsInfo</c>; none in an assembly it did not run on.
+    /// </summary>
+    private static HashSet<Type> FindGeneratedToolTypes(Assembly toolAssembly)
+    {
+        var toolTypes = toolAssembly
+            .GetType(GeneratedToolsInfoTypeName)?
+            .GetField(GeneratedToolTypesFieldName, BindingFlags.Public | BindingFlags.Static)?
+            .GetValue(null) as Type[];
+
+        return [.. toolTypes ?? []];
+    }
+
+    private static McpServerTool CreateTool(IServiceProvider serviceProvider, Type toolType, MethodInfo toolMethod, bool isGenerated)
     {
         var scopeOptions = serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>().Value;
+        var describingOptions = scopeOptions.ArePropertyDescriptionsFromXmlDocs
+            ? serviceProvider.GetRequiredService<XmlDocPropertyDescriber>().SchemaCreateOptions
+            : null;
         var createOptions = new McpServerToolCreateOptions
         {
             Services = serviceProvider,
-            SchemaCreateOptions = scopeOptions.ArePropertyDescriptionsFromXmlDocs
-                ? serviceProvider.GetRequiredService<XmlDocPropertyDescriber>().SchemaCreateOptions
-                : null
+            SchemaCreateOptions = ConvertedPropertySchema.Apply(describingOptions),
+            SerializerOptions = isGenerated ? GeneratedToolArguments.SerializerOptions : null
         };
 
         // The SDK would build this schema from OutputSchemaType with its own JSON options; an explicit one wins.
@@ -115,7 +153,7 @@ public static class McpExtensions
             toolMethod.GetCustomAttribute<McpServerToolAttribute>() is { UseStructuredContent: true, OutputSchemaType: { } outputSchemaType })
         {
             createOptions.OutputSchema = serviceProvider.GetRequiredService<McpOutputSchemaBuilder>()
-                .Build(outputSchemaType, generatedTool.IsOutputNullable, createOptions.SchemaCreateOptions);
+                .Build(outputSchemaType, generatedTool.IsOutputNullable, describingOptions);
         }
 
         if (toolMethod.IsStatic)

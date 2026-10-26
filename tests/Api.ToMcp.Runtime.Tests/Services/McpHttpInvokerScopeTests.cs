@@ -116,15 +116,16 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
 
         Assert.Contains("not authenticated", exception.Message);
     }
 
     [Fact]
-    public async Task BeforeInvokeAsync_HttpContextNull_ThrowsUnauthorizedAccessException()
+    public async Task BeforeInvokeAsync_HttpContextNull_ThrowsUnauthorizedAccessException_NamingTheOptionThatCausesIt()
     {
+        // A stateful session with PerSessionExecutionContext = true runs its tool calls without their HTTP requests.
         _httpContextAccessorMock.Setup(x => x.HttpContext).Returns((HttpContext?)null);
 
         var options = new McpScopeOptions
@@ -134,10 +135,12 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
 
-        Assert.Contains("not authenticated", exception.Message);
+        // A hand-written tool called from a background service has no request either, so the option is one cause.
+        Assert.DoesNotContain("not authenticated", exception.Message);
+        Assert.Contains("the call runs outside one, as it does in a stateful session with HttpServerTransportOptions.PerSessionExecutionContext = true", exception.Message);
     }
 
     #endregion
@@ -156,7 +159,7 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
 
         Assert.Contains("permissions", exception.Message);
@@ -175,7 +178,7 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
 
         Assert.Contains("permissions", exception.Message);
@@ -264,7 +267,7 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Write));
 
         Assert.Contains("Insufficient scope", exception.Message);
@@ -285,7 +288,7 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Delete));
 
         Assert.Contains("Delete", exception.Message);
@@ -309,7 +312,7 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        var exception = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Delete));
 
         Assert.Contains("Delete", exception.Message);
@@ -327,11 +330,11 @@ public class McpHttpInvokerScopeTests
         };
         var invoker = CreateInvoker(options);
 
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Read));
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Write));
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Delete));
     }
 
@@ -442,6 +445,30 @@ public class McpHttpInvokerScopeTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task BeforeInvokeAsync_LogsTheReason_AsAWarning_WhenItRefuses()
+    {
+        SetupAuthenticatedUser("scope", "read");
+
+        var options = new McpScopeOptions
+        {
+            ClaimName = "scope",
+            ClaimToScopeMapper = _ => McpScope.Read
+        };
+        var invoker = CreateInvoker(options);
+
+        await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() => invoker.BeforeInvokeAsync(McpScope.Write));
+
+        _loggerMock.Verify(
+            x => x.Log(
+                LogLevel.Warning,
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((o, t) => o.ToString()!.Contains("Insufficient scope. Required: Write, Granted: Read")),
+                It.IsAny<Exception>(),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Once);
+    }
+
     #endregion
 
     #region Integration-like Tests
@@ -468,7 +495,7 @@ public class McpHttpInvokerScopeTests
         await invoker.BeforeInvokeAsync(McpScope.Read);
         await invoker.BeforeInvokeAsync(McpScope.Write);
 
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Delete));
     }
 
@@ -501,7 +528,7 @@ public class McpHttpInvokerScopeTests
 
         await invoker.BeforeInvokeAsync(McpScope.Read);
         await invoker.BeforeInvokeAsync(McpScope.Write);
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() =>
             invoker.BeforeInvokeAsync(McpScope.Delete));
     }
 

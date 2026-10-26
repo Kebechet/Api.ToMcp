@@ -648,6 +648,84 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_ReadsTheBodyOfAnInheritedAction_WithTheTypeArgumentsOfEachControllerThatInheritsIt()
+    {
+        // The base's body proves that it returns a value or throws, for any T; whether a value of T can be null is up to
+        // each controller's type argument.
+        const string source = StructuredOutputUsings + StructuredOutputModels + @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public abstract class EchoController<T> : ControllerBase
+    {
+        [HttpGet]
+        public T Echo([FromQuery] T value) => value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    public class NullableNumberController : EchoController<int?>
+    {
+    }
+
+    public class NumberController : EchoController<int>
+    {
+    }
+}
+";
+        AssertCompiles(source, AllExceptExcludedConfig);
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        var nullableNumber = GetToolClass(generated, "NullableNumberController_EchoTool");
+        Assert.Contains("OutputSchemaType = typeof(int?)", nullableNumber);
+        Assert.Contains(NullableOutput, nullableNumber);
+
+        var number = GetToolClass(generated, "NumberController_EchoTool");
+        Assert.Contains("OutputSchemaType = typeof(int)", number);
+        Assert.Contains(StrictOutput, number);
+    }
+
+    [Fact]
+    public void Generator_RoutesAndBindsAnInheritedAction_AsEachControllerThatInheritsItDoes()
+    {
+        // The base declares the action once; the route prefix, the [controller] token and [ApiController], which decides
+        // where MVC reads the filter from, are each controller's own.
+        const string source = SimpleTypeSources.Usings + SimpleTypeSources.Types + @"
+namespace TestApi
+{
+    public abstract class SearchController : ControllerBase
+    {
+        [HttpPost(""search"")]
+        public string Search(ProductFilter filter) => string.Empty;
+    }
+
+    [ApiController]
+    [Route(""api/v2/[controller]"")]
+    public class CatalogController : SearchController
+    {
+    }
+
+    [Route(""plain/[controller]"")]
+    public class ArchiveController : SearchController
+    {
+    }
+}
+";
+        AssertCompiles(source, AllExceptExcludedConfig);
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+
+        var catalog = GetToolClass(generated, "CatalogController_SearchTool");
+        Assert.Equal("var route = $\"/api/v2/catalog/search\";", GetRouteLine(generated, "CatalogController_SearchTool"));
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(filter);", catalog);
+
+        var archive = GetToolClass(generated, "ArchiveController_SearchTool");
+        Assert.Equal("var route = $\"/plain/archive/search\";", GetRouteLine(generated, "ArchiveController_SearchTool"));
+        Assert.Contains("AddQueryValue(queryParts, \"filter\", filter);", archive);
+        Assert.DoesNotContain("bodyJson", archive);
+    }
+
+    [Fact]
     public void Generator_WarnsThatNoToolsAreGenerated_NamingAnActionAConcreteControllerInherits()
     {
         // MCP006's example is an action that would become a tool: the concrete controller serves the base's action as its

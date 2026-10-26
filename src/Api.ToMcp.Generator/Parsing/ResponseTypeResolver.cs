@@ -281,6 +281,15 @@ namespace Api.ToMcp.Generator.Parsing
             return type;
         }
 
+        /// <summary>
+        /// Reads the response a <c>[ProducesResponseType]</c> or <c>[ProducesResponseType&lt;T&gt;]</c> declares, with a
+        /// null <paramref name="type"/> for a typeless one, such as <c>[ProducesResponseType(204)]</c>.
+        /// </summary>
+        /// <returns>
+        /// False for any other attribute, and for one whose <c>Type</c> property is set to null: ApiExplorer adds no
+        /// response for a null type, so the attribute neither replaces a controller's response for its status nor
+        /// stands in for the action's return type, as <c>Type = null</c> on a <c>[Produces]</c> declares no 200.
+        /// </returns>
         private static bool TryReadProducesResponseType(AttributeData attribute, out int statusCode, out ITypeSymbol? type, out IReadOnlyList<string> contentTypes)
         {
             statusCode = HttpStatusCodes.Status200OK;
@@ -320,8 +329,13 @@ namespace Api.ToMcp.Generator.Parsing
             {
                 if (namedArgument.Key == StatusCodePropertyName && namedArgument.Value.Value is int namedStatusCode)
                     statusCode = namedStatusCode;
-                if (namedArgument.Key == TypePropertyName && namedArgument.Value.Value is ITypeSymbol namedType)
+                if (namedArgument.Key == TypePropertyName)
+                {
+                    if (namedArgument.Value.Value is not ITypeSymbol namedType)
+                        return false;
+
                     type = namedType;
+                }
             }
 
             return true;

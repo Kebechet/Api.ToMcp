@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using Api.ToMcp.Generator.Emitting;
 using Api.ToMcp.Generator.Models;
@@ -10,7 +9,7 @@ public class ToolClassEmitterTests
 {
     private const string Formatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
 
-    #region RouteContainsParameter Tests
+    #region RouteTemplate Tests
 
     [Theory]
     [InlineData("/api/products/{id}", "id", true)]
@@ -25,177 +24,47 @@ public class ToolClassEmitterTests
     [InlineData("/api/{category}/products/{id:guid}", "category", true)]
     [InlineData("/api/{category}/products/{id:guid}", "id", true)]
     [InlineData("/api/products", "id", false)]
-    public void RouteContainsParameter_DetectsParametersCorrectly(string route, string paramName, bool expected)
+    [InlineData("/api/files/{*path}", "path", true)]
+    [InlineData("/api/files/{**path}", "path", true)]
+    [InlineData("/api/pages/{page=1}", "page", true)]
+    [InlineData("/api/{{literal}}", "literal", false)]
+    public void RouteTemplate_FindsTheRouteParametersOfATemplate(string route, string paramName, bool expected)
     {
-        var result = ToolClassEmitter.RouteContainsParameter(route, paramName);
-        Assert.Equal(expected, result);
+        Assert.Equal(expected, RouteTemplate.Parse(route).HasParameter(paramName));
     }
 
     [Fact]
-    public void RouteContainsParameter_IgnoresCase_AsMvcRouteValuesDo()
+    public void RouteTemplate_MatchesRouteParametersIgnoringCase_AsMvcRouteValuesDo()
     {
-        Assert.True(ToolClassEmitter.RouteContainsParameter("/api/{Id}", "Id"));
-        Assert.True(ToolClassEmitter.RouteContainsParameter("/api/{Id}", "id"));
-        Assert.True(ToolClassEmitter.RouteContainsParameter("/api/{ID:int}", "id"));
+        Assert.True(RouteTemplate.Parse("/api/{Id}").HasParameter("Id"));
+        Assert.True(RouteTemplate.Parse("/api/{Id}").HasParameter("id"));
+        Assert.True(RouteTemplate.Parse("/api/{ID:int}").HasParameter("id"));
     }
-
-    #endregion
-
-    #region ConvertRouteTemplate Tests
-
-    [Fact]
-    public void ConvertRouteTemplate_ConvertsSimpleParameter()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "id", Type = "int" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/products/{id}", routeParams);
-        Assert.Equal("/api/products/{routeid}", result);
-    }
-
-    [Fact]
-    public void ConvertRouteTemplate_ConvertsGuidConstraint()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "id", Type = "System.Guid" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/products/{id:guid}", routeParams);
-        Assert.Equal("/api/products/{routeid}", result);
-    }
-
-    [Fact]
-    public void ConvertRouteTemplate_ConvertsIntConstraint()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "id", Type = "int" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/products/{id:int}", routeParams);
-        Assert.Equal("/api/products/{routeid}", result);
-    }
-
-    [Fact]
-    public void ConvertRouteTemplate_ConvertsOptionalParameter()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "id", Type = "int?" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/products/{id?}", routeParams);
-        Assert.Equal("/api/products/{routeid}", result);
-    }
-
-    [Fact]
-    public void ConvertRouteTemplate_ConvertsMultipleParameters()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "category", Type = "string" },
-            new() { Name = "id", Type = "System.Guid" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/{category}/products/{id:guid}", routeParams);
-        Assert.Equal("/api/{routecategory}/products/{routeid}", result);
-    }
-
-    [Fact]
-    public void ConvertRouteTemplate_HandlesCustomConstraint()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "slug", Type = "string" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/posts/{slug:regex(^[a-z-]+$)}", routeParams);
-        Assert.Equal("/api/posts/{routeslug}", result);
-    }
-
-    [Fact]
-    public void ConvertRouteTemplate_LeavesUnmatchedParamsUntouched()
-    {
-        var routeParams = new List<ParameterInfoModel>
-        {
-            new() { Name = "id", Type = "int" }
-        };
-
-        var result = ToolClassEmitter.ConvertRouteTemplate("/api/{controller}/{id}", routeParams);
-        Assert.Equal("/api/{controller}/{routeid}", result);
-    }
-
-    #endregion
-
-    #region IsValueType Tests
 
     [Theory]
-    [InlineData("int", true)]
-    [InlineData("Int32", true)]
-    [InlineData("System.Int32", true)]
-    [InlineData("long", true)]
-    [InlineData("System.Int64", true)]
-    [InlineData("short", true)]
-    [InlineData("System.Int16", true)]
-    [InlineData("byte", true)]
-    [InlineData("System.Byte", true)]
-    [InlineData("sbyte", true)]
-    [InlineData("SByte", true)]
-    [InlineData("System.SByte", true)]
-    [InlineData("ushort", true)]
-    [InlineData("UInt16", true)]
-    [InlineData("System.UInt16", true)]
-    [InlineData("uint", true)]
-    [InlineData("UInt32", true)]
-    [InlineData("System.UInt32", true)]
-    [InlineData("ulong", true)]
-    [InlineData("UInt64", true)]
-    [InlineData("System.UInt64", true)]
-    [InlineData("nint", true)]
-    [InlineData("IntPtr", true)]
-    [InlineData("System.IntPtr", true)]
-    [InlineData("nuint", true)]
-    [InlineData("UIntPtr", true)]
-    [InlineData("System.UIntPtr", true)]
-    [InlineData("bool", true)]
-    [InlineData("System.Boolean", true)]
-    [InlineData("double", true)]
-    [InlineData("decimal", true)]
-    [InlineData("float", true)]
-    [InlineData("Single", true)]
-    [InlineData("System.Single", true)]
-    [InlineData("Half", true)]
-    [InlineData("System.Half", true)]
-    [InlineData("Int128", true)]
-    [InlineData("System.Int128", true)]
-    [InlineData("UInt128", true)]
-    [InlineData("System.UInt128", true)]
-    [InlineData("char", true)]
-    [InlineData("System.Char", true)]
-    [InlineData("Guid", true)]
-    [InlineData("System.Guid", true)]
-    [InlineData("DateTime", true)]
-    [InlineData("System.DateTime", true)]
-    [InlineData("DateTimeOffset", true)]
-    [InlineData("System.DateTimeOffset", true)]
-    [InlineData("TimeSpan", true)]
-    [InlineData("System.TimeSpan", true)]
-    [InlineData("DateOnly", true)]
-    [InlineData("System.DateOnly", true)]
-    [InlineData("TimeOnly", true)]
-    [InlineData("System.TimeOnly", true)]
-    [InlineData("string", false)]
-    [InlineData("String", false)]
-    [InlineData("System.String", false)]
-    [InlineData("object", false)]
-    [InlineData("MyClass", false)]
-    public void IsValueType_IdentifiesValueTypesCorrectly(string typeName, bool expected)
+    [InlineData("/api/posts/{slug:regex(^[[a-z-]]+$)}", "slug", false, false, false)]
+    [InlineData("/api/products/{id?}", "id", true, false, false)]
+    [InlineData("/api/products/{id:int?}", "id", true, false, false)]
+    [InlineData("/api/pages/{page=1}", "page", true, false, true)]
+    [InlineData("/api/files/{*path}", "path", true, true, false)]
+    [InlineData("/api/codes/{code:regex(^\\d{{3}}$)}", "code", false, false, false)]
+    public void RouteTemplate_ReadsTheNameAndKindOfARouteParameter(string route, string name, bool isOptional, bool isCatchAll, bool hasDefaultValue)
     {
-        var result = ToolClassEmitter.IsValueType(typeName);
-        Assert.Equal(expected, result);
+        var parameter = Assert.Single(RouteTemplate.Parse(route).Parts, x => x.IsParameter);
+
+        Assert.Equal(name, parameter.Text);
+        Assert.Equal(isOptional, parameter.IsOptional);
+        Assert.Equal(isCatchAll, parameter.IsCatchAll);
+        Assert.Equal(hasDefaultValue, parameter.HasDefaultValue);
+    }
+
+    [Fact]
+    public void RouteTemplate_UnescapesDoubledBracesInLiteralText()
+    {
+        var part = Assert.Single(RouteTemplate.Parse("/api/{{literal}}").Parts);
+
+        Assert.Equal("/api/{literal}", part.Text);
+        Assert.False(part.IsParameter);
     }
 
     #endregion
@@ -271,7 +140,7 @@ public class ToolClassEmitterTests
                 IsSimpleType = true,
                 IsNullable = true,
                 HasDefaultValue = true,
-                DefaultValue = null
+                DefaultValueExpression = "null"
             })
         };
 
@@ -956,14 +825,7 @@ public class ToolClassEmitterTests
             CreateActionWithToolClassName("Create", "OrdersController")
         );
 
-        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
-        {
-            { "ProductsController_GetAllTool", 1 },
-            { "ProductsController_GetByIdTool", 1 },
-            { "OrdersController_CreateTool", 1 }
-        };
-
-        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+        var result = ToolClassEmitter.EmitRegistration(ToolClassEmitter.GetUniqueToolClassNames(actions));
 
         Assert.Contains("typeof(ProductsController_GetAllTool),", result);
         Assert.Contains("typeof(ProductsController_GetByIdTool),", result);
@@ -981,12 +843,7 @@ public class ToolClassEmitterTests
             CreateActionWithToolClassName("GetById", "ProductsController")
         );
 
-        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
-        {
-            { "ProductsController_GetByIdTool", 3 }
-        };
-
-        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+        var result = ToolClassEmitter.EmitRegistration(ToolClassEmitter.GetUniqueToolClassNames(actions));
 
         Assert.Contains("typeof(ProductsController_GetByIdTool),", result);
         Assert.Contains("typeof(ProductsController_GetByIdTool_2),", result);
@@ -1002,13 +859,7 @@ public class ToolClassEmitterTests
             CreateActionWithToolClassName("GetById", "ProductsController")
         );
 
-        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
-        {
-            { "ProductsController_GetAllTool", 1 },
-            { "ProductsController_GetByIdTool", 2 }
-        };
-
-        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+        var result = ToolClassEmitter.EmitRegistration(ToolClassEmitter.GetUniqueToolClassNames(actions));
 
         Assert.Contains("typeof(ProductsController_GetAllTool),", result);
         Assert.Contains("typeof(ProductsController_GetByIdTool),", result);
@@ -1023,12 +874,7 @@ public class ToolClassEmitterTests
             CreateActionWithToolClassName("GetAll", "ProductsController")
         );
 
-        var seenNames = new Dictionary<string, int>(StringComparer.Ordinal)
-        {
-            { "ProductsController_GetAllTool", 1 }
-        };
-
-        var result = ToolClassEmitter.EmitRegistration(actions, seenNames);
+        var result = ToolClassEmitter.EmitRegistration(ToolClassEmitter.GetUniqueToolClassNames(actions));
 
         Assert.Contains("public static class McpToolsInfo", result);
         Assert.Contains("public static readonly System.Type[] ToolTypes", result);

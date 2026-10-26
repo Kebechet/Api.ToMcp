@@ -22,13 +22,34 @@
     <DebugType>embedded</DebugType>
     <PackageIcon>icon.png</PackageIcon>
     <PackageTags>mcp;model-context-protocol;source-generator;aspnetcore;api;claude;ai</PackageTags>
-    <Version>2.2.0</Version>
+    <Version>2.3.0</Version>
     <PackageReleaseNotes>
 Added:
-- Tool titles: every generated tool has a human-readable title, sent as annotations.title, which clients show in place of the tool name (a connector directory listing, the prompt to approve a call). It is derived from the action name, so LogWorkout becomes "Log workout", or from the action part of a custom ToolName. [McpExpose(Title = "...")] on an action sets it explicitly.
+- Inherited actions: each concrete controller gets tools for the actions it inherits from base controllers, generic bases included, and [McpExpose]/[McpIgnore] apply through inheritance.
+- [Produces(typeof(T))], [Produces&lt;T&gt;] and their Type property set a tool's output schema, as ApiExplorer reads them.
+- [AcceptVerbs] actions, and routing attributes derived from MVC's or implementing its interfaces, get tools; a [Route] subclass on a controller gives correct URLs instead of "/".
+- Build warnings: MCP006 (no tool generated, with the cause), MCP007 (two tools with one name), MCP008 (an include or exclude entry that matches nothing), MCP009 (no tool for an action whose route cannot be built), MCP100 (a starter generator.json was written) and MCP101 (generator.json found at a path differing only in letter case, and used). MCP001 (generator.json cannot be used) is now reported.
+- A scope rejection reaches the client as an error result with its reason, and is logged as a warning.
+- A startup warning when PerSessionExecutionContext = true with a stateful session, where the Authorization header cannot be forwarded.
+- Loop prevention also covers an endpoint MapMcpEndpoint maps at a pattern other than /mcp.
 
 Changed:
-- Clients that show titles now list each generated tool by its title instead of its name. The tool names themselves are unchanged.
+- New warnings fail builds with TreatWarningsAsErrors until the cause is fixed or the warning is suppressed (NoWarn, WarningsNotAsErrors, #pragma, .editorconfig).
+- Which tools exist: an abstract base controller no longer gets tools of its own, its actions appear under each concrete controller (ReportsControllerBase_GetDaily becomes Reports_GetDaily), and in AllExceptExcluded mode inherited actions are exposed, destructive ones included. An include or exclude entry naming a base class no longer matches; name the concrete controllers (MCP008 lists them) or put [McpIgnore] on the base. [McpIgnore] on a base hides the derived controllers' actions and overrides too. Non-public, nested, generic, static and [NonController] classes, static, generic and [NonAction] methods, and overrides of ToString, Equals, GetHashCode and Dispose get no tool, as MVC serves none of them.
+- What tools send follows MVC model binding on every HTTP method: typed ids, TryParse/IParsable&lt;T&gt; types, enums and other simple values without a binding attribute go to the query string (2.2.0 dropped them, or sent some as the JSON body and lost the action's [FromBody] parameter); complex parameters go to the query string without [ApiController], and with it when their type has a property with a binding attribute or a binding-source type; route values are filled from the property MVC reads them from; an override's parameters bind as its base action declares them; properties MVC binds from elsewhere (CancellationToken, form files, header, form, services) and properties without a public getter are no longer sent; a value with its own [ModelBinder] is sent as one value.
+- A query value, or an optional route value that is the whole last segment, is no longer sent when it equals the action's default, except for parameters MVC requires a value for ([BindRequired], [Required]); MVC applies the default itself.
+- A type whose converter only reads, or whose TryParse rejects its own ToString() text, now gets a 400 from MVC instead of silently binding the default.
+- Output schemas: a [Produces] type replaces the return type and a conflicting declaration gives no schema; a ProducesAttribute subclass or a non-zero Order gives no schema; [ProducesResponseType(..., Type = null)] declares nothing; an IResult action's schema allows null, since Results.NoContent() is an IResult too; a content type counts as JSON only with a json subtype or a +json suffix.
+- Schemas accept any value where MVC can write one: a property with its own [JsonConverter] on an object or list type, and, under ReferenceHandler.IgnoreCycles, a response type in which an object can contain itself. Documented any-value properties carry their XML description.
+- Input schemas list required arguments first and no longer advertise properties a tool never sends.
+- McpTools:BaseUrl and a custom ISelfBaseUrlProvider are used as given, so http stays http; only an http server binding follows an https request.
+- A custom routing attribute that implements MVC's interfaces itself gets a tool only when the generator can prove its template; otherwise MCP009.
+- Writing the starter generator.json is warning MCP100, an empty generator.json gives MCP001 instead of the default config, and the never-reported MCP005 is retired.
+
+Fixed:
+- Generated tools that did not compile: struct, enum, float, decimal, NaN and quoted defaults, a nullable parameter before a required one, parameters named like the tool's own variables or like C# keywords, catch-all, optional, default-value and regex route segments, and quotes or braces in routes, names and descriptions.
+- A config in a differently cased folder on a case-sensitive file system was ignored, and a starter written beside it failed the next build (NETSDK1022).
+- The generator no longer regenerates every tool on each edit, and analyzes an inherited action once per compilation instead of once per controller.
     </PackageReleaseNotes>
   </PropertyGroup>
 

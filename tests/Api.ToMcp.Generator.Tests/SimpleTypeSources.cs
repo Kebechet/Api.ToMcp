@@ -198,6 +198,13 @@ namespace TestApi
         public string? City { get; set; }
     }
 
+    public struct Point
+    {
+        public int X { get; set; }
+
+        public int Y { get; set; }
+    }
+
     // A property with a binding source of its own keeps [ApiController] from reading the type from the body.
     public sealed class AttributedQuery
     {
@@ -314,6 +321,103 @@ namespace TestApi
         public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext) => Task.CompletedTask;
     }
 
+    // MVC reads a property's binding source from the attributes of its type too, and gives a file type one of its own.
+    [ModelBinder(typeof(BinderIdBinder))]
+    public sealed record BinderId(int Value)
+    {
+        public static bool TryParse(string? text, out BinderId? id)
+        {
+            id = int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? new BinderId(value) : null;
+            return id is not null;
+        }
+
+        public override string ToString() => Value.ToString(CultureInfo.InvariantCulture);
+    }
+
+    public sealed class BinderIdBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext)
+        {
+            if (BinderId.TryParse(bindingContext.ValueProvider.GetValue(bindingContext.ModelName).FirstValue, out var id))
+            {
+                bindingContext.Result = Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingResult.Success(id);
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    // A model binder of its own makes MVC bind the parameter from the route, query and form values, under its name,
+    // whatever the HTTP method: neither the body nor property by property.
+    [ModelBinder(typeof(TextOrderIdBinder))]
+    public sealed record TextOrderId(string Value)
+    {
+        public override string ToString() => Value;
+    }
+
+    public sealed class TextOrderIdBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext)
+        {
+            if (bindingContext.ValueProvider.GetValue(bindingContext.ModelName).FirstValue is { } value)
+            {
+                bindingContext.Result = Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingResult.Success(new TextOrderId(value));
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed record PlainCode(string Value)
+    {
+        public override string ToString() => Value;
+    }
+
+    public sealed class PlainCodeBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext)
+        {
+            if (bindingContext.ValueProvider.GetValue(bindingContext.ModelName).FirstValue is { } value)
+            {
+                bindingContext.Result = Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingResult.Success(new PlainCode(value));
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class TypedBinderQuery
+    {
+        public BinderId? Ref { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    // MVC reads the attributes of Nullable<BinderStructId> for the property, which has none of BinderStructId's.
+    [ModelBinder(typeof(BinderIdBinder))]
+    public readonly record struct BinderStructId(int Value);
+
+    public sealed class NullableBinderQuery
+    {
+        public BinderStructId? Ref { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    public sealed class FileQuery
+    {
+        public Microsoft.AspNetCore.Http.IFormFile? Attachment { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    public sealed class FileListQuery
+    {
+        public List<Microsoft.AspNetCore.Http.IFormFile>? Attachments { get; set; }
+
+        public string? City { get; set; }
+    }
+
     public sealed class KeywordQuery
     {
         [FromRoute]
@@ -332,6 +436,13 @@ namespace TestApi
         public string? Note { private get; set; }
 
         public string? Echo => Note;
+    }
+
+    public sealed class PrivateGetterFilter
+    {
+        public string? City { get; set; }
+
+        public string? Secret { private get; set; }
     }
 
     public sealed class NotedShipment

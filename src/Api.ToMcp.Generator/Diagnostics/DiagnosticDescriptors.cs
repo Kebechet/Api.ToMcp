@@ -47,7 +47,7 @@ namespace Api.ToMcp.Generator.Diagnostics
         public static readonly DiagnosticDescriptor NoToolsGenerated = new DiagnosticDescriptor(
             id: "MCP006",
             title: "No MCP Tools Generated",
-            messageFormat: "No MCP tools are generated: {0} mode selects none of the project's HTTP actions. {1}.",
+            messageFormat: "No MCP tools are generated: {0}. {1}.",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
@@ -65,5 +65,32 @@ namespace Api.ToMcp.Generator.Diagnostics
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true,
             description: "Give each tool a name of its own with [McpExpose(ToolName = ...)], on an override of an inherited action where the name comes from its base action.");
+
+        /// <summary>
+        /// An include or exclude entry names no controller the generator finds, nor an action of one, so it selects or
+        /// excludes nothing. The usual causes are a typo, as entries are case-sensitive, and the name of a base
+        /// controller, whose actions are matched by the name of each controller that inherits them. An entry naming an
+        /// action that <c>[McpIgnore]</c> or an <c>/mcp</c> route keeps from MCP names something, so it gets none.
+        /// </summary>
+        public static readonly DiagnosticDescriptor UnmatchedConfigEntry = new DiagnosticDescriptor(
+            id: "MCP008",
+            title: "Config entry matches nothing",
+            messageFormat: "The {0} entry '{1}' in generator.json names no controller or action of the project, so it {2}: {3}",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
+
+        /// <summary>
+        /// The generator cannot build the request MVC serves the action at, so it leaves the tool out rather than generate
+        /// one that would not compile or would call another endpoint. The build still succeeds, with the other tools.
+        /// </summary>
+        public static readonly DiagnosticDescriptor UnbuildableRoute = new DiagnosticDescriptor(
+            id: "MCP009",
+            title: "Tool route cannot be built",
+            messageFormat: "No MCP tool is generated for action '{0}.{1}': {2}",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Give the action a parameter, or a property of one, for every required route value, or mark it [McpIgnore] to keep it from MCP without the warning.");
     }
 }

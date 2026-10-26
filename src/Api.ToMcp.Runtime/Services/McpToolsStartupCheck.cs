@@ -2,15 +2,18 @@ using Api.ToMcp.Runtime.Options;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Server;
 
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
 /// Builds every registered tool when the host starts and reports the assemblies whose XML documentation file was
-/// missing or unreadable while their schemas were built. The SDK otherwise builds the tools on the first MCP request,
-/// which would postpone both a tool that cannot be created and these warnings to that request. Hosted services start
-/// before the server listens, so the warnings land in the startup log.
+/// missing or unreadable while their schemas were built, and a transport setting under which the tools cannot reach
+/// the MCP request. The SDK otherwise builds the tools on the first MCP request, which would postpone both a tool that
+/// cannot be created and these warnings to that request. Hosted services start before the server listens, so the
+/// warnings land in the startup log.
 /// </summary>
 internal sealed class McpToolsStartupCheck : IHostedService
 {
@@ -27,17 +30,20 @@ internal sealed class McpToolsStartupCheck : IHostedService
     private readonly IServiceProvider _serviceProvider;
     private readonly XmlDocPropertyDescriber _propertyDescriber;
     private readonly McpOutputSchemaBuilder _outputSchemaBuilder;
+    private readonly HttpServerTransportOptions _transportOptions;
     private readonly ILogger<McpToolsStartupCheck> _logger;
 
     public McpToolsStartupCheck(
         IServiceProvider serviceProvider,
         XmlDocPropertyDescriber propertyDescriber,
         McpOutputSchemaBuilder outputSchemaBuilder,
+        IOptions<HttpServerTransportOptions> transportOptions,
         ILogger<McpToolsStartupCheck> logger)
     {
         _serviceProvider = serviceProvider;
         _propertyDescriber = propertyDescriber;
         _outputSchemaBuilder = outputSchemaBuilder;
+        _transportOptions = transportOptions.Value;
         _logger = logger;
     }
 
@@ -45,6 +51,13 @@ internal sealed class McpToolsStartupCheck : IHostedService
     {
         var toolCount = _serviceProvider.GetServices<McpServerTool>().Count();
         _logger.LogDebug("Built {ToolCount} MCP tools.", toolCount);
+
+        if (RunsToolCallsWithoutTheirRequests(_transportOptions))
+        {
+            _logger.LogWarning(
+                "HttpServerTransportOptions.PerSessionExecutionContext is true and SessionMode is {SessionMode}, so a stateful session runs every tool call in the context of its initialize request, whose HttpContext is gone by then. The generated tools then forward no Authorization header to the API, and scope validation, when configured, refuses every call. Set PerSessionExecutionContext to false.",
+                _transportOptions.SessionMode);
+        }
 
         if (_outputSchemaBuilder.HasBuiltAnyValueSchema)
         {
@@ -86,6 +99,18 @@ internal sealed class McpToolsStartupCheck : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Whether a stateful session calls its tools in the execution context of the request that started it rather than
+    /// of the request that carried the call, which hides that request's <c>HttpContext</c> from the invoker. A
+    /// stateless request is served in its own context whatever the option says.
+    /// </summary>
+    private static bool RunsToolCallsWithoutTheirRequests(HttpServerTransportOptions transportOptions)
+    {
+#pragma warning disable MCP9006 // The SDK marks the option obsolete, but it still compiles and takes effect.
+        return transportOptions.PerSessionExecutionContext && transportOptions.SessionMode != HttpServerSessionMode.Stateless;
+#pragma warning restore MCP9006
     }
 
     /// <summary>

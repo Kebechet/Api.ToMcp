@@ -1,8 +1,11 @@
 using System.ComponentModel;
 using System.Globalization;
 using Api.ToMcp.Runtime.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Primitives;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -274,6 +277,18 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_LeavesOutAPropertyWhoseGetterIsNotPublic()
+    {
+        // MVC binds only the properties with a public getter, as the generator sends them; a value under the prefix that
+        // it never binds would still make it bind the parameter under the prefix.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new PrivateGetterFilter { City = "Brno", Secret = "s1", Code = "c1" });
+
+        Assert.Equal(new[] { "filter.City=Brno" }, queryParts);
+    }
+
+    [Fact]
     public void AddQueryValue_KeysAPropertyARecordsConstructorSets_ByTheNameItsConstructorParameterBindsUnder()
     {
         // MVC binds such a property through the constructor parameter, with the parameter's binding attributes, and
@@ -345,6 +360,261 @@ public class McpRequestValueFormatterTests
         Assert.Throws<InvalidOperationException>(() => McpRequestValueFormatter.AddQueryValue([], "items", items));
     }
 
+    [Fact]
+    public void AddQueryValue_LeavesOutAPropertyMvcBindsFromAHeaderAFormFieldAServiceOrTheBody()
+    {
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new SourcedFilter { City = "Brno", Tenant = "t1", Comment = "c1", Clock = TimeProvider.System, Payload = "p1", Internal = "i1", Required = "r1" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "n", new NeverBoundFilter { City = "Praha" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "k", new KeyedServiceRecord("Ostrava", TimeProvider.System));
+
+        Assert.Equal(new[] { "f.City=Brno", "f.Required=r1", "k.City=Ostrava" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_LeavesOutAPropertyMvcBindsByItsType_WithoutReadingIt()
+    {
+        // Reading a CancellationToken's WaitHandle creates an event nothing disposes, once per call.
+        using var cancellation = new CancellationTokenSource();
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new TypeBoundFilter
+        {
+            City = "Brno",
+            Token = cancellation.Token,
+            File = new UnreadableFormFile(),
+            Files = [new UnreadableFormFile()],
+            Collection = new FormFileCollection { new UnreadableFormFile() },
+            Form = new FormCollection(new Dictionary<string, StringValues> { ["a"] = "b" })
+        });
+
+        Assert.Equal(new[] { "f.City=Brno" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsNothing_ForAValueMvcBindsByItsType()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "token", cancellation.Token);
+        McpRequestValueFormatter.AddQueryValue(queryParts, "file", new UnreadableFormFile());
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new LooseFilter { City = "Brno", Anything = cancellation.Token });
+
+        Assert.Equal(new[] { "f.City=Brno" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsAValueOfATypeWithAModelBinder_AsOneValueUnderItsOwnKey()
+    {
+        // The binder reads f.Id; one key per property of the id leaves it at its default.
+        var id = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new BoundFilter { Id = new BoundId(id), Code = new CodedId(7), City = "Q" });
+
+        Assert.Equal(new[] { $"f.Id={id}", "f.Code=C-7", "f.City=Q" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsAValueOfATypeWithAModelBinder_AsOneValue_AsAParameterInANestedObjectAndInACollection()
+    {
+        var first = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var second = Guid.Parse("66666666-7777-8888-9999-000000000000");
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "id", new BoundId(first));
+        McpRequestValueFormatter.AddQueryValue(queryParts, "o", new BoundOuter { Inner = new BoundFilter { Id = new BoundId(second) }, Ids = [new BoundId(first), new BoundId(second)] });
+
+        Assert.Equal(new[] { $"id={first}", $"o.Inner.Id={second}", $"o.Ids={first}", $"o.Ids={second}" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsAPropertyWithAModelBinderOfItsOwn_AsOneValue()
+    {
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new PropertyBinderFilter { Range = new BoundRange(3, 5) });
+
+        Assert.Equal(new[] { "f.Range=3-5" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_RepeatsTheKeyOfACollectionWithAModelBinderOfItsOwn_ForEachItem()
+    {
+        // The binder reads every value under the key; one value would be the collection's ToString().
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "f", new BoundCollectionsFilter { Ids = [1, 2, 3], Names = ["a", "b"], Codes = new CodedList { "x", "y" }, City = "Brno" });
+
+        Assert.Equal(new[] { "f.Ids=1", "f.Ids=2", "f.Ids=3", "f.Names=a", "f.Names=b", "f.Codes=x", "f.Codes=y", "f.City=Brno" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsAPropertyARecordsConstructorSets_DespiteBindNeverOnTheRecord()
+    {
+        // MVC binds such a property as the constructor parameter, whose binding behavior only the parameter's attributes
+        // decide; [BindNever] on the record's class covers its other properties.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "r", new NeverBoundRecord("Brno") { Note = "n1" });
+
+        Assert.Equal(new[] { "r.City=Brno" }, queryParts);
+    }
+
+    [BindNever]
+    private sealed record NeverBoundRecord(string? City)
+    {
+        public string? Note { get; set; }
+    }
+
+    private sealed class BoundCollectionsFilter
+    {
+        [ModelBinder(typeof(NoOpBinder))]
+        public int[] Ids { get; set; } = [];
+
+        [ModelBinder(BinderType = typeof(NoOpBinder))]
+        public List<string> Names { get; set; } = [];
+
+        public CodedList? Codes { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    [ModelBinder(typeof(NoOpBinder))]
+    private sealed class CodedList : List<string>;
+
+    private sealed class SourcedFilter
+    {
+        public string? City { get; set; }
+
+        [FromHeader]
+        public string? Tenant { get; set; }
+
+        [FromForm]
+        public string? Comment { get; set; }
+
+        [FromServices]
+        public TimeProvider? Clock { get; set; }
+
+        [FromBody]
+        public string? Payload { get; set; }
+
+        [BindNever]
+        public string? Internal { get; set; }
+
+        [BindRequired]
+        public string? Required { get; set; }
+    }
+
+    [BindNever]
+    private sealed class NeverBoundFilter
+    {
+        public string? City { get; set; }
+    }
+
+    private sealed record KeyedServiceRecord(string? City, [FromKeyedServices("clock")] TimeProvider? Clock);
+
+    private sealed class TypeBoundFilter
+    {
+        public string? City { get; set; }
+
+        public CancellationToken Token { get; set; }
+
+        public IFormFile? File { get; set; }
+
+        public List<IFormFile> Files { get; set; } = [];
+
+        public IFormFileCollection? Collection { get; set; }
+
+        public IFormCollection? Form { get; set; }
+    }
+
+    private sealed class LooseFilter
+    {
+        public string? City { get; set; }
+
+        public object? Anything { get; set; }
+    }
+
+    /// <summary>
+    /// Throws on every member, so a test fails if the formatter reads into it.
+    /// </summary>
+    private sealed class UnreadableFormFile : IFormFile
+    {
+        public string ContentType => throw new InvalidOperationException();
+        public string ContentDisposition => throw new InvalidOperationException();
+        public IHeaderDictionary Headers => throw new InvalidOperationException();
+        public long Length => throw new InvalidOperationException();
+        public string Name => throw new InvalidOperationException();
+        public string FileName => throw new InvalidOperationException();
+        public void CopyTo(Stream target) => throw new InvalidOperationException();
+        public Task CopyToAsync(Stream target, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
+        public Stream OpenReadStream() => throw new InvalidOperationException();
+    }
+
+    private sealed class NoOpBinder : IModelBinder
+    {
+        public Task BindModelAsync(ModelBindingContext bindingContext) => Task.CompletedTask;
+    }
+
+    [ModelBinder(typeof(NoOpBinder))]
+    private readonly record struct BoundId(Guid Value)
+    {
+        public override string ToString()
+        {
+            return Value.ToString();
+        }
+    }
+
+    [ModelBinder(typeof(NoOpBinder))]
+    [TypeConverter(typeof(CodedIdConverter))]
+    private readonly record struct CodedId(int Value);
+
+    /// <summary>
+    /// Converts only to string, so MVC does not count the type as simple.
+    /// </summary>
+    private sealed class CodedIdConverter : TypeConverter
+    {
+        public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
+        {
+            return destinationType == typeof(string) && value is CodedId id
+                ? $"C-{id.Value}"
+                : base.ConvertTo(context, culture, value, destinationType);
+        }
+    }
+
+    private sealed class BoundFilter
+    {
+        public BoundId Id { get; set; }
+
+        public CodedId? Code { get; set; }
+
+        public string? City { get; set; }
+    }
+
+    private sealed class BoundOuter
+    {
+        public BoundFilter? Inner { get; set; }
+
+        public List<BoundId> Ids { get; set; } = [];
+    }
+
+    private sealed record BoundRange(int From, int To)
+    {
+        public override string ToString()
+        {
+            return $"{From}-{To}";
+        }
+    }
+
+    private sealed class PropertyBinderFilter
+    {
+        [ModelBinder(typeof(NoOpBinder))]
+        public BoundRange? Range { get; set; }
+    }
+
     private sealed class SearchFilter
     {
         public string? City { get; set; }
@@ -410,6 +680,15 @@ public class McpRequestValueFormatterTests
     private sealed class Label
     {
         public string? Text { get; set; }
+    }
+
+    private sealed class PrivateGetterFilter
+    {
+        public string? City { get; set; }
+
+        public string? Secret { private get; set; }
+
+        public string? Code { internal get; set; }
     }
 
     private sealed class AliasedFilter

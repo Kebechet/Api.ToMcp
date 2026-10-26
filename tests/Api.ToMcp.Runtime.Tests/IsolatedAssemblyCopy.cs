@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Loader;
 
@@ -10,7 +11,7 @@ namespace Api.ToMcp.Runtime.Tests;
 /// </summary>
 internal sealed class IsolatedAssemblyCopy : IDisposable
 {
-    private static readonly string RootPath = Path.Combine(Path.GetTempPath(), "Api.ToMcp.Tests");
+    internal static readonly string RootPath = Path.Combine(Path.GetTempPath(), "Api.ToMcp.Tests");
 
     private readonly string _directoryPath;
     private readonly AssemblyLoadContext _loadContext;
@@ -48,7 +49,8 @@ internal sealed class IsolatedAssemblyCopy : IDisposable
 
     /// <summary>
     /// A loaded copy stays mapped, so undeletable, until its test process ends; each run removes what earlier runs
-    /// left behind. Folders of the current run are skipped: a parallel test may be about to load from one.
+    /// left behind. Folders of a process that still runs are skipped: in this run a parallel test may be about to load
+    /// from one, and another test process, such as the same suite run from a second worktree, may be too.
     /// </summary>
     private static void DeleteCopiesOfEndedRuns()
     {
@@ -57,13 +59,35 @@ internal sealed class IsolatedAssemblyCopy : IDisposable
             return;
         }
 
-        var currentRunPrefix = $"{Environment.ProcessId}.";
-        var earlierRunDirectoryPaths = Directory
+        var endedRunDirectoryPaths = Directory
             .GetDirectories(RootPath)
-            .Where(x => !Path.GetFileName(x).StartsWith(currentRunPrefix, StringComparison.Ordinal));
-        foreach (var earlierRunDirectoryPath in earlierRunDirectoryPaths)
+            .Where(x => !IsOfARunningProcess(Path.GetFileName(x)));
+        foreach (var endedRunDirectoryPath in endedRunDirectoryPaths)
         {
-            TryDeleteDirectory(earlierRunDirectoryPath);
+            TryDeleteDirectory(endedRunDirectoryPath);
+        }
+    }
+
+    /// <summary>
+    /// Whether the folder, named <c>&lt;process id&gt;.&lt;guid&gt;</c>, belongs to a process that still runs. A process
+    /// that took the id of an ended run keeps that run's folder until it ends too.
+    /// </summary>
+    private static bool IsOfARunningProcess(string directoryName)
+    {
+        var processIdEnd = directoryName.IndexOf('.');
+        if (processIdEnd < 0 || !int.TryParse(directoryName[..processIdEnd], out var processId))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 

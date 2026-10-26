@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using Api.ToMcp.Generator.Models;
@@ -18,13 +18,29 @@ namespace Api.ToMcp.Generator.Emitting
 
         private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
         private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
+        private const string NullLiteral = "null";
+        private const string RouteVariablePrefix = "route";
+        private const string PathSeparator = "/";
+        private const string ComplexSegmentSeparator = ".";
+        private const char NextLine = (char)0x0085;
+        private const char LineSeparator = (char)0x2028;
+        private const char ParagraphSeparator = (char)0x2029;
 
         private static readonly McpScopeModel[] SingleScopes = [McpScopeModel.Read, McpScopeModel.Write, McpScopeModel.Delete];
 
         public static string Emit(ActionInfoModel action, GeneratorConfigModel config, string? overrideClassName = null)
         {
-            var toolName = FormatToolName(action, config.Naming);
-            var className = overrideClassName ?? action.ToolClassName;
+            return Emit(action, config.Naming, config.StructuredOutput, overrideClassName ?? action.ToolClassName);
+        }
+
+        public static string Emit(ToolSourceModel tool)
+        {
+            return Emit(tool.Action, tool.Naming, tool.StructuredOutput, tool.ClassName);
+        }
+
+        private static string Emit(ActionInfoModel action, NamingConfigModel naming, bool structuredOutput, string className)
+        {
+            var toolName = FormatToolName(action, naming);
             var description = action.CustomDescription ?? action.XmlDocSummary ?? $"Invokes {action.ControllerName}.{action.Name}";
 
             var sb = new StringBuilder();
@@ -46,7 +62,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine($"    public static class {className}");
             sb.AppendLine("    {");
 
-            EmitToolMethod(sb, action, toolName, description, hasOutputSchema: config.StructuredOutput && action.OutputSchemaType != null);
+            EmitToolMethod(sb, action, toolName, description, hasOutputSchema: structuredOutput && action.OutputSchemaType != null);
 
             sb.AppendLine("    }");
             sb.AppendLine("}");
@@ -68,20 +84,26 @@ namespace Api.ToMcp.Generator.Emitting
             // The MCP server injects the request's CancellationToken into any tool method that
             // declares one (bound by type, so it is not surfaced as a tool input parameter).
             // Emitted last so its default value doesn't violate parameter ordering.
-            var paramDecls = new List<string> { "IMcpHttpInvoker invoker" };
-            paramDecls.AddRange(parameters.Select(FormatParameterDeclaration));
-            paramDecls.Add("System.Threading.CancellationToken cancellationToken = default");
+            // MCP passes arguments by name, so the required parameters come first, wherever the action declares them:
+            // a nullable one without a default is optional, and C# wants every optional parameter after the required ones.
+            var names = new ToolNames(parameters);
+            var paramDecls = new List<string> { $"IMcpHttpInvoker {names.Invoker}" };
+            paramDecls.AddRange(parameters.Where(x => !IsOptional(x)).Concat(parameters.Where(IsOptional)).Select(FormatParameterDeclaration));
+            paramDecls.Add($"System.Threading.CancellationToken {names.CancellationToken} = default");
 
             var annotations = FormatAnnotationArguments(action.Annotations);
             var title = FormatTitleArgument(action.Title);
+
+            // A ToolName or a toolNameFormat is any string, so the name is written as an escaped C# literal.
+            var toolNameLiteral = SymbolDisplay.FormatLiteral(toolName, quote: true);
             if (hasOutputSchema)
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\"{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
+                sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
                 sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
             }
             else
             {
-                sb.AppendLine($"        [McpServerTool(Name = \"{toolName}\"{title}, {annotations})]");
+                sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, {annotations})]");
             }
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             // A tool with an output schema returns the parsed body on success, for the SDK to turn into structured content.
@@ -99,8 +121,8 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        )");
             sb.AppendLine("        {");
 
-            EmitRouteBuilding(sb, action, parameters);
-            EmitHttpCall(sb, action, parameters, hasOutputSchema);
+            EmitRouteBuilding(sb, action, parameters, names);
+            EmitHttpCall(sb, action, parameters, hasOutputSchema, names);
 
             sb.AppendLine("        }");
         }
@@ -108,89 +130,27 @@ namespace Api.ToMcp.Generator.Emitting
         private static void EmitRouteBuilding(
             StringBuilder sb,
             ActionInfoModel action,
-            List<ParameterInfoModel> parameters)
+            List<ParameterInfoModel> parameters,
+            ToolNames names)
         {
-            var route = action.RouteTemplate;
-
-            // Extract all route placeholders from the template
-            var placeholderRegex = new System.Text.RegularExpressions.Regex(@"\{(\w+)(:[^}]+)?\??\}");
-            var matches = placeholderRegex.Matches(route);
-            var routePlaceholders = matches.Cast<System.Text.RegularExpressions.Match>()
-                .Select(m => m.Groups[1].Value)
-                .Distinct()
-                .ToList();
-
-            // Build mapping from placeholder to source expression
-            var placeholderSources = new Dictionary<string, (string expression, string type, bool isNullable, string varName)>();
-
-            // Of a parameter bound from the route, query and form values, MVC reads a [FromRoute] property only from the
-            // route value of its name, and only when the parameter carries no prefix, whichever parameter fills that route
-            // value. An unattributed property it reads from that route value without the prefix too, but from its prefixed
-            // key in the query string with it, so its parameter keeps the prefix unless that property fills the route
-            // value. A property in this set is sent only in the route, and the other properties of its parameter under
-            // their own names.
-            var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action)).ToList();
-            var routeProperties = new HashSet<PropertyInfoModel>(valueProviderParams
-                .SelectMany(p => p.Properties)
-                .Where(prop => prop.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(prop, placeholder))));
-
-            foreach (var placeholder in routePlaceholders)
-            {
-                // Check if direct parameter match (case-insensitive)
-                var directParam = parameters.FirstOrDefault(p =>
-                    string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase));
-
-                if (directParam != null)
-                {
-                    placeholderSources[placeholder] = (EscapeIdentifier(directParam.Name), directParam.Type, directParam.IsNullable, directParam.Name);
-                }
-                else
-                {
-                    // Else a property: of a [FromRoute] or [FromBody] parameter first, then of one bound from the route,
-                    // query and form values, a [FromRoute] one before an unattributed one. Failing those, any property of
-                    // the placeholder's name fills it, which MVC reads from elsewhere but the URL needs a segment for.
-                    var propertySource = parameters
-                        .Where(p => p.Source is ParameterSourceModel.Route or ParameterSourceModel.Body)
-                        .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => FillsPlaceholder(p, prop, placeholder))))
-                        .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
-                            prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
-                        .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
-                            prop.Source == ParameterSourceModel.Auto && ReadsRouteValue(prop, placeholder)))))
-                        .Concat(parameters.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => IsNamedBy(prop, placeholder)))))
-                        .FirstOrDefault(x => x.Property != null);
-
-                    if (propertySource.Property != null)
-                    {
-                        placeholderSources[placeholder] = GetRouteValueSource(propertySource.Parameter, propertySource.Property);
-
-                        if (valueProviderParams.Contains(propertySource.Parameter) && ReadsRouteValue(propertySource.Property, placeholder))
-                        {
-                            routeProperties.Add(propertySource.Property);
-                        }
-                    }
-                }
-            }
+            var routeValues = ResolveRouteValues(action, parameters);
 
             // Generate route variables
-            foreach (var kvp in placeholderSources)
+            var routeVariables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var part in routeValues.Parts.Where(x => x.IsParameter))
             {
-                var (expression, _, _, varName) = kvp.Value;
+                if (routeVariables.ContainsKey(part.Text) || !routeValues.Sources.TryGetValue(part.Text, out var source))
+                    continue;
 
-                sb.AppendLine($"            var route{varName} = System.Uri.EscapeDataString({RequestValueFormatter}.Format({expression}));");
+                var routeVariable = names.Declare(RouteVariablePrefix + source.VariableName);
+                routeVariables[part.Text] = routeVariable;
+
+                // A catch-all value spans path segments, which MVC reads back with their slashes.
+                var keptSlashes = part.IsCatchAll ? ".Replace(\"%2F\", \"/\")" : "";
+                sb.AppendLine($"            var {routeVariable} = {names.SystemNamespace}.Uri.EscapeDataString({RequestValueFormatter}.Format({source.Expression})){keptSlashes};");
             }
 
-            // Convert route template - replace placeholders with generated variable names
-            var convertedRoute = route;
-            foreach (var kvp in placeholderSources)
-            {
-                var placeholder = kvp.Key;
-                var varName = kvp.Value.varName;
-                var pattern = @"\{" + placeholder + @"(:[^}]+)?\??\}";
-                convertedRoute = System.Text.RegularExpressions.Regex.Replace(
-                    convertedRoute, pattern, "{route" + varName + "}",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            }
-            sb.AppendLine($"            var route = $\"{convertedRoute}\";");
+            sb.AppendLine($"            var {names.Route} = {FormatRouteString(routeValues.Parts, routeVariables)};");
 
             // Build query string. MVC binds a simple type that names no route value from the query string on every
             // HTTP method: [ApiController] infers [FromQuery] for it, and in a controller without [ApiController] the
@@ -199,11 +159,19 @@ namespace Api.ToMcp.Generator.Emitting
             var queryValues = new List<(string Key, string Expression)>();
             foreach (var param in parameters)
             {
-                var isNamedByRoute = RouteContainsParameter(route, param.Name);
-                if (param.Source == ParameterSourceModel.Query ||
+                var isNamedByRoute = routeValues.Template.HasParameter(param.Name);
+                if (param.Source == ParameterSourceModel.Query && param.Properties.Any(x => routeValues.RouteProperties.Contains((param, x))))
+                {
+                    queryValues.AddRange(GetQueryValues(param, routeValues.RouteProperties));
+                }
+                else if (param.Source == ParameterSourceModel.Custom && !isNamedByRoute)
+                {
+                    queryValues.Add((param.QueryName ?? param.Name, GetModelBinderValue(param)));
+                }
+                else if (param.Source == ParameterSourceModel.Query ||
                     (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && param.IsSimpleType))
                 {
-                    queryValues.Add((param.QueryName ?? param.Name, EscapeIdentifier(param.Name)));
+                    queryValues.Add((param.QueryName ?? param.Name, GetSentValue(param)));
                 }
                 else if (param.Source == ParameterSourceModel.Route)
                 {
@@ -215,22 +183,239 @@ namespace Api.ToMcp.Generator.Emitting
                 }
                 else if (param.Source == ParameterSourceModel.Auto && !isNamedByRoute && IsBoundFromValueProviders(param, action))
                 {
-                    queryValues.AddRange(GetQueryValues(param, routeProperties));
+                    queryValues.AddRange(GetQueryValues(param, routeValues.RouteProperties));
                 }
             }
 
             if (queryValues.Any())
             {
-                sb.AppendLine("            var queryParts = new System.Collections.Generic.List<string>();");
+                sb.AppendLine($"            var {names.QueryParts} = new {names.SystemNamespace}.Collections.Generic.List<string>();");
                 foreach (var (key, expression) in queryValues)
                 {
                     // A [FromQuery(Name)] alias is any string, so it is written as an escaped C# literal.
                     var queryKeyLiteral = SymbolDisplay.FormatLiteral(key, quote: true);
-                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue(queryParts, {queryKeyLiteral}, {expression});");
+                    sb.AppendLine($"            {RequestValueFormatter}.AddQueryValue({names.QueryParts}, {queryKeyLiteral}, {expression});");
                 }
-                sb.AppendLine("            if (queryParts.Count > 0)");
-                sb.AppendLine("                route += \"?\" + string.Join(\"&\", queryParts);");
+                sb.AppendLine($"            if ({names.QueryParts}.Count > 0)");
+                sb.AppendLine($"                {names.Route} += \"?\" + string.Join(\"&\", {names.QueryParts});");
             }
+        }
+
+        /// <summary>
+        /// Why the tool cannot build the URL MVC serves the action at, as a clause of MCP009's message, or null when it can.
+        /// </summary>
+        internal static string? GetUnbuildableRouteReason(ActionInfoModel action)
+        {
+            if (action.RouteProblem != null)
+            {
+                return action.RouteProblem;
+            }
+
+            var parameters = action.Parameters
+                .Where(p => p.Source != ParameterSourceModel.Services)
+                .ToList();
+            var unfilledName = ResolveRouteValues(action, parameters).UnfilledName;
+
+            return unfilledName is null
+                ? null
+                : $"no parameter or property fills the route value '{{{unfilledName}}}' of {action.HttpMethod} {action.RouteTemplate}";
+        }
+
+        /// <summary>
+        /// What fills each route value of the action's URL, and the URL's parts without the optional route values at its end
+        /// that nothing fills, which MVC serves the action without.
+        /// </summary>
+        private static RouteValues ResolveRouteValues(ActionInfoModel action, List<ParameterInfoModel> parameters)
+        {
+            var template = RouteTemplate.Parse(action.RouteTemplate);
+            var routePlaceholders = template.ParameterNames;
+
+            // Build mapping from placeholder to source expression
+            var placeholderSources = new Dictionary<string, (string Expression, string VariableName)>(StringComparer.OrdinalIgnoreCase);
+
+            // Of a parameter bound from the route, query and form values, MVC reads a [FromRoute] property only from the
+            // route value of its name, and only when the parameter carries no prefix, whichever parameter fills that route
+            // value. An unattributed property it reads from that route value without the prefix too, but from its prefixed
+            // key in the query string with it, so its parameter keeps the prefix unless that property fills the route
+            // value. A property in this set is sent only in the route, and the other properties of its parameter under
+            // their own names. A [FromQuery] parameter that names no prefix of its own MVC binds the same way from the query
+            // string, where only a [FromRoute] property reads the route.
+            var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action)).ToList();
+            var unprefixableParams = parameters.Where(p => FallsBackToNoPrefix(p, action)).ToList();
+            var routeProperties = new HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)>(unprefixableParams
+                .SelectMany(p => p.Properties.Select(prop => (Parameter: p, Property: prop)))
+                .Where(x => x.Property.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(x.Property, placeholder))));
+
+            foreach (var placeholder in routePlaceholders)
+            {
+                // Check if direct parameter match (case-insensitive)
+                var directParam = parameters.FirstOrDefault(p =>
+                    string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase));
+
+                if (directParam != null)
+                {
+                    // An optional route value at the end of the URL, without a default of the route's own, MVC binds as
+                    // the action's default when the URL leaves it out, as it does a query value. Only a whole segment is
+                    // left out so: of {name}.{ext?}, the tool sends the value it is given, and leaves out the dot only
+                    // with an empty one.
+                    var lastPart = template.Parts.Count == 0 ? null : template.Parts[template.Parts.Count - 1];
+                    var partBefore = template.Parts.Count < 2 ? null : template.Parts[template.Parts.Count - 2];
+                    var canBeLeftOut = lastPart is { IsParameter: true, IsOptional: true, HasDefaultValue: false } &&
+                        string.Equals(lastPart.Text, placeholder, StringComparison.OrdinalIgnoreCase) &&
+                        partBefore is { IsParameter: false } && partBefore.Text.EndsWith(PathSeparator, StringComparison.Ordinal);
+                    placeholderSources[placeholder] = (canBeLeftOut ? GetSentValue(directParam) : EscapeIdentifier(directParam.Name), directParam.Name);
+                }
+                else
+                {
+                    // Else a property MVC reads from the route value: of a [FromRoute] parameter first, then of one bound
+                    // from the route, query and form values, a [FromRoute] one before an unattributed one. Failing those, a
+                    // property of the placeholder's name fills it, which MVC reads from elsewhere but the URL needs a
+                    // segment for: a [FromBody] parameter's, which MVC reads from the body, first, then any.
+                    var propertySource = parameters
+                        .Where(p => p.Source == ParameterSourceModel.Route)
+                        .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => ReadsRouteValue(prop, placeholder))))
+                        .Concat(unprefixableParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                            prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
+                        .Concat(valueProviderParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                            prop.Source == ParameterSourceModel.Auto && ReadsRouteValue(prop, placeholder)))))
+                        .Concat(parameters
+                            .Where(p => p.Source == ParameterSourceModel.Body)
+                            .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                                string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase)))))
+                        .Concat(parameters.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => IsNamedBy(prop, placeholder)))))
+                        .FirstOrDefault(x => x.Property != null);
+
+                    if (propertySource.Property != null)
+                    {
+                        placeholderSources[placeholder] = GetRouteValueSource(propertySource.Parameter, propertySource.Property);
+
+                        if (valueProviderParams.Contains(propertySource.Parameter) && ReadsRouteValue(propertySource.Property, placeholder))
+                        {
+                            routeProperties.Add((propertySource.Parameter, propertySource.Property));
+                        }
+                    }
+                }
+            }
+
+            var parts = template.Parts.ToList();
+            RemoveUnfilledOptionalEnd(parts, placeholderSources);
+
+            return new RouteValues(
+                template,
+                parts,
+                placeholderSources,
+                routeProperties,
+                parts.FirstOrDefault(x => x.IsParameter && !placeholderSources.ContainsKey(x.Text))?.Text);
+        }
+
+        /// <summary>
+        /// Leaves out the optional route values nothing fills at the end of the URL, each with the separator before it:
+        /// MVC serves <c>z/{id?}</c> at <c>z</c>, and <c>{name}.{ext?}</c> at <c>{name}</c>.
+        /// </summary>
+        private static void RemoveUnfilledOptionalEnd(List<RouteTemplatePart> parts, Dictionary<string, (string Expression, string VariableName)> sources)
+        {
+            while (parts.Count > 0 && parts[parts.Count - 1] is { IsParameter: true, IsOptional: true } last && !sources.ContainsKey(last.Text))
+            {
+                parts.RemoveAt(parts.Count - 1);
+                if (parts.Count == 0 || parts[parts.Count - 1].IsParameter)
+                    continue;
+
+                var text = parts[parts.Count - 1].Text;
+                if (!text.EndsWith(PathSeparator, StringComparison.Ordinal) && !text.EndsWith(ComplexSegmentSeparator, StringComparison.Ordinal))
+                    break;
+
+                parts.RemoveAt(parts.Count - 1);
+                if (text.Length > 1)
+                    parts.Add(RouteTemplatePart.Literal(text.Substring(0, text.Length - 1)));
+            }
+        }
+
+        /// <summary>
+        /// Whether the part is the dot between a route value and an optional one that ends their segment, as in
+        /// <c>{name}.{ext?}</c>: the only text MVC lets come before an optional route value in a segment of several.
+        /// </summary>
+        private static bool IsOptionalSeparator(IReadOnlyList<RouteTemplatePart> parts, int index)
+        {
+            return parts[index] is { IsParameter: false, Text: ComplexSegmentSeparator } &&
+                index > 0 && parts[index - 1].IsParameter &&
+                index + 1 < parts.Count && parts[index + 1] is { IsParameter: true, IsOptional: true } &&
+                (index + 2 == parts.Count || parts[index + 2].Text.StartsWith(PathSeparator, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// The URL as an interpolated string of the route's literal text and the variables of its route values. The text
+        /// is escaped as a C# literal, its braces doubled, so any template compiles.
+        /// </summary>
+        private static string FormatRouteString(IReadOnlyList<RouteTemplatePart> parts, Dictionary<string, string> routeVariables)
+        {
+            var route = new StringBuilder();
+            for (var i = 0; i < parts.Count; i++)
+            {
+                var part = parts[i];
+
+                // The generator gives no tool to an action with a route value nothing fills, so every one has a variable.
+                if (part.IsParameter)
+                {
+                    if (routeVariables.TryGetValue(part.Text, out var routeVariable))
+                        route.Append('{').Append(routeVariable).Append('}');
+
+                    continue;
+                }
+
+                // MVC matches the dot before an optional route value that ends a segment of several only together with a
+                // value: it serves {name}.{ext?} at report, and answers report. with 404.
+                if (IsOptionalSeparator(parts, i) && routeVariables.TryGetValue(parts[i + 1].Text, out var optionalVariable))
+                {
+                    route.Append("{(").Append(optionalVariable).Append(".Length == 0 ? \"\" : \"").Append(ComplexSegmentSeparator).Append("\")}");
+                    continue;
+                }
+
+                var literal = SymbolDisplay.FormatLiteral(part.Text, quote: true);
+                route.Append(literal.Substring(1, literal.Length - 2).Replace("{", "{{").Replace("}", "}}"));
+            }
+
+            return "$\"" + (route.Length == 0 ? PathSeparator : route.ToString()) + "\"";
+        }
+
+        /// <summary>
+        /// The value of a parameter the tool sends as a query value, or as an optional route value at the end of the URL:
+        /// nothing when it equals the action's default. MVC applies that default itself to a value it is not sent, and it
+        /// may refuse the same value as text, such as an enum value that no member has.
+        /// </summary>
+        private static string GetSentValue(ParameterInfoModel parameter)
+        {
+            var name = EscapeIdentifier(parameter.Name);
+
+            // MVC answers a parameter it requires a value for with 400 when it is not sent, whatever its default. One it may
+            // require is sent too, unless MVC refuses its default as text, which then fails for sure.
+            if (parameter.IsBindingRequired || (parameter.IsBindingRequirementUnknown && !parameter.IsDefaultRefusedAsText))
+            {
+                return name;
+            }
+
+            return parameter.DefaultValueExpression is { } defaultValue && defaultValue != NullLiteral
+                ? $"{name} == {defaultValue} ? null : {name}"
+                : name;
+        }
+
+        /// <summary>
+        /// The value of a parameter with a model binder of its own, which reads one value under the parameter's model name:
+        /// written whole, as a route value is, rather than property by property, which no binder reads. A collection's
+        /// items repeat the key, as MVC hands such a binder all the values of a key.
+        /// </summary>
+        private static string GetModelBinderValue(ParameterInfoModel parameter)
+        {
+            if (parameter.IsCollection)
+            {
+                return GetSentValue(parameter);
+            }
+
+            var name = EscapeIdentifier(parameter.Name);
+            var formattedValue = $"{RequestValueFormatter}.Format({name})";
+
+            return parameter.IsValueType && !parameter.IsNullable && !parameter.HasDefaultValue
+                ? formattedValue
+                : $"{name} is null ? null : {formattedValue}";
         }
 
         /// <summary>
@@ -246,39 +431,40 @@ namespace Api.ToMcp.Generator.Emitting
         }
 
         /// <summary>
-        /// The query values of a parameter bound from the route, query and form values. MVC reads its properties under the
+        /// Whether MVC binds a complex parameter under its name as a prefix only when a value carries it, and under the
+        /// names of its properties otherwise (<c>ParameterBinder</c>): one bound from the route, query and form values, and a
+        /// <c>[FromQuery]</c> one without a <c>Name</c>, which it always binds under that name.
+        /// </summary>
+        private static bool FallsBackToNoPrefix(ParameterInfoModel parameter, ActionInfoModel action)
+        {
+            return IsBoundFromValueProviders(parameter, action) ||
+                (parameter.Source == ParameterSourceModel.Query && parameter.QueryName is null && !parameter.IsSimpleType);
+        }
+
+        /// <summary>
+        /// The query values of a parameter bound from the route, query and form values, or from the query string alone. MVC reads its properties under the
         /// parameter's name as a prefix (<c>filter.City</c>) when a value carries it, and under their own names otherwise.
         /// Only the latter lets a property fill a route value, as no route value is named <c>filter.Id</c>, so a parameter
         /// with such a property sends the others under their own names, each where MVC reads it: a <c>[FromQuery]</c> one
         /// or one without a binding attribute in the query string, any other not at all.
         /// </summary>
-        private static IEnumerable<(string Key, string Expression)> GetQueryValues(ParameterInfoModel parameter, HashSet<PropertyInfoModel> routeProperties)
+        private static IEnumerable<(string Key, string Expression)> GetQueryValues(
+            ParameterInfoModel parameter,
+            HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties)
         {
-            if (!parameter.Properties.Any(routeProperties.Contains))
+            if (!parameter.Properties.Any(x => routeProperties.Contains((parameter, x))))
             {
                 return new[] { (parameter.Name, EscapeIdentifier(parameter.Name)) };
             }
 
             return parameter.Properties
-                .Where(x => x.Source is ParameterSourceModel.Auto or ParameterSourceModel.Query && !routeProperties.Contains(x))
+                .Where(x => x.Source is ParameterSourceModel.Auto or ParameterSourceModel.Query && !routeProperties.Contains((parameter, x)))
                 .Select(x => (GetBinderModelName(x), GetPropertyAccess(parameter, x)));
         }
 
-        private static (string expression, string type, bool isNullable, string varName) GetRouteValueSource(ParameterInfoModel parameter, PropertyInfoModel property)
+        private static (string Expression, string VariableName) GetRouteValueSource(ParameterInfoModel parameter, PropertyInfoModel property)
         {
-            return (GetPropertyAccess(parameter, property), property.Type, property.IsNullable, $"{parameter.Name}_{property.Name}");
-        }
-
-        /// <summary>
-        /// Whether a property fills a route placeholder. A [FromBody] parameter's does by its name, as MVC reads it from
-        /// the body and the route value only completes the URL. Any other's does when MVC reads it from the route values
-        /// under the placeholder's name.
-        /// </summary>
-        private static bool FillsPlaceholder(ParameterInfoModel parameter, PropertyInfoModel property, string placeholder)
-        {
-            return parameter.Source == ParameterSourceModel.Body
-                ? string.Equals(property.Name, placeholder, StringComparison.OrdinalIgnoreCase)
-                : ReadsRouteValue(property, placeholder);
+            return (GetPropertyAccess(parameter, property), $"{parameter.Name}_{property.Name}");
         }
 
         /// <summary>
@@ -327,17 +513,21 @@ namespace Api.ToMcp.Generator.Emitting
             StringBuilder sb,
             ActionInfoModel action,
             List<ParameterInfoModel> parameters,
-            bool hasOutputSchema)
+            bool hasOutputSchema,
+            ToolNames names)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
+            var invoker = names.Invoker;
+            var route = names.Route;
+            var cancellationToken = names.CancellationToken;
 
-            sb.AppendLine($"            await invoker.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope)}, cancellationToken);");
+            sb.AppendLine($"            await {invoker}.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope, names.McpScope)}, {cancellationToken});");
 
             string invokerCall;
             switch (action.HttpMethod)
             {
                 case HttpMethodNames.Get:
-                    invokerCall = "await invoker.GetAsync(route, cancellationToken)";
+                    invokerCall = $"await {invoker}.GetAsync({route}, {cancellationToken})";
                     break;
                 case HttpMethodNames.Post:
                 case HttpMethodNames.Put:
@@ -345,12 +535,12 @@ namespace Api.ToMcp.Generator.Emitting
                     var invokerMethod = action.HttpMethod == HttpMethodNames.Post ? "PostAsync" : action.HttpMethod == HttpMethodNames.Put ? "PutAsync" : "PatchAsync";
                     if (bodyParam != null)
                     {
-                        sb.AppendLine($"            var bodyJson = JsonSerializer.Serialize({EscapeIdentifier(bodyParam.Name)});");
+                        sb.AppendLine($"            var {names.BodyJson} = {names.JsonSerializer}.Serialize({EscapeIdentifier(bodyParam.Name)});");
                     }
-                    invokerCall = $"await invoker.{invokerMethod}(route, {(bodyParam != null ? "bodyJson" : "null")}, cancellationToken)";
+                    invokerCall = $"await {invoker}.{invokerMethod}({route}, {(bodyParam != null ? names.BodyJson : NullLiteral)}, {cancellationToken})";
                     break;
                 case HttpMethodNames.Delete:
-                    invokerCall = "await invoker.DeleteAsync(route, cancellationToken)";
+                    invokerCall = $"await {invoker}.DeleteAsync({route}, {cancellationToken})";
                     break;
                 default:
                     return;
@@ -366,11 +556,11 @@ namespace Api.ToMcp.Generator.Emitting
         /// A combination of named flags is written as <c>McpScope.Read | McpScope.Write</c>, and a value with bits no
         /// flag names as a cast, so the generated tool always compiles.
         /// </summary>
-        private static string GetScopeExpression(McpScopeModel scope)
+        private static string GetScopeExpression(McpScopeModel scope, string mcpScope)
         {
             if (Enum.IsDefined(typeof(McpScopeModel), scope))
             {
-                return $"McpScope.{scope}";
+                return $"{mcpScope}.{scope}";
             }
 
             var includedFlags = SingleScopes
@@ -379,10 +569,10 @@ namespace Api.ToMcp.Generator.Emitting
             var includedBits = includedFlags.Aggregate(McpScopeModel.None, (combined, x) => combined | x);
             if (includedBits != scope)
             {
-                return $"(McpScope){(int)scope}";
+                return $"({mcpScope}){(int)scope}";
             }
 
-            return string.Join(" | ", includedFlags.Select(x => $"McpScope.{x}"));
+            return string.Join(" | ", includedFlags.Select(x => $"{mcpScope}.{x}"));
         }
 
         private static string FormatAnnotationArguments(ToolAnnotationsModel annotations)
@@ -406,7 +596,10 @@ namespace Api.ToMcp.Generator.Emitting
             return value ? "true" : "false";
         }
 
-        public static string EmitRegistration(ImmutableArray<ActionInfoModel> actions, Dictionary<string, int> seenToolClassNames)
+        /// <summary>
+        /// The registration of the tool classes, by their names as <see cref="GetUniqueToolClassNames"/> gives them.
+        /// </summary>
+        public static string EmitRegistration(IEnumerable<string> toolClassNames)
         {
             var sb = new StringBuilder();
 
@@ -420,26 +613,9 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        public static readonly System.Type[] ToolTypes = new System.Type[]");
             sb.AppendLine("        {");
 
-            // Track counts to generate matching unique names
-            var currentCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-
-            foreach (var action in actions)
+            foreach (var toolClassName in toolClassNames)
             {
-                var baseClassName = action.ToolClassName;
-                string uniqueClassName;
-
-                if (currentCounts.TryGetValue(baseClassName, out var count))
-                {
-                    currentCounts[baseClassName] = count + 1;
-                    uniqueClassName = $"{baseClassName}_{count + 1}";
-                }
-                else
-                {
-                    currentCounts[baseClassName] = 1;
-                    uniqueClassName = baseClassName;
-                }
-
-                sb.AppendLine($"            typeof({uniqueClassName}),");
+                sb.AppendLine($"            typeof({toolClassName}),");
             }
 
             sb.AppendLine("        };");
@@ -447,6 +623,33 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("}");
 
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// The class name of each action's tool, in the actions' order: its <see cref="ActionInfoModel.ToolClassName"/>, with
+        /// a number from 2 up for each further action with the same one, such as an overload.
+        /// </summary>
+        internal static List<string> GetUniqueToolClassNames(IEnumerable<ActionInfoModel> actions)
+        {
+            var uniqueClassNames = new List<string>();
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            foreach (var action in actions)
+            {
+                var baseClassName = action.ToolClassName;
+                if (counts.TryGetValue(baseClassName, out var count))
+                {
+                    counts[baseClassName] = count + 1;
+                    uniqueClassNames.Add($"{baseClassName}_{count + 1}");
+                }
+                else
+                {
+                    counts[baseClassName] = 1;
+                    uniqueClassNames.Add(baseClassName);
+                }
+            }
+
+            return uniqueClassNames;
         }
 
         internal static string FormatToolName(ActionInfoModel action, NamingConfigModel naming)
@@ -466,47 +669,35 @@ namespace Api.ToMcp.Generator.Emitting
                 .Replace("{Action}", actionName);
         }
 
+        /// <summary>
+        /// Whether the tool declares the parameter with a default value, which the MCP SDK leaves out of the input
+        /// schema's <c>required</c>: the action's own default, else <c>null</c> for a nullable type.
+        /// </summary>
+        private static bool IsOptional(ParameterInfoModel param)
+        {
+            return param.HasDefaultValue || param.IsNullable;
+        }
+
         private static string FormatParameterDeclaration(ParameterInfoModel param)
         {
             var type = param.Type;
 
-            // Make type nullable if it has a default value but isn't already nullable
-            if (param.HasDefaultValue && !param.IsNullable && !type.EndsWith("?"))
+            // A struct with a default is made nullable, so a call can leave it out and the action falls back to its own
+            // default; a struct's default(T) has no constant, so it becomes null. A reference type whose default is null
+            // is annotated, as a nullable-oblivious project declares it without the annotation.
+            if (param.HasDefaultValue && !param.IsNullable && (param.IsValueType || param.DefaultValueExpression == NullLiteral))
             {
-                // For value types, make them nullable
-                if (IsValueType(type))
-                {
-                    type += "?";
-                }
+                type += "?";
             }
 
             var defaultPart = "";
             if (param.HasDefaultValue)
             {
-                if (param.DefaultValue == null)
-                {
-                    defaultPart = " = null";
-                }
-                else if (param.DefaultValue is string s)
-                {
-                    defaultPart = $" = \"{s}\"";
-                }
-                else if (param.DefaultValue is bool b)
-                {
-                    defaultPart = $" = {(b ? "true" : "false")}";
-                }
-                else if (param.DefaultValue is char c)
-                {
-                    defaultPart = $" = '{c}'";
-                }
-                else
-                {
-                    defaultPart = $" = {param.DefaultValue}";
-                }
+                defaultPart = $" = {param.DefaultValueExpression}";
             }
             else if (param.IsNullable)
             {
-                defaultPart = " = null";
+                defaultPart = $" = {NullLiteral}";
             }
 
             var description = string.IsNullOrEmpty(param.Description)
@@ -516,70 +707,101 @@ namespace Api.ToMcp.Generator.Emitting
             return $"{descAttr}{type} {EscapeIdentifier(param.Name)}{defaultPart}";
         }
 
-        internal static bool RouteContainsParameter(string route, string paramName)
-        {
-            // Check for {name} or {name:constraint} or {name?} patterns, ignoring case as MVC's route values do
-            var simplePattern = "{" + paramName + "}";
-            var optionalPattern = "{" + paramName + "?}";
-            var constraintPattern = "{" + paramName + ":";
-
-            return route.IndexOf(simplePattern, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   route.IndexOf(optionalPattern, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   route.IndexOf(constraintPattern, StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        internal static string ConvertRouteTemplate(string route, List<ParameterInfoModel> routeParams)
-        {
-            var result = route;
-            foreach (var param in routeParams)
-            {
-                // Handle various route parameter formats using regex to catch any constraint
-                // Pattern matches: {name}, {name?}, {name:constraint}, {name:constraint?}
-                var pattern = @"\{" + param.Name + @"(:[^}]+)?\??\}";
-                result = System.Text.RegularExpressions.Regex.Replace(
-                    result,
-                    pattern,
-                    "{route" + param.Name + "}",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            }
-            return result;
-        }
-
+        /// <summary>
+        /// The text of a description for a C# string literal, on one line: C# ends a literal at a line or paragraph
+        /// separator as at a line feed.
+        /// </summary>
         private static string EscapeString(string s)
         {
-            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "");
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", "")
+                .Replace(NextLine, ' ').Replace(LineSeparator, ' ').Replace(ParagraphSeparator, ' ');
         }
 
-        internal static bool IsValueType(string typeName)
+        /// <summary>
+        /// The action's URL as the tool builds it: the template's parts it sends, what fills each route value, and the
+        /// first route value nothing fills, which leaves the action without a tool.
+        /// </summary>
+        private sealed class RouteValues
         {
-            var valueTypes = new[]
+            public RouteValues(
+                RouteTemplate template,
+                IReadOnlyList<RouteTemplatePart> parts,
+                Dictionary<string, (string Expression, string VariableName)> sources,
+                HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties,
+                string? unfilledName)
             {
-                "int", "Int32", "System.Int32",
-                "long", "Int64", "System.Int64",
-                "short", "Int16", "System.Int16",
-                "byte", "Byte", "System.Byte",
-                "sbyte", "SByte", "System.SByte",
-                "ushort", "UInt16", "System.UInt16",
-                "uint", "UInt32", "System.UInt32",
-                "ulong", "UInt64", "System.UInt64",
-                "nint", "IntPtr", "System.IntPtr",
-                "nuint", "UIntPtr", "System.UIntPtr",
-                "bool", "Boolean", "System.Boolean",
-                "double", "Double", "System.Double",
-                "float", "Single", "System.Single",
-                "decimal", "Decimal", "System.Decimal",
-                "Half", "System.Half",
-                "Int128", "System.Int128",
-                "UInt128", "System.UInt128",
-                "char", "Char", "System.Char",
-                "DateTime", "System.DateTime",
-                "DateTimeOffset", "System.DateTimeOffset",
-                "TimeSpan", "System.TimeSpan",
-                "Guid", "System.Guid",
-                "DateOnly", "System.DateOnly",
-                "TimeOnly", "System.TimeOnly"
-            };
-            return valueTypes.Any(t => typeName == t || typeName.EndsWith("." + t));
+                Template = template;
+                Parts = parts;
+                Sources = sources;
+                RouteProperties = routeProperties;
+                UnfilledName = unfilledName;
+            }
+
+            public RouteTemplate Template { get; }
+            public IReadOnlyList<RouteTemplatePart> Parts { get; }
+            public Dictionary<string, (string Expression, string VariableName)> Sources { get; }
+
+            /// <summary>
+            /// The properties of parameters bound from the value providers that the tool sends only in the route, so their
+            /// parameters go out without their prefix. Each is paired with its parameter: the models are compared by value,
+            /// so two parameters of one type have equal properties, of which one may fill the route and the other not.
+            /// </summary>
+            public HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> RouteProperties { get; }
+
+            public string? UnfilledName { get; }
+        }
+
+        /// <summary>
+        /// The names a tool method gives its own parameters and variables, and the ones it refers to by a simple name. The
+        /// action's parameters keep their names, as MCP passes arguments by them, and share the method's scope with these:
+        /// a parameter named <c>route</c> would collide with the variable, and one named <c>System</c> would hide the
+        /// namespace. So each own name an action parameter already has gets a number, and a name it hides is qualified.
+        /// </summary>
+        private sealed class ToolNames
+        {
+            private const string SystemNamespaceName = "System";
+            private const string JsonSerializerName = "JsonSerializer";
+            private const string McpScopeName = "McpScope";
+
+            private readonly HashSet<string> _usedNames;
+
+            public ToolNames(IEnumerable<ParameterInfoModel> parameters)
+            {
+                var parameterNames = new HashSet<string>(parameters.Select(x => x.Name), StringComparer.Ordinal);
+                _usedNames = new HashSet<string>(parameterNames, StringComparer.Ordinal);
+
+                Invoker = Declare("invoker");
+                CancellationToken = Declare("cancellationToken");
+                Route = Declare("route");
+                QueryParts = Declare("queryParts");
+                BodyJson = Declare("bodyJson");
+                SystemNamespace = parameterNames.Contains(SystemNamespaceName) ? "global::System" : SystemNamespaceName;
+                JsonSerializer = parameterNames.Contains(JsonSerializerName) ? "global::System.Text.Json.JsonSerializer" : JsonSerializerName;
+                McpScope = parameterNames.Contains(McpScopeName) ? "global::Api.ToMcp.Abstractions.Scopes.McpScope" : McpScopeName;
+            }
+
+            public string Invoker { get; }
+            public string CancellationToken { get; }
+            public string Route { get; }
+            public string QueryParts { get; }
+            public string BodyJson { get; }
+            public string SystemNamespace { get; }
+            public string JsonSerializer { get; }
+            public string McpScope { get; }
+
+            /// <summary>
+            /// The name, or the name with the lowest number from 2 up that neither a parameter nor another own name has.
+            /// </summary>
+            public string Declare(string name)
+            {
+                var uniqueName = name;
+                for (var number = 2; !_usedNames.Add(uniqueName); number++)
+                {
+                    uniqueName = name + number.ToString(CultureInfo.InvariantCulture);
+                }
+
+                return uniqueName;
+            }
         }
     }
 }

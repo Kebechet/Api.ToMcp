@@ -156,6 +156,76 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain("bodyJson", tool);
     }
 
+    [Theory]
+    [InlineData("RecordRouteOrder", "c")]
+    [InlineData("AliasedRouteQuery", "c")]
+    public void Generator_SendsAFromQueryParameterWithARouteProperty_WithoutItsPrefix(string type, string cityKey)
+    {
+        // MVC reads a [FromQuery] parameter's [FromRoute] property from the route value of its name only when no query
+        // value carries the prefix: ?q.orderId= is no route value, so under it Order stays Guid.Empty.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"ord/{{orderId}}\")] public Task<string> Find([FromQuery] {type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains($"AddQueryValue(queryParts, \"{cityKey}\", q.City);", tool);
+        Assert.DoesNotContain("\"q\"", tool);
+    }
+
+    [Theory]
+    [InlineData("[FromBody] Shipment body, AttributedQuery q")]
+    [InlineData("AttributedQuery q, [FromBody] Shipment body")]
+    public void Generator_FillsTheRouteFromAPropertyMvcReadsFromIt_BeforeASameNamedPropertyOfTheBody(string parameters)
+    {
+        // MVC reads q.Id from {id} and body.Id from the body; filled from body.Id, the route would give q.Id body's value.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"body/{{id}}\")] public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"City\", q.City);", tool);
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(body);", tool);
+        Assert.DoesNotContain("body.Id", tool);
+    }
+
+    [Fact]
+    public void Generator_KeepsTheNameOfAFromQueryParameter_ThatNamesItsPrefix()
+    {
+        // MVC binds a [FromQuery(Name = "f")] parameter under f whatever the query holds, so f.orderId, never a route value.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"ord/{orderId}\")] public Task<string> Find([FromQuery(Name = \"f\")] RecordRouteOrder q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"f\", q);", tool);
+    }
+
+    [Theory]
+    [InlineData("HttpGet", "TextOrderId id", "\"id\", id is null ? null : " + Formatter + ".Format(id)")]
+    [InlineData("HttpPost", "TextOrderId id", "\"id\", id is null ? null : " + Formatter + ".Format(id)")]
+    [InlineData("HttpPost", "[ModelBinder(typeof(PlainCodeBinder))] PlainCode value", "\"value\", value is null ? null : " + Formatter + ".Format(value)")]
+    [InlineData("HttpPost", "[ModelBinder(typeof(PlainCodeBinder), Name = \"code\")] PlainCode value", "\"code\", value is null ? null : " + Formatter + ".Format(value)")]
+    [InlineData("HttpPost", "[ModelBinder(typeof(PlainCodeBinder))] Point origin", "\"origin\", " + Formatter + ".Format(origin)")]
+    [InlineData("HttpPost", "[ModelBinder(typeof(PlainCodeBinder))] List<PlainCode> codes", "\"codes\", codes")]
+    public void Generator_SendsAParameterWithAModelBinderOfItsOwn_AsAQueryValue(string httpAttribute, string parameter, string expectedArguments)
+    {
+        // A binder type on the parameter or its type gives it MVC's custom binding source, so [ApiController] infers no
+        // source for it, and the binder reads the route, query and form values under the parameter's model name: one
+        // value, written whole, or one per item of a collection.
+        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"AddQueryValue(queryParts, {expectedArguments});", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
+    [Theory]
+    [InlineData("TypedBinderQuery")]
+    [InlineData("FileQuery")]
+    [InlineData("FileListQuery")]
+    public void Generator_SendsAComplexParameterInTheQuery_WhenThePropertyTypeOfAPropertyNamesABindingSource(string type)
+    {
+        // MVC takes a property's binding source from its type's attributes as well as its own, and gives IFormFile and its
+        // collections one of their own; either counts among the bound properties that keep it off the body.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"search\")] public Task<string> Find({type} q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("AddQueryValue(queryParts, \"q\", q);", tool);
+        Assert.DoesNotContain("bodyJson", tool);
+    }
+
     [Fact]
     public void Generator_EscapesNamesThatAreCSharpKeywords_WhereverItWritesThemAsIdentifiers()
     {

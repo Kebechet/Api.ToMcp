@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Api.ToMcp.Generator.Models;
 
 namespace Api.ToMcp.Generator.Parsing
@@ -14,13 +16,6 @@ namespace Api.ToMcp.Generator.Parsing
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
         private const string NonActionAttributeFullName = "Microsoft.AspNetCore.Mvc.NonActionAttribute";
-        internal const string RouteAttributeName = "RouteAttribute";
-        private const string HttpGetAttributeName = "HttpGetAttribute";
-        private const string HttpPostAttributeName = "HttpPostAttribute";
-        private const string HttpPutAttributeName = "HttpPutAttribute";
-        private const string HttpDeleteAttributeName = "HttpDeleteAttribute";
-        private const string HttpPatchAttributeName = "HttpPatchAttribute";
-        private const string RouteTemplateProviderFullName = "Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider";
         private const string ActionNameAttributeName = "ActionNameAttribute";
         private const string ApiVersionAttributeName = "ApiVersionAttribute";
         private const string ScopePropertyName = "Scope";
@@ -39,22 +34,51 @@ namespace Api.ToMcp.Generator.Parsing
         private const string DestructiveHintPropertyName = "Destructive";
         private const string IdempotentHintPropertyName = "Idempotent";
         private const string OpenWorldHintPropertyName = "OpenWorld";
+        private const string AttributeUsageInheritedPropertyName = "Inherited";
 
         /// <summary>
-        /// The HTTP method each of MVC's <c>[Http*]</c> attributes routes, by the attribute's simple name.
+        /// The HTTP methods a tool calls an action with, the ones <c>IMcpHttpInvoker</c> sends.
         /// </summary>
-        private static readonly Dictionary<string, string> HttpMethodAttributes = new Dictionary<string, string>
+        private static readonly HashSet<string> ToolHttpMethods = new HashSet<string>(StringComparer.Ordinal)
         {
-            [HttpGetAttributeName] = HttpMethodNames.Get,
-            [HttpPostAttributeName] = HttpMethodNames.Post,
-            [HttpPutAttributeName] = HttpMethodNames.Put,
-            [HttpDeleteAttributeName] = HttpMethodNames.Delete,
-            [HttpPatchAttributeName] = HttpMethodNames.Patch
+            HttpMethodNames.Get,
+            HttpMethodNames.Post,
+            HttpMethodNames.Put,
+            HttpMethodNames.Patch,
+            HttpMethodNames.Delete
         };
 
+        /// <summary>
+        /// The HTTP method and route template each action declaration's routing attributes give, and its XML docs. Like the
+        /// flow analysis of its body, they are the declaration's, the same for every controller that inherits the action,
+        /// so they are read once per compilation; the route's tokens and prefix are each controller's.
+        /// </summary>
+        private static readonly CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?> HttpMethodInfos =
+            new CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// The types MVC binds from a source of their own, resolved once per compilation, and whether a property's type is
+        /// assignable to one of them, which every complex parameter of every action asks of each of its properties.
+        /// </summary>
+        private static readonly CompilationCache<Compilation, ImmutableArray<ITypeSymbol>> OwnBindingSourceTypes =
+            new CompilationCache<Compilation, ImmutableArray<ITypeSymbol>>(EqualityComparer<Compilation>.Default);
+
+        private static readonly CompilationCache<ITypeSymbol, bool> HasOwnBindingSourceByType =
+            new CompilationCache<ITypeSymbol, bool>(SymbolEqualityComparer.Default);
+
+        private static readonly CompilationCache<IMethodSymbol, string?> XmlDocSummaries =
+            new CompilationCache<IMethodSymbol, string?>(SymbolEqualityComparer.Default);
+
+        private static readonly CompilationCache<IMethodSymbol, IReadOnlyDictionary<string, string>> XmlDocParams =
+            new CompilationCache<IMethodSymbol, IReadOnlyDictionary<string, string>>(SymbolEqualityComparer.Default);
+
+        /// <param name="routePrefixProblem">
+        /// Why the controller's route template cannot be read, as a clause of MCP009's message, or null when it can.
+        /// </param>
         public static ImmutableArray<ActionInfoModel> GetActions(
             INamedTypeSymbol controller,
             string? routePrefix,
+            string? routePrefixProblem,
             Compilation compilation,
             CancellationToken ct)
         {
@@ -70,11 +94,15 @@ namespace Api.ToMcp.Generator.Parsing
                 if (!IsAction(method))
                     continue;
 
-                var httpInfo = GetHttpMethodInfo(method);
+                var httpInfo = HttpMethodInfos.GetOrAdd(compilation, method.OriginalDefinition, x => GetHttpMethodInfo(x, compilation, ct));
                 if (httpInfo == null)
                     continue;
 
-                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController);
+                // An absolute template replaces the controller's, so an unreadable one does not matter to it.
+                var routeProblem = httpInfo.Value.Problem ??
+                    (IsAbsoluteTemplate(httpInfo.Value.Template) ? null : routePrefixProblem);
+
+                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation, ct);
                 var returnType = AnalyzeReturnType(method);
                 var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
@@ -114,11 +142,12 @@ namespace Api.ToMcp.Generator.Parsing
                     ControllerName = controller.Name,
                     HttpMethod = httpInfo.Value.Method,
                     RouteTemplate = fullRoute,
+                    RouteProblem = routeProblem,
                     Parameters = parameters,
                     ReturnType = returnType,
                     HasMcpExposeAttribute = actionMcpExposeAttr != null,
                     HasMcpIgnoreAttribute = FindNearestAttribute(method, x => x.OverriddenMethod, IsMcpIgnoreAttribute) != null,
-                    XmlDocSummary = GetXmlDocSummary(method),
+                    XmlDocSummary = XmlDocSummaries.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocSummary),
                     CustomToolName = customToolName,
                     Title = customTitle ?? ToolTitleBuilder.Build(customToolName, TrimSuffix(method.Name, AsyncSuffix)),
                     CustomDescription = customDescription,
@@ -129,11 +158,26 @@ namespace Api.ToMcp.Generator.Parsing
                     IsOutputNullable = responseType.SuccessType is null ||
                         responseType.HasBodylessSuccess ||
                         EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct),
-                    SourceLocation = SourceLocationModel.From(method.Locations.FirstOrDefault(x => x.IsInSource))
+                    // An action of a referenced assembly has no place in source, so its warnings point at the controller
+                    // that inherits it, where a #pragma or an .editorconfig section can suppress them.
+                    SourceLocation = SourceLocationModel.From(
+                        method.Locations.FirstOrDefault(x => x.IsInSource) ?? controller.Locations.FirstOrDefault(x => x.IsInSource))
                 });
             }
 
             return builder.ToImmutable();
+        }
+
+        /// <summary>
+        /// The names of the controller's actions, as MVC finds them, whatever HTTP methods MVC serves them for.
+        /// </summary>
+        public static ImmutableArray<string> GetActionNames(INamedTypeSymbol controller)
+        {
+            return GetPublicMethods(controller)
+                .Where(IsAction)
+                .Select(x => x.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToImmutableArray();
         }
 
         /// <summary>
@@ -162,7 +206,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
-        private static bool IsFrameworkBaseType(INamedTypeSymbol type)
+        internal static bool IsFrameworkBaseType(INamedTypeSymbol type)
         {
             return type.SpecialType == SpecialType.System_Object ||
                 type.ToDisplayString() is KnownTypeNames.ControllerBase or KnownTypeNames.Controller;
@@ -204,17 +248,132 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The HTTP method and template of the action's route attributes, taken as MVC takes them, as a whole: from the
-        /// action if it declares any (<c>[Route]</c>, an <c>[Http*]</c> or another route template provider), else from the
-        /// method it overrides as first declared, skipping the overrides in between, as reflection's
-        /// <c>GetBaseDefinition()</c> does. Null when those attributes name no HTTP method the generator calls, such as a
-        /// <c>[Route]</c> alone, which MVC serves for every method.
+        /// The HTTP method and template a tool calls the action with, read from its routing attributes as MVC reads them.
+        /// MVC takes the attributes that give a route template (<c>[Route]</c>, an <c>[Http*]</c>, <c>[AcceptVerbs]</c> or
+        /// another <c>IRouteTemplateProvider</c>) as a whole: from the action if it declares any, else from the method it
+        /// overrides as first declared, skipping the overrides in between, as reflection's <c>GetBaseDefinition()</c> does.
+        /// Other <c>IActionHttpMethodProvider</c> attributes it reads as the action inherits them. Of the routes MVC serves
+        /// the action at (<c>DefaultApplicationModelProvider.CreateSelectors</c>), the tool takes the first with an HTTP
+        /// method it sends. Null when no route has one, such as a <c>[Route]</c> alone, which MVC serves for every method,
+        /// or an <c>[HttpHead]</c>; a problem when the route that may have one cannot be read.
         /// </summary>
-        private static (string Method, string? Template)? GetHttpMethodInfo(IMethodSymbol method)
+        private static (string Method, string? Template, string? Problem)? GetHttpMethodInfo(IMethodSymbol method, Compilation compilation, CancellationToken ct)
         {
-            var routedMethod = method.GetAttributes().Any(IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
+            var routedMethod = method.GetAttributes().Any(RouteAttributeReader.IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
+            var routeAttributes = routedMethod.GetAttributes()
+                .Where(RouteAttributeReader.IsRouteTemplateProvider)
+                .Select(x => RouteAttributeReader.Read(x, compilation, ct))
+                .ToList();
+            var httpMethodAttributes = GetInheritedAttributes(method)
+                .Where(x => RouteAttributeReader.IsHttpMethodProvider(x) && !RouteAttributeReader.IsRouteTemplateProvider(x))
+                .Select(x => RouteAttributeReader.Read(x, compilation, ct))
+                .ToList();
 
-            return GetDeclaredHttpMethodInfo(routedMethod);
+            var selectors = GetRouteSelectors(routeAttributes, httpMethodAttributes);
+            string? problem = null;
+            string? httpMethod = null;
+            foreach (var (route, httpMethodProviders) in selectors)
+            {
+                if (route is { IsTemplateKnown: false })
+                {
+                    problem ??= $"the generator cannot read the route template of its [{route.DisplayName}] attribute, as {route.TemplateProblem}";
+                    continue;
+                }
+
+                httpMethod = httpMethodProviders
+                    .Where(x => x.AreHttpMethodsKnown)
+                    .SelectMany(x => x.HttpMethods)
+                    .FirstOrDefault(ToolHttpMethods.Contains);
+                if (httpMethod != null)
+                    break;
+
+                var unreadable = httpMethodProviders.FirstOrDefault(x => !x.AreHttpMethodsKnown);
+                if (unreadable != null)
+                {
+                    problem ??= $"the generator cannot read the HTTP methods of its [{unreadable.DisplayName}] attribute, as {unreadable.HttpMethodsProblem}";
+                }
+            }
+
+            if (httpMethod is null)
+            {
+                return problem is null ? null : ("", null, problem);
+            }
+
+            // MVC serves the method at each route that gives it, and at each that gives none, which serves every method.
+            // Of those the tool takes the first with a template of its own: on the controller's route alone MVC would still
+            // read a parameter another route names from a route value, which that URL lacks.
+            var servingRoutes = selectors
+                .Where(x => x.Route is not { IsTemplateKnown: false } &&
+                    (x.HttpMethodProviders.Count == 0 || x.HttpMethodProviders.Any(provider => provider.AreHttpMethodsKnown && provider.HttpMethods.Contains(httpMethod))))
+                .Select(x => x.Route)
+                .ToList();
+            var servingRoute = servingRoutes.FirstOrDefault(x => x?.Template != null) ?? servingRoutes.First();
+
+            return (httpMethod, servingRoute?.Template, null);
+        }
+
+        /// <summary>
+        /// The routes MVC serves an action at, each with the attributes that give its HTTP methods, as
+        /// <c>DefaultApplicationModelProvider.CreateSelectors</c> groups them: a route attribute that sets a template, a
+        /// name or an order defines a route of its own, which an <c>[Http*]</c> one serves for its methods alone, and any
+        /// other for the methods of the remaining attributes. Those, a bare <c>[HttpGet]</c> say, get a route of their own,
+        /// the controller's, unless such an other attribute takes them, as <c>[Route("search")]</c> does.
+        /// </summary>
+        private static List<(RouteAttributeInfo? Route, List<RouteAttributeInfo> HttpMethodProviders)> GetRouteSelectors(
+            List<RouteAttributeInfo> routeAttributes,
+            List<RouteAttributeInfo> httpMethodAttributes)
+        {
+            var routeDefiningAttributes = routeAttributes.Where(x => x.DefinesRoute).ToList();
+            var remainingHttpMethodProviders = routeAttributes
+                .Where(x => !x.DefinesRoute && x.IsHttpMethodProvider)
+                .Concat(httpMethodAttributes)
+                .ToList();
+            var hasRemainingRouteAttributes = routeAttributes.Any(x => !x.DefinesRoute) &&
+                routeDefiningAttributes.All(x => x.IsHttpMethodProvider);
+
+            var selectors = new List<(RouteAttributeInfo? Route, List<RouteAttributeInfo> HttpMethodProviders)>();
+            foreach (var routeAttribute in routeDefiningAttributes)
+            {
+                selectors.Add((routeAttribute, routeAttribute.IsHttpMethodProvider
+                    ? new List<RouteAttributeInfo> { routeAttribute }
+                    : remainingHttpMethodProviders));
+            }
+
+            if (routeDefiningAttributes.Count == 0 || hasRemainingRouteAttributes)
+            {
+                selectors.Add((null, remainingHttpMethodProviders));
+            }
+
+            return selectors;
+        }
+
+        /// <summary>
+        /// The method's attributes and those of the methods it overrides that reflection's <c>GetCustomAttributes(true)</c>
+        /// returns for it: of an overridden method, those whose <c>[AttributeUsage]</c> leaves <c>Inherited</c> true.
+        /// </summary>
+        private static IEnumerable<AttributeData> GetInheritedAttributes(IMethodSymbol method)
+        {
+            for (var current = method; current != null; current = current.OverriddenMethod)
+            {
+                foreach (var attribute in current.GetAttributes())
+                {
+                    if (SymbolEqualityComparer.Default.Equals(current, method) || IsInheritedAttribute(attribute))
+                        yield return attribute;
+                }
+            }
+        }
+
+        private static bool IsInheritedAttribute(AttributeData attribute)
+        {
+            if (attribute.AttributeClass is null)
+                return false;
+
+            var usage = FindNearestAttribute(
+                attribute.AttributeClass,
+                x => x.BaseType,
+                x => x.AttributeClass?.ToDisplayString() == KnownTypeNames.AttributeUsage);
+
+            return usage?.NamedArguments.FirstOrDefault(x => x.Key == AttributeUsageInheritedPropertyName).Value.Value is not false;
         }
 
         private static IMethodSymbol GetBaseDefinition(IMethodSymbol method)
@@ -226,60 +385,24 @@ namespace Api.ToMcp.Generator.Parsing
             return definition;
         }
 
-        /// <summary>
-        /// An attribute MVC reads an action's route from: one implementing <c>IRouteTemplateProvider</c>, which also covers
-        /// <c>[HttpHead]</c>, <c>[AcceptVerbs]</c> and custom ones, or one the generator knows by name, as it does elsewhere.
-        /// </summary>
-        private static bool IsRouteTemplateProvider(AttributeData attribute)
-        {
-            var attributeClass = attribute.AttributeClass;
-
-            return attributeClass != null &&
-                (attributeClass.Name == RouteAttributeName ||
-                    HttpMethodAttributes.ContainsKey(attributeClass.Name) ||
-                    attributeClass.AllInterfaces.Any(x => x.ToDisplayString() == RouteTemplateProviderFullName));
-        }
-
-        private static (string Method, string? Template)? GetDeclaredHttpMethodInfo(IMethodSymbol method)
-        {
-            // A method-level [Route("...")] supplies the template when the HTTP verb
-            // attribute carries none (e.g. [HttpGet] + [Route("search")]).
-            var routeAttrTemplate = method.GetAttributes()
-                .FirstOrDefault(attr => attr.AttributeClass?.Name == RouteAttributeName &&
-                                        attr.ConstructorArguments.Length > 0)
-                ?.ConstructorArguments[0].Value?.ToString();
-
-            foreach (var attr in method.GetAttributes())
-            {
-                var attrName = attr.AttributeClass?.Name;
-                if (attrName == null || !HttpMethodAttributes.TryGetValue(attrName, out var httpMethod))
-                    continue;
-
-                var template = attr.ConstructorArguments.Length > 0
-                    ? attr.ConstructorArguments[0].Value?.ToString()
-                    : null;
-
-                if (string.IsNullOrEmpty(template))
-                    template = routeAttrTemplate;
-
-                return (httpMethod, template);
-            }
-
-            return null;
-        }
-
         private static ImmutableArray<ParameterInfoModel> AnalyzeParameters(
             IMethodSymbol method,
             string httpMethod,
-            bool isApiController)
+            bool isApiController,
+            Compilation compilation,
+            CancellationToken ct)
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
-            var paramDocs = GetXmlDocParams(method);
+            var paramDocs = XmlDocParams.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocParams);
 
             foreach (var param in method.Parameters)
             {
                 var bindingAttributes = GetBindingAttributes(param);
-                var declaredSource = GetDeclaredParameterSource(bindingAttributes);
+                // After its own attributes MVC reads those of its type (ModelAttributes), where an id type names its binder.
+                var modelAttributes = bindingAttributes.Concat(GetTypeAttributes(param.Type)).ToList();
+                var bindingRequirement = GetBindingRequirement(bindingAttributes, compilation, ct);
+                var declaredSource = GetDeclaredParameterSource(bindingAttributes) ??
+                    (HasModelBinder(modelAttributes) ? ParameterSourceModel.Custom : null);
 
                 // Skip service-injected parameters
                 if (declaredSource == ParameterSourceModel.Services)
@@ -296,7 +419,7 @@ namespace Api.ToMcp.Generator.Parsing
                 // the body, and which of them fill the route or the query string when it does not.
                 var properties = isSimpleType && declaredSource is not (ParameterSourceModel.Route or ParameterSourceModel.Body)
                     ? ImmutableArray<PropertyInfoModel>.Empty
-                    : ExtractProperties(param.Type);
+                    : ExtractProperties(param.Type, compilation);
 
                 builder.Add(new ParameterInfoModel
                 {
@@ -304,13 +427,19 @@ namespace Api.ToMcp.Generator.Parsing
                     Type = param.Type.ToDisplayString(),
                     IsNullable = param.Type.NullableAnnotation == NullableAnnotation.Annotated ||
                                  param.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
+                    IsValueType = param.Type.IsValueType,
                     HasDefaultValue = param.HasExplicitDefaultValue,
-                    DefaultValue = param.HasExplicitDefaultValue ? param.ExplicitDefaultValue : null,
+                    DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
                     Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
+                    IsBindingRequired = bindingRequirement == true,
+                    IsBindingRequirementUnknown = bindingRequirement is null,
+                    IsDefaultRefusedAsText = param.HasExplicitDefaultValue && IsRefusedAsText(param.Type, param.ExplicitDefaultValue),
                     IsSimpleType = isSimpleType,
+                    IsCollection = IsCollection(param.Type),
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
-                    QueryName = GetFromQueryName(bindingAttributes)
+                    QueryName = GetFromQueryName(bindingAttributes) ??
+                        (declaredSource == ParameterSourceModel.Custom ? modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null) : null)
                 });
             }
 
@@ -349,7 +478,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// The properties MVC binds a type through, each with where its binding attribute makes MVC read it from and the
         /// name it binds it under.
         /// </summary>
-        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type)
+        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type, Compilation compilation)
         {
             if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
             {
@@ -368,9 +497,12 @@ namespace Api.ToMcp.Generator.Parsing
                 .Select(property =>
                 {
                     // MVC binds a property the record's constructor sets through the constructor parameter, with the
-                    // parameter's binding attributes; a [property: ...] one it ignores.
+                    // parameter's binding attributes; a [property: ...] one it ignores. After those it reads the attributes
+                    // of the type (ModelAttributes), so a [ModelBinder(typeof(...))] on an id type binds every property of it.
                     var isSetByConstructor = constructorParameters.TryGetValue(property, out var constructorParameter);
-                    var attributes = isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes();
+                    var attributes = (isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes())
+                        .Concat(GetTypeAttributes(property.Type))
+                        .ToList();
 
                     return new PropertyInfoModel
                     {
@@ -379,11 +511,64 @@ namespace Api.ToMcp.Generator.Parsing
                         IsNullable = property.Type.NullableAnnotation == NullableAnnotation.Annotated ||
                                      property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
                         ModelName = attributes.Select(GetModelName).FirstOrDefault(x => x is not null),
-                        Source = GetBindingSource(attributes),
+                        Source = HasFileOrSpecialBindingSource(property.Type, compilation) ? ParameterSourceModel.Other : GetBindingSource(attributes),
                         IsSetByConstructor = isSetByConstructor
                     };
                 })
                 .ToImmutableArray();
+        }
+
+        /// <summary>
+        /// The attributes reflection's <c>GetCustomAttributes(true)</c> returns for a type: its own, and those of its base
+        /// classes that are inherited. A <c>Nullable&lt;T&gt;</c> has none of <c>T</c>'s.
+        /// </summary>
+        private static IEnumerable<AttributeData> GetTypeAttributes(ITypeSymbol type)
+        {
+            return type.GetAttributes().Concat(GetBaseTypes(type).SelectMany(x => x.GetAttributes()).Where(IsInheritedAttribute));
+        }
+
+        private static IEnumerable<INamedTypeSymbol> GetBaseTypes(ITypeSymbol type)
+        {
+            for (var baseType = type.BaseType; baseType != null; baseType = baseType.BaseType)
+                yield return baseType;
+        }
+
+        /// <summary>
+        /// Whether MVC gives a value of the type a binding source of its own (<c>BindingSourceMetadataProvider</c>), over any
+        /// attribute: a form file for <c>IFormFile</c>, <c>IFormFileCollection</c>, <c>IFormCollection</c> and any
+        /// <c>IEnumerable&lt;IFormFile&gt;</c>, a special one for a <c>CancellationToken</c>; each counts for a type assigned
+        /// to it.
+        /// </summary>
+        private static bool HasFileOrSpecialBindingSource(ITypeSymbol type, Compilation compilation)
+        {
+            return HasOwnBindingSourceByType.GetOrAdd(compilation, type, x =>
+                OwnBindingSourceTypes.GetOrAdd(compilation, compilation, GetOwnBindingSourceTypes)
+                    .Any(boundType => IsAssignableTo(x, boundType, compilation)));
+        }
+
+        private static ImmutableArray<ITypeSymbol> GetOwnBindingSourceTypes(Compilation compilation)
+        {
+            var formFile = compilation.GetTypeByMetadataName(KnownTypeNames.FormFile);
+            var boundTypes = new[]
+            {
+                formFile,
+                compilation.GetTypeByMetadataName(KnownTypeNames.FormFileCollection),
+                compilation.GetTypeByMetadataName(KnownTypeNames.FormCollection),
+                formFile is null ? null : compilation.GetSpecialType(SpecialType.System_Collections_Generic_IEnumerable_T).Construct(formFile),
+                compilation.GetTypeByMetadataName(KnownTypeNames.CancellationToken)
+            };
+
+            return boundTypes.OfType<ITypeSymbol>().ToImmutableArray();
+        }
+
+        /// <summary>
+        /// Reflection's <c>IsAssignableFrom</c>: an identity, reference or boxing conversion, not a user-defined one.
+        /// </summary>
+        private static bool IsAssignableTo(ITypeSymbol type, ITypeSymbol target, Compilation compilation)
+        {
+            var conversion = compilation.ClassifyConversion(type, target);
+
+            return conversion.IsIdentity || (conversion.IsImplicit && (conversion.IsReference || conversion.IsBoxing));
         }
 
         /// <summary>
@@ -478,7 +663,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// Where the first of a property's or constructor parameter's attributes that gives a binding source makes MVC read
         /// it from, as <c>DefaultBindingMetadataProvider</c> takes that one.
         /// </summary>
-        private static ParameterSourceModel GetBindingSource(ImmutableArray<AttributeData> attributes)
+        private static ParameterSourceModel GetBindingSource(IEnumerable<AttributeData> attributes)
         {
             foreach (var attribute in attributes)
             {
@@ -519,6 +704,129 @@ namespace Api.ToMcp.Generator.Parsing
 
             return attribute.ConstructorArguments.Any(x => x.Value is not null) ||
                 attribute.NamedArguments.Any(x => x.Key == BindingAttributeNames.BinderTypePropertyName && x.Value.Value is not null);
+        }
+
+        /// <summary>
+        /// Whether MVC requires a value for the parameter: its first binding behavior attribute is <c>[BindRequired]</c>,
+        /// or passes <c>BindingBehavior.Required</c> to the constructor of <c>BindingBehaviorAttribute</c>, or it is
+        /// <c>[Required]</c>. MVC reads the binding behavior of a parameter from the parameter's own attributes alone
+        /// (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>). Null when the generator cannot tell: the binding
+        /// behavior attribute's constructors are ones it cannot follow, as those of a referenced assembly.
+        /// </summary>
+        private static bool? GetBindingRequirement(IEnumerable<AttributeData> attributes, Compilation compilation, CancellationToken ct)
+        {
+            var attributeList = attributes.Where(x => x.AttributeClass != null).ToList();
+            if (attributeList.Any(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.Required)))
+            {
+                return true;
+            }
+
+            var bindingBehavior = attributeList.FirstOrDefault(x => ResponseTypeResolver.IsOrImplements(x.AttributeClass!, BindingAttributeNames.BindingBehavior));
+
+            return bindingBehavior is null ? false : GetBehaviorRequirement(bindingBehavior, compilation, ct);
+        }
+
+        /// <summary>
+        /// Whether a binding behavior attribute requires a value, or null when the generator cannot follow its constructors.
+        /// </summary>
+        private static bool? GetBehaviorRequirement(AttributeData bindingBehavior, Compilation compilation, CancellationToken ct)
+        {
+            // Both are sealed, and their constructors, in MVC's assembly, pass a behavior of their own.
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired))
+            {
+                return true;
+            }
+
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindNever))
+            {
+                return false;
+            }
+
+            return RouteAttributeReader.TryReadArgumentPassedTo(
+                    bindingBehavior,
+                    BindingAttributeNames.BindingBehavior,
+                    BindingAttributeNames.BindingBehaviorArgument,
+                    compilation,
+                    ct,
+                    out var behavior)
+                ? behavior is BindingAttributeNames.BindingBehaviorRequired
+                : null;
+        }
+
+        /// <summary>
+        /// Whether MVC refuses the value when it is sent as text, as the tool writes it: an enum value that no member has,
+        /// which C# writes as a number, and MVC's enum binder does not take (<c>EnumTypeModelBinder.IsDefinedInEnum</c>).
+        /// Of a <c>[Flags]</c> enum, a combination of members C# writes as their names, which it does take.
+        /// </summary>
+        private static bool IsRefusedAsText(ITypeSymbol type, object? value)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            if (!(type is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType) || value is null)
+            {
+                return false;
+            }
+
+            var memberValues = enumType.GetMembers()
+                .OfType<IFieldSymbol>()
+                .Where(x => x.HasConstantValue)
+                .Select(x => ToBits(x.ConstantValue!))
+                .ToList();
+            var bits = ToBits(value);
+            if (memberValues.Contains(bits))
+            {
+                return false;
+            }
+
+            var isFlags = enumType.GetAttributes().Any(x => x.AttributeClass?.ToDisplayString() == KnownTypeNames.Flags);
+            if (!isFlags || bits == 0)
+            {
+                return true;
+            }
+
+            // Enum.ToString takes the largest members first, and writes the number when they leave bits over.
+            foreach (var memberValue in memberValues.Where(x => x != 0).OrderByDescending(x => x))
+            {
+                if ((bits & memberValue) == memberValue)
+                {
+                    bits -= memberValue;
+                }
+            }
+
+            return bits != 0;
+        }
+
+        private static ulong ToBits(object value)
+        {
+            return value is ulong or uint or ushort or byte
+                ? Convert.ToUInt64(value, CultureInfo.InvariantCulture)
+                : unchecked((ulong)Convert.ToInt64(value, CultureInfo.InvariantCulture));
+        }
+
+        private static bool IsCollection(ITypeSymbol type)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            return type.SpecialType != SpecialType.System_String &&
+                (type is IArrayTypeSymbol || type.AllInterfaces.Any(x => x.SpecialType == SpecialType.System_Collections_IEnumerable));
+        }
+
+        /// <summary>
+        /// Whether the first attribute that gives a binding source is <c>[ModelBinder]</c> or <c>[BindProperty]</c> with a
+        /// binder type, which gives MVC's custom one: <c>[ApiController]</c> then infers no source for the parameter, and the
+        /// binder reads the route, query and form values, whatever the HTTP method.
+        /// </summary>
+        private static bool HasModelBinder(IEnumerable<AttributeData> attributes)
+        {
+            return attributes.FirstOrDefault(GivesBindingSource)?.AttributeClass is { } attributeClass &&
+                (ResponseTypeResolver.IsOrImplements(attributeClass, BindingAttributeNames.ModelBinder) ||
+                    ResponseTypeResolver.IsOrImplements(attributeClass, BindingAttributeNames.BindProperty));
         }
 
         private static ParameterSourceModel? GetDeclaredParameterSource(IEnumerable<AttributeData> attributes)
@@ -616,11 +924,17 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
+        /// <summary>
+        /// Whether an action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
+        /// </summary>
+        private static bool IsAbsoluteTemplate(string? template)
+        {
+            return template != null && (template.StartsWith("/") || template.StartsWith("~/"));
+        }
+
         private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
         {
-            // An action template starting with "/" or "~/" is absolute: ASP.NET routing ignores the controller prefix.
-            var isAbsoluteTemplate = template != null && (template.StartsWith("/") || template.StartsWith("~/"));
-            if (isAbsoluteTemplate)
+            if (IsAbsoluteTemplate(template))
                 return ReplaceRouteTokens($"/{template!.TrimStart('~').TrimStart('/').TrimEnd('/')}", controllerName, actionName);
 
             var parts = new List<string>();

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -93,6 +94,89 @@ public class McpOutputSchemaBuilderTests
         var properties = (isNullable ? schema.GetProperty("anyOf")[0] : schema).GetProperty("properties");
         Assert.Equal("""{"description":"Payload as the sensor sent it."}""", properties.GetProperty("payload").GetRawText());
         Assert.Equal("""{"description":"Calibration data in the shape the sensor uses."}""", properties.GetProperty("calibration").GetRawText());
+    }
+
+    [Theory]
+    [InlineData("total", false)]
+    [InlineData("discount", false)]
+    [InlineData("shipping", false)]
+    [InlineData("codes", false)]
+    [InlineData("total", true)]
+    public void Build_AcceptsAnyValue_ForAPropertyWrittenByItsOwnConverter(string propertyName, bool isNullable)
+    {
+        // The exporter describes such a property by its type's shape, while MVC writes what the converter writes.
+        var schema = Build(typeof(Invoice), isNullable);
+
+        var properties = (isNullable ? schema.GetProperty("anyOf")[0] : schema).GetProperty("properties");
+        Assert.Equal(JsonValueKind.True, properties.GetProperty(propertyName).ValueKind);
+    }
+
+    [Fact]
+    public void Build_KeepsTheSchema_OfAPropertyWithoutAConverterOfItsOwn_OrWithOneTheExporterUnderstands()
+    {
+        var properties = Build(typeof(Invoice)).GetProperty("properties");
+
+        Assert.Equal("object", properties.GetProperty("subtotal").GetProperty("type").GetString());
+        Assert.Equal("""["object","null"]""", properties.GetProperty("deposit").GetProperty("type").GetRawText());
+        Assert.Equal(["Small", "Large"], properties.GetProperty("kind").GetProperty("enum").EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal(["small", "large"], properties.GetProperty("size").GetProperty("enum").EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal(JsonValueKind.True, properties.GetProperty("issuedAt").ValueKind);
+    }
+
+    [Fact]
+    public void Build_KeepsTheDescription_OfAPropertyWrittenByItsOwnConverter()
+    {
+        var describer = new XmlDocPropertyDescriber(new XmlDocSummaryReader());
+
+        var properties = Build(typeof(Invoice), inferenceOptions: describer).GetProperty("properties");
+
+        Assert.Equal("""{"description":"Amount due as the till prints it."}""", properties.GetProperty("total").GetRawText());
+        Assert.Equal("""{"description":"Tax as the till prints it."}""", properties.GetProperty("tax").GetRawText());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Build_KeepsEveryRefResolvable_WhenItsTargetLiesInsideAConvertedProperty(bool isNullable)
+    {
+        // The exporter writes a node it meets again as a $ref to its first place, here inside a converted property,
+        // whose subtree the any-value schema replaces.
+        var schema = JsonNode.Parse(Build(typeof(RefInvoice), isNullable).GetRawText())!;
+        var properties = (isNullable ? schema["anyOf"]![0]! : schema)["properties"]!;
+
+        var refs = CollectRefs(schema).ToList();
+
+        Assert.All(refs, x => Assert.NotNull(ResolvePointer(schema, x)));
+        Assert.Equal(JsonValueKind.True, properties["first"]!.GetValueKind());
+        Assert.Equal(JsonValueKind.True, properties["payments"]!.GetValueKind());
+        Assert.Equal(["amount", "currency"], ResolveRefs(schema, properties["second"]!["properties"]!["amount"]!)["properties"]!.AsObject().Select(x => x.Key));
+        Assert.Equal(["amount", "currency"], ResolveRefs(schema, properties["refunds"]!["items"]!)["properties"]!.AsObject().Select(x => x.Key));
+    }
+
+    [Fact]
+    public void Build_KeepsEveryRefResolvable_ForARecursiveTypeFirstMetInsideAConvertedProperty()
+    {
+        var schema = JsonNode.Parse(Build(typeof(BranchPair)).GetRawText())!;
+
+        // The plain branch's children were a $ref into the converted branch; they hold a copy now, and refer to it.
+        var refs = CollectRefs(schema).ToList();
+
+        Assert.NotEmpty(refs);
+        Assert.All(refs, x => Assert.NotNull(ResolvePointer(schema, x)));
+        var plainChildren = ResolveRefs(schema, schema["properties"]!["plain"]!["properties"]!["children"]!);
+        Assert.Equal("array", plainChildren["type"]!.GetValue<string>());
+        Assert.Equal(["name", "children"], ResolveRefs(schema, plainChildren["items"]!)["properties"]!.AsObject().Select(x => x.Key));
+    }
+
+    [Fact]
+    public void ConvertedProperties_AreWrittenAsTheirConverterWritesThem_NotInTheShapeOfTheirType()
+    {
+        // Why such a property gets a schema that accepts any value: MVC writes the converter's string.
+        var invoice = new Invoice { Total = new Money { Amount = 12.5m, Currency = "EUR" } };
+
+        var body = JsonNode.Parse(JsonSerializer.Serialize(invoice, new JsonOptions().JsonSerializerOptions))!;
+
+        Assert.Equal("12.5 EUR", body["total"]!.GetValue<string>());
     }
 
     [Fact]
@@ -288,6 +372,19 @@ public class McpOutputSchemaBuilderTests
         }
     }
 
+    /// <summary>
+    /// The node itself, or the node its <c>$ref</c> points at, followed until it is not a reference.
+    /// </summary>
+    private static JsonNode ResolveRefs(JsonNode root, JsonNode node)
+    {
+        while (node is JsonObject jsonObject && jsonObject["$ref"] is JsonValue reference)
+        {
+            node = ResolvePointer(root, reference.GetValue<string>())!;
+        }
+
+        return node;
+    }
+
     private static JsonNode? ResolvePointer(JsonNode root, string reference)
     {
         var current = root;
@@ -315,6 +412,184 @@ public class McpOutputSchemaBuilderTests
     {
         Small,
         Large
+    }
+
+    public sealed class Invoice
+    {
+        /// <summary>Amount due as the till prints it.</summary>
+        [JsonConverter(typeof(MoneyConverter))]
+        public Money Total { get; set; } = new();
+
+        /// <summary>XML summary that must lose to the attribute.</summary>
+        [Description("Tax as the till prints it.")]
+        [JsonConverter(typeof(MoneyConverter))]
+        public Money Tax { get; set; } = new();
+
+        [JsonConverter(typeof(MoneyConverter))]
+        public Money? Discount { get; set; }
+
+        [JsonConverter(typeof(ParcelFeeConverter))]
+        public ParcelFee? Shipping { get; set; }
+
+        [JsonConverter(typeof(CommaSeparatedConverter))]
+        public List<string> Codes { get; set; } = [];
+
+        public Money Subtotal { get; set; } = new();
+
+        public ParcelFee? Deposit { get; set; }
+
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public GadgetKind Kind { get; set; }
+
+        [JsonConverter(typeof(CamelCaseEnumConverter))]
+        public GadgetKind Size { get; set; }
+
+        [JsonConverter(typeof(UnixTimeConverter))]
+        public DateTime IssuedAt { get; set; }
+    }
+
+    public sealed class RefInvoice
+    {
+        [JsonConverter(typeof(LineConverter))]
+        public Line First { get; set; } = new();
+
+        public Line Second { get; set; } = new();
+
+        [JsonConverter(typeof(MoneyListConverter))]
+        public List<Money> Payments { get; set; } = [];
+
+        public List<Money> Refunds { get; set; } = [];
+    }
+
+    public sealed class Line
+    {
+        public Money Amount { get; set; } = new();
+
+        public string Sku { get; set; } = "";
+    }
+
+    public sealed class LineConverter : JsonConverter<Line>
+    {
+        public override Line Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return new Line { Sku = reader.GetString()! };
+        }
+
+        public override void Write(Utf8JsonWriter writer, Line value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(value.Sku);
+        }
+    }
+
+    public sealed class MoneyListConverter : JsonConverter<List<Money>>
+    {
+        public override List<Money> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            reader.Skip();
+            return [];
+        }
+
+        public override void Write(Utf8JsonWriter writer, List<Money> value, JsonSerializerOptions options)
+        {
+            writer.WriteNumberValue(value.Count);
+        }
+    }
+
+    public sealed class BranchPair
+    {
+        [JsonConverter(typeof(BranchConverter))]
+        public Branch Converted { get; set; } = new();
+
+        public Branch Plain { get; set; } = new();
+    }
+
+    public sealed class Branch
+    {
+        public string Name { get; set; } = "";
+
+        public List<Branch> Children { get; set; } = [];
+    }
+
+    public sealed class BranchConverter : JsonConverter<Branch>
+    {
+        public override Branch Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return new Branch { Name = reader.GetString()! };
+        }
+
+        public override void Write(Utf8JsonWriter writer, Branch value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(value.Name);
+        }
+    }
+
+    public sealed class Money
+    {
+        public decimal Amount { get; set; }
+
+        public string Currency { get; set; } = "";
+    }
+
+    public readonly record struct ParcelFee(decimal Amount);
+
+    public sealed class MoneyConverter : JsonConverter<Money>
+    {
+        public override Money Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            var parts = reader.GetString()!.Split(' ');
+            return new Money { Amount = decimal.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture), Currency = parts[1] };
+        }
+
+        public override void Write(Utf8JsonWriter writer, Money value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue($"{value.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture)} {value.Currency}");
+        }
+    }
+
+    public sealed class ParcelFeeConverter : JsonConverter<ParcelFee>
+    {
+        public override ParcelFee Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return new ParcelFee(reader.GetDecimal());
+        }
+
+        public override void Write(Utf8JsonWriter writer, ParcelFee value, JsonSerializerOptions options)
+        {
+            writer.WriteNumberValue(value.Amount);
+        }
+    }
+
+    public sealed class CommaSeparatedConverter : JsonConverter<List<string>>
+    {
+        public override List<string> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return [.. reader.GetString()!.Split(',')];
+        }
+
+        public override void Write(Utf8JsonWriter writer, List<string> value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(string.Join(',', value));
+        }
+    }
+
+    public sealed class CamelCaseEnumConverter : JsonStringEnumConverter
+    {
+        public CamelCaseEnumConverter() : base(JsonNamingPolicy.CamelCase)
+        {
+        }
+    }
+
+    public sealed class UnixTimeConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return DateTime.UnixEpoch.AddSeconds(reader.GetInt64());
+        }
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+        {
+            writer.WriteNumberValue((long)(value - DateTime.UnixEpoch).TotalSeconds);
+        }
     }
 
     public sealed class Reading

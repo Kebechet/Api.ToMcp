@@ -1,16 +1,25 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
+using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using Moq;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Extensions;
@@ -24,11 +33,12 @@ public class McpExtensionsTests
     {
         // The SDK scan is the reference: with the XML docs off, every tool must come out identical in name,
         // description, annotations, metadata and input schema (DI-bound parameters left out, [Description]s kept).
-        // Generated tools are left out: their output schema is meant to differ, it follows MVC's JSON options.
+        // Generated tools are left out: their output schema is meant to differ, it follows MVC's JSON options. A
+        // property with a [JsonConverter] of its own would differ too, on purpose, and none of these tools has one.
         var expectedTools = BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly)).Where(x => !IsGenerated(x));
         var actualTools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false)).Where(x => !IsGenerated(x)).ToList();
 
-        Assert.Equal(4, actualTools.Count);
+        Assert.Equal(5, actualTools.Count);
         Assert.Equal(expectedTools.Select(ToJson).OrderBy(x => x), actualTools.Select(ToJson).OrderBy(x => x));
     }
 
@@ -98,6 +108,96 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public void AddMcpTools_LetsAPropertyWrittenByItsOwnConverter_AcceptAnyValue_InTheInputAndOutputSchema()
+    {
+        // The SDK reads the argument, and MVC writes the response, with the converter: "12.5 EUR", not an object.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+        var tool = tools.Single(x => x.ProtocolTool.Name == "generated_converted").ProtocolTool;
+
+        var inputTotal = tool.InputSchema.GetProperty("properties").GetProperty("invoice").GetProperty("properties").GetProperty("total");
+        var outputTotal = GetOutputSchema(tools, "generated_converted").GetProperty("properties").GetProperty("total");
+
+        Assert.Equal("""{"description":"Total as the till prints it."}""", inputTotal.GetRawText());
+        Assert.Equal("""{"description":"Total as the till prints it."}""", outputTotal.GetRawText());
+    }
+
+    [Fact]
+    public void AddMcpTools_KeepsEveryRefResolvable_WhenItsTargetLiesInsideAConvertedProperty()
+    {
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_refs").ProtocolTool;
+
+        // Before, the second line's amount was {"$ref": ".../first/properties/amount"}, into the replaced first line.
+        var input = JsonNode.Parse(tool.InputSchema.GetRawText())!;
+        var output = JsonNode.Parse(tool.OutputSchema!.Value.GetRawText())!;
+
+        foreach (var (root, invoice) in new[] { (input, input["properties"]!["invoice"]!), (output, output) })
+        {
+            Assert.All(CollectRefs(root), x => Assert.NotNull(ResolvePointer(root, x)));
+            Assert.Equal(JsonValueKind.True, invoice["properties"]!["first"]!.GetValueKind());
+            var amount = invoice["properties"]!["second"]!["properties"]!["amount"]!;
+            Assert.Equal(["amount", "currency"], amount["properties"]!.AsObject().Select(x => x.Key));
+        }
+    }
+
+    [Fact]
+    public void AddMcpTools_LetsAPropertyWrittenByItsOwnConverter_AcceptAnyValue_WhenXmlDocDescriptionsAreOff()
+    {
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false));
+        var tool = tools.Single(x => x.ProtocolTool.Name == "generated_converted").ProtocolTool;
+
+        var inputTotal = tool.InputSchema.GetProperty("properties").GetProperty("invoice").GetProperty("properties").GetProperty("total");
+        var outputTotal = GetOutputSchema(tools, "generated_converted").GetProperty("properties").GetProperty("total");
+
+        Assert.Equal(JsonValueKind.True, inputTotal.ValueKind);
+        Assert.Equal(JsonValueKind.True, outputTotal.ValueKind);
+    }
+
+    [Fact]
+    public void AddMcpTools_LeavesTheArgumentPropertiesAGeneratedToolNeverSends_OutOfItsInputSchema()
+    {
+        // The query string carries none of them, and a JSON body none without a public getter.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+
+        var request = GetToolInputProperty(tools, "generated_unsent", "request");
+
+        Assert.Equal(["city", "note"], request.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+        Assert.Equal(["city"], request.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+        var upload = GetToolInputProperty(tools, "generated_unsent", "upload");
+        Assert.Equal(["name"], upload.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+    }
+
+    [Fact]
+    public void AddMcpTools_LeavesAHandWrittenToolsInputSchema_ToTheSdk()
+    {
+        // A hand-written tool gets the request object itself, so a property without a public getter can matter to it.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+
+        var request = GetToolInputProperty(tools, "handwritten_unsent", "request");
+
+        Assert.Contains("secret", request.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+        Assert.Contains("file", request.GetProperty("properties").EnumerateObject().Select(x => x.Name));
+    }
+
+    [Fact]
+    public async Task AddMcpTools_IgnoresAnArgumentPropertyAGeneratedToolNeverSends_WhenTheClientSendsItAnyway()
+    {
+        // The SDK cannot read an IFormFile at all, so the call failed with "An error occurred invoking".
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_unsent");
+        await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions());
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+            """{"request":{"city":"Brno","secret":"s1","file":{"fileName":"a.txt"},"files":[{"fileName":"b.txt"}],"token":{"isCancellationRequested":true}},"upload":{"name":"n1","file":{"fileName":"c.txt"},"token":{}}}""")!;
+        var context = new RequestContext<CallToolRequestParams>(
+            server,
+            new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+            new CallToolRequestParams { Name = "generated_unsent", Arguments = arguments });
+
+        var result = await tool.InvokeAsync(context, CancellationToken.None);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal("Brno:default-secret:n1", Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text);
+    }
+
+    [Fact]
     public void AddMcpTools_LeavesAHandWrittenToolsOutputSchema_ToTheSdk()
     {
         var expected = GetOutputSchema(BuildTools(services => services.AddMcpServer().WithToolsFromAssembly(ToolAssembly)), "handwritten_structured");
@@ -143,6 +243,34 @@ public class McpExtensionsTests
             .GetProperty("properties");
 
         Assert.False(requestProperties.GetProperty("documented").TryGetProperty("description", out _));
+    }
+
+    [Fact]
+    public void AddMcpTools_RegistersABaseUrlProvider_ThatSeesTheRequest()
+    {
+        // An http binding follows a request that came in over https, which the provider can tell only from the request.
+        var addresses = new ServerAddressesFeature();
+        addresses.Addresses.Add("http://+:8080");
+        var features = new FeatureCollection();
+        features.Set<IServerAddressesFeature>(addresses);
+        var server = new Mock<IServer>();
+        server.Setup(x => x.Features).Returns(features);
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+                services.AddSingleton(server.Object);
+                services.AddMcpTools(ToolAssembly);
+            },
+            logs: null);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Scheme = "https";
+        httpContext.Request.Host = new HostString("api.example.com");
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = httpContext;
+
+        var baseUrl = provider.GetRequiredService<ISelfBaseUrlProvider>().GetBaseUrl();
+
+        Assert.Equal("https://api.example.com", baseUrl);
     }
 
     [Fact]
@@ -238,6 +366,48 @@ public class McpExtensionsTests
         Assert.Contains("\"structuredOutput\": false", warning.Message);
     }
 
+    [Theory]
+    [InlineData(HttpServerSessionMode.Stateful)]
+    [InlineData(HttpServerSessionMode.StatefulForInitializeClients)]
+    public async Task StartupCheck_Warns_WhenAStatefulSessionRunsToolCallsWithoutTheirRequests(HttpServerSessionMode sessionMode)
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+                services.Configure<HttpServerTransportOptions>(options => UsePerSessionExecutionContext(options, sessionMode));
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("PerSessionExecutionContext", warning.Message);
+        Assert.Contains(sessionMode.ToString(), warning.Message);
+        Assert.Contains("Authorization", warning.Message);
+        Assert.Contains("scope validation", warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_DoesNotWarnAboutPerSessionExecutionContext_InStatelessMode_WhichIgnoresIt()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+                services.Configure<HttpServerTransportOptions>(options => UsePerSessionExecutionContext(options, HttpServerSessionMode.Stateless));
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
     [Fact]
     public async Task StartupCheck_StaysSilent_WhenTheOptionIsOff()
     {
@@ -248,6 +418,14 @@ public class McpExtensionsTests
         await startupCheck.StartAsync(CancellationToken.None);
 
         Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
+    private static void UsePerSessionExecutionContext(HttpServerTransportOptions options, HttpServerSessionMode sessionMode)
+    {
+        options.SessionMode = sessionMode;
+#pragma warning disable MCP9006 // The obsolete option is what the tests are about.
+        options.PerSessionExecutionContext = true;
+#pragma warning restore MCP9006
     }
 
     private static List<McpServerTool> BuildTools(Action<IServiceCollection> register)
@@ -276,6 +454,33 @@ public class McpExtensionsTests
     private static bool IsGenerated(McpServerTool tool)
     {
         return tool.ProtocolTool.Name.StartsWith("generated_", StringComparison.Ordinal);
+    }
+
+    private static IEnumerable<string> CollectRefs(JsonNode? node)
+    {
+        return node switch
+        {
+            JsonObject jsonObject => jsonObject.SelectMany(x => x.Key == "$ref" ? [x.Value!.GetValue<string>()] : CollectRefs(x.Value)),
+            JsonArray jsonArray => jsonArray.SelectMany(CollectRefs),
+            _ => []
+        };
+    }
+
+    private static JsonNode? ResolvePointer(JsonNode root, string reference)
+    {
+        var current = root;
+        foreach (var segment in reference.TrimStart('#').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var name = segment.Replace("~1", "/").Replace("~0", "~");
+            current = current is JsonArray jsonArray ? jsonArray[int.Parse(name)] : current?[name];
+        }
+
+        return current;
+    }
+
+    private static JsonElement GetToolInputProperty(IEnumerable<McpServerTool> tools, string toolName, string argumentName)
+    {
+        return tools.Single(x => x.ProtocolTool.Name == toolName).ProtocolTool.InputSchema.GetProperty("properties").GetProperty(argumentName);
     }
 
     private static JsonElement GetOutputSchema(IEnumerable<McpServerTool> tools, string toolName)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Immutable;
+using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -28,13 +29,13 @@ namespace Api.ToMcp.Generator.Parsing
             if (!IsFirstDeclaration(namedType, classDecl) || !IsController(namedType, context.SemanticModel.Compilation))
                 return null;
 
-            var routePrefix = GetRoutePrefix(namedType);
+            var (routePrefix, routePrefixProblem) = GetRoutePrefix(namedType, context.SemanticModel.Compilation, ct);
             // [McpExpose] and [McpIgnore] are inherited: a base class's covers this controller, the actions it inherits from
             // that base included.
             var hasMcpExpose = HasNearestAttribute(namedType, McpExposeAttributeFullName);
             var hasMcpIgnore = HasNearestAttribute(namedType, McpIgnoreAttributeFullName);
 
-            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, context.SemanticModel.Compilation, ct);
+            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, routePrefixProblem, context.SemanticModel.Compilation, ct);
 
             return new ControllerInfoModel
             {
@@ -43,8 +44,29 @@ namespace Api.ToMcp.Generator.Parsing
                 RoutePrefix = routePrefix,
                 HasMcpExposeAttribute = hasMcpExpose,
                 HasMcpIgnoreAttribute = hasMcpIgnore,
-                Actions = actions
+                Actions = actions,
+                ActionNames = ActionMethodAnalyzer.GetActionNames(namedType),
+                BaseClasses = GetBaseClasses(namedType)
             };
+        }
+
+        /// <summary>
+        /// The classes the controller inherits actions from, nearest first, up to the framework's <c>ControllerBase</c>, whose
+        /// own methods are never actions.
+        /// </summary>
+        private static ImmutableArray<BaseClassModel> GetBaseClasses(INamedTypeSymbol controller)
+        {
+            var baseClasses = ImmutableArray.CreateBuilder<BaseClassModel>();
+            for (var type = controller.BaseType; type != null && !ActionMethodAnalyzer.IsFrameworkBaseType(type); type = type.BaseType)
+            {
+                baseClasses.Add(new BaseClassModel
+                {
+                    Name = type.Name,
+                    MethodNames = type.GetMembers().OfType<IMethodSymbol>().Select(x => x.Name).Distinct(StringComparer.Ordinal).ToImmutableArray()
+                });
+            }
+
+            return baseClasses.ToImmutable();
         }
 
         /// <summary>
@@ -113,22 +135,29 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The template of the nearest <c>[Route]</c>: MVC takes a controller's route attributes from the nearest class
-        /// that declares any, so a controller without one of its own is routed by its base class's, and one with its own
-        /// replaces the base's.
+        /// The template of the controller's route: MVC takes a controller's route attributes, <c>[Route]</c> or any other
+        /// <c>IRouteTemplateProvider</c>, from the nearest class that declares any, so a controller without one of its own
+        /// is routed by its base class's, and one with its own replaces the base's. Of several routes, the first that sets
+        /// a template, a name or an order; a problem, as a clause of MCP009's message, when its template cannot be read.
         /// </summary>
-        private static string? GetRoutePrefix(INamedTypeSymbol controller)
+        private static (string? Template, string? Problem) GetRoutePrefix(INamedTypeSymbol controller, Compilation compilation, CancellationToken ct)
         {
-            var routeAttr = ActionMethodAnalyzer.FindNearestAttribute(
-                controller,
-                x => x.BaseType,
-                x => x.AttributeClass?.Name == ActionMethodAnalyzer.RouteAttributeName);
-
-            if (routeAttr?.ConstructorArguments.Length > 0)
+            for (var type = controller; type != null; type = type.BaseType)
             {
-                return routeAttr.ConstructorArguments[0].Value?.ToString();
+                var routeAttributes = type.GetAttributes().Where(RouteAttributeReader.IsRouteTemplateProvider).ToList();
+                if (routeAttributes.Count == 0)
+                    continue;
+
+                var route = routeAttributes
+                    .Select(x => RouteAttributeReader.Read(x, compilation, ct))
+                    .FirstOrDefault(x => x.DefinesRoute);
+
+                return route is { IsTemplateKnown: false }
+                    ? (null, $"the generator cannot read the route template of the [{route.DisplayName}] attribute on {type.Name}, as {route.TemplateProblem}")
+                    : (route?.Template, null);
             }
-            return null;
+
+            return (null, null);
         }
     }
 }

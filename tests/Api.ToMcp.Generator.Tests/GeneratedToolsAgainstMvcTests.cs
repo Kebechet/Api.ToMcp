@@ -24,6 +24,7 @@ using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 using Xunit;
 
 namespace Api.ToMcp.Generator.Tests;
@@ -102,6 +103,94 @@ namespace TestApi
 
         [HttpPost(""upper/{Id}"")]
         public object PostUpper(int id) => new { id };
+
+        [HttpGet(""ordered"")]
+        public object GetOrdered(string name, int? count, OrderId orderId) => new { name, count, orderId = orderId.Value };
+
+        [HttpPost(""clash/{route}"")]
+        public object PostClash(string route, string invoker, string queryParts, [FromBody] ProductFilter bodyJson, string cancellationToken, string routeroute, string System, string JsonSerializer, string McpScope)
+            => new { route, invoker, queryParts, bodyJson.City, cancellationToken, routeroute, System, JsonSerializer, McpScope };
+
+        [HttpGet(""files/{**path}"")]
+        public object GetFile(string path) => new { path };
+
+        [HttpGet(""star/{*path}"")]
+        public object GetStar(string path) => new { path };
+
+        [HttpGet(""query-record/{orderId}"")]
+        public object GetQueryRecord([FromQuery] RecordRouteOrder q) => q;
+
+        [HttpGet(""query-aliased/{orderId}"")]
+        public object GetQueryAliased([FromQuery] AliasedRouteQuery q) => q;
+
+        [HttpGet(""query-named/{orderId}"")]
+        public object GetQueryNamed([FromQuery(Name = ""f"")] RecordRouteOrder q) => q;
+
+        [HttpPost(""body-route/{id}"")]
+        public object PostBodyRoute([FromBody] Shipment body, AttributedQuery q) => new { bodyId = body.Id, qId = q.Id, q.City };
+
+        [HttpGet(""text-order"")]
+        public object GetTextOrder(TextOrderId id) => new { id = id.Value };
+
+        [HttpPost(""text-order"")]
+        public object PostTextOrder(TextOrderId id) => new { id = id.Value };
+
+        [HttpPost(""plain-code"")]
+        public object PostPlainCode([ModelBinder(typeof(PlainCodeBinder), Name = ""code"")] PlainCode value) => new { code = value.Value };
+
+        [HttpPost(""typed-binder"")]
+        public object PostTypedBinder(TypedBinderQuery q) => q;
+
+        [HttpPost(""nullable-binder"")]
+        public object PostNullableBinder(NullableBinderQuery q) => q;
+
+        [HttpPost(""file-query"")]
+        public object PostFileQuery(FileQuery q) => new { q.City, hasAttachment = q.Attachment is not null };
+
+        [HttpPost(""file-list-query"")]
+        public object PostFileListQuery(FileListQuery q) => new { q.City };
+
+        [HttpGet(""nan"")]
+        public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
+            => new { isNaN = double.IsNaN(value), inf = float.IsPositiveInfinity(inf), negInf = double.IsNegativeInfinity(negInf), query = Request.QueryString.Value };
+
+        // MVC refuses 99, which no member of OrderStatus has, from text, but applies it as the default of a value not sent.
+        [HttpGet(""defaults"")]
+        public object GetDefaults(OrderStatus unknown = (OrderStatus)99, int page = 2, string text = ""x"")
+            => new { unknown, page, text, query = Request.QueryString.Value };
+
+        // MVC answers 400 when a binding-required or [Required] parameter gets no value, its default notwithstanding.
+        [HttpGet(""bind-required"")]
+        public object GetBindRequired([FromQuery, Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int page = 1) => new { page, query = Request.QueryString.Value };
+
+        [HttpGet(""required-default"")]
+        public object GetRequiredDefault([FromQuery, System.ComponentModel.DataAnnotations.Required] int size = 1) => new { size, query = Request.QueryString.Value };
+
+        [HttpGet(""must-bind"")]
+        public object GetMustBind([FromQuery, MustBind] int page = 1) => new { page, query = Request.QueryString.Value };
+
+        // MVC reads a combination of [Flags] members from the text C# writes of it, and refuses a value none makes.
+        [HttpGet(""access"")]
+        public object GetAccess([FromQuery] EchoAccess access = EchoAccess.Read) => new { access, query = Request.QueryString.Value };
+
+        [HttpGet(""names/{name}.{ext?}"")]
+        public object GetFileName(string name, string ext = ""txt"") => new { name, ext, path = Request.Path.Value };
+
+        // MVC serves the action at report without the dot, and answers report. with 404.
+        [HttpGet(""optional-names/{name}.{ext?}"")]
+        public object GetOptionalFileName(string name, string? ext = null) => new { name, ext, path = Request.Path.Value };
+
+        [HttpGet(""optional-names/{name}.{ext?}/size"")]
+        public object GetOptionalFileSize(string name, string? ext = null) => new { name, ext, path = Request.Path.Value };
+
+        [HttpGet(""default-route/{status?}"")]
+        public object GetDefaultRoute(OrderStatus status = (OrderStatus)99) => new { status, path = Request.Path.Value };
+
+        [HttpPost(""default-body"")]
+        public object PostDefaultBody([FromBody] OrderStatus status = (OrderStatus)99) => new { status };
+
+        [HttpGet(""optional/{id?}"")]
+        public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
 
     [Route(""plain"")]
@@ -131,8 +220,117 @@ namespace TestApi
         [HttpGet(""record-property-named"")]
         public object GetRecordPropertyNamed(RecordPropertyNamedCity filter) => filter;
 
+        [HttpGet(""private-getter"")]
+        public object GetPrivateGetter(PrivateGetterFilter filter) => new { filter.City, query = Request.QueryString.Value };
+
         [HttpGet(""record-query-id/{id}"")]
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
+    }
+
+    [Flags]
+    public enum EchoAccess
+    {
+        Read = 1,
+        Write = 2
+    }
+
+    public sealed class MustBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public MustBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Required)
+        {
+        }
+    }
+
+    // Route attributes an app derives from MVC's or implements itself, which MVC reads by their interfaces.
+    public sealed class EchoRouteAttribute : RouteAttribute
+    {
+        public EchoRouteAttribute() : base(""custom/[controller]"")
+        {
+        }
+    }
+
+    public sealed class EchoGetAttribute : HttpGetAttribute
+    {
+        public EchoGetAttribute(string template) : base(""by/"" + template)
+        {
+        }
+    }
+
+    public sealed class EchoVersionRouteAttribute : RouteAttribute
+    {
+        public EchoVersionRouteAttribute(int version) : base($""v{version}/[controller]"")
+        {
+        }
+    }
+
+    public enum EchoVersion
+    {
+        V1 = 1,
+        V2 = 2
+    }
+
+    public sealed class EchoEnumRouteAttribute : RouteAttribute
+    {
+        public EchoEnumRouteAttribute(EchoVersion version) : base($""e/{version}/[controller]"")
+        {
+        }
+    }
+
+    [EchoEnumRoute(EchoVersion.V2)]
+    public class EnumEchoController : ControllerBase
+    {
+        [HttpGet(""ping"")]
+        public object Ping() => new { path = Request.Path.Value };
+    }
+
+    [EchoVersionRoute(2)]
+    public class VersionedEchoController : ControllerBase
+    {
+        [HttpGet(""ping"")]
+        public object Ping() => new { path = Request.Path.Value };
+    }
+
+    public sealed class EchoCustomGetAttribute : Attribute, Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider, Microsoft.AspNetCore.Mvc.Routing.IActionHttpMethodProvider
+    {
+        public string? Template { get; set; } = ""fallback"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+
+        public IEnumerable<string> HttpMethods => new[] { ""GET"" };
+    }
+
+    public sealed class EchoDocsRouteAttribute : Attribute, Microsoft.AspNetCore.Mvc.Routing.IRouteTemplateProvider
+    {
+        public string Template => ""docs/{slug}"";
+
+        public int? Order => null;
+
+        public string? Name => null;
+    }
+
+    [ApiController]
+    [EchoRoute]
+    public class CustomRouteController : ControllerBase
+    {
+        [EchoGet(""{id}"")]
+        public object GetById(int id) => new { id, path = Request.Path.Value };
+
+        [AcceptVerbs(""HEAD"", ""PATCH"", Route = ""verbs/{id}"")]
+        public object PatchVerbs(int id, [FromBody] ProductFilter filter) => new { id, filter.City, method = Request.Method };
+
+        // A name makes [HttpGet] a route of its own, the controller's, while [Route] serves every method at its template.
+        [HttpGet(Name = ""named-get"")]
+        [Route(""named/{id}"")]
+        public object GetNamed(int id) => new { id };
+
+        [EchoCustomGet(Template = ""custom-get"")]
+        public object GetCustom() => new { path = Request.Path.Value };
+
+        [HttpGet]
+        [EchoDocsRoute]
+        public object GetDocs(string slug) => new { slug };
     }
 
     // Actions a concrete controller inherits from a generic base, with the base's type arguments substituted.
@@ -200,6 +398,46 @@ namespace TestApi
     [InlineData("EchoController_GetOrderTool", @"{""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""orderId"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostBodyIdTool", @"{""id"":{""value"":""" + OrderGuid + @"""}}", @"{""id"":""" + OrderGuid + @"""}")]
     [InlineData("EchoController_PostUpperTool", @"{""id"":7}", @"{""id"":7}")]
+    [InlineData("EchoController_GetOrderedTool", @"{""name"":""a"",""count"":2,""orderId"":{""value"":""" + OrderGuid + @"""}}", @"{""name"":""a"",""count"":2,""orderId"":""" + OrderGuid + @"""}")]
+    [InlineData("EchoController_PostClashTool", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""bodyJson"":{""city"":""Brno""},""cancellationToken"":""c1"",""routeroute"":""rr"",""System"":""s1"",""JsonSerializer"":""j1"",""McpScope"":""m1""}", @"{""route"":""r1"",""invoker"":""i1"",""queryParts"":""q1"",""city"":""Brno"",""cancellationToken"":""c1"",""routeroute"":""rr"",""system"":""s1"",""jsonSerializer"":""j1"",""mcpScope"":""m1""}")]
+    [InlineData("EchoController_GetQueryRecordTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}}", @"{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}")]
+    [InlineData("EchoController_GetQueryAliasedTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno""}}", @"{""order"":""" + OrderGuid + @""",""city"":""Brno""}")]
+    // MVC binds a parameter with a name of its own under that prefix, so never from the route.
+    [InlineData("EchoController_GetQueryNamedTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno"",""page"":3}}", @"{""order"":""00000000-0000-0000-0000-000000000000"",""city"":""Brno"",""page"":3}")]
+    [InlineData("EchoController_PostBodyRouteTool", @"{""body"":{""id"":9,""note"":""n""},""q"":{""id"":7,""city"":""Brno""}}", @"{""bodyId"":9,""qId"":7,""city"":""Brno""}")]
+    [InlineData("EchoController_GetTextOrderTool", @"{""id"":{""value"":""A-7""}}", @"{""id"":""A-7""}")]
+    [InlineData("EchoController_PostTextOrderTool", @"{""id"":{""value"":""A-7""}}", @"{""id"":""A-7""}")]
+    [InlineData("EchoController_PostPlainCodeTool", @"{""value"":{""value"":""B-8""}}", @"{""code"":""B-8""}")]
+    [InlineData("EchoController_PostTypedBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
+    [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
+    [InlineData("EchoController_PostFileQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno"",""hasAttachment"":false}")]
+    [InlineData("EchoController_PostFileListQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
+    [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
+    [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
+    [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
+    [InlineData("VersionedEchoController_PingTool", @"{}", @"{""path"":""/v2/versionedecho/ping""}")]
+    [InlineData("EnumEchoController_PingTool", @"{}", @"{""path"":""/e/V2/enumecho/ping""}")]
+    [InlineData("CustomRouteController_GetCustomTool", @"{}", @"{""path"":""/custom/customroute/custom-get""}")]
+    [InlineData("CustomRouteController_GetDocsTool", @"{""slug"":""intro""}", @"{""slug"":""intro""}")]
+    [InlineData("EchoController_GetFileTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
+    [InlineData("EchoController_GetStarTool", @"{""path"":""a/b c""}", @"{""path"":""a/b c""}")]
+    [InlineData("EchoController_GetOptionalTool", @"{}", @"{""id"":null,""path"":""/api/optional""}")]
+    [InlineData("EchoController_GetDefaultsTool", @"{}", @"{""unknown"":99,""page"":2,""text"":""x"",""query"":""""}")]
+    [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":1,""page"":3}", @"{""unknown"":1,""page"":3,""text"":""x"",""query"":""?unknown=Closed&page=3""}")]
+    [InlineData("EchoController_GetBindRequiredTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
+    [InlineData("EchoController_GetRequiredDefaultTool", @"{}", @"{""size"":1,""query"":""?size=1""}")]
+    [InlineData("EchoController_GetMustBindTool", @"{}", @"{""page"":1,""query"":""?page=1""}")]
+    [InlineData("EchoController_GetAccessTool", @"{""access"":3}", @"{""access"":3,""query"":""?access=Read%2C%20Write""}")]
+    [InlineData("EchoController_GetFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":""txt"",""path"":""/api/names/report.txt""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":""""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":""csv""}", @"{""name"":""report"",""ext"":""csv"",""path"":""/api/optional-names/report.csv""}")]
+    [InlineData("EchoController_GetOptionalFileSizeTool", @"{""name"":""report""}", @"{""name"":""report"",""ext"":null,""path"":""/api/optional-names/report/size""}")]
+    [InlineData("EchoController_GetDefaultRouteTool", @"{}", @"{""status"":99,""path"":""/api/default-route/""}")]
+    [InlineData("EchoController_GetDefaultRouteTool", @"{""status"":1}", @"{""status"":1,""path"":""/api/default-route/Closed""}")]
+    [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]
+    [InlineData("EchoController_GetNanTool", @"{}", @"{""isNaN"":true,""inf"":true,""negInf"":true,""query"":""""}")]
+    [InlineData("EchoController_GetNanTool", @"{""value"":1.5}", @"{""isNaN"":false,""inf"":true,""negInf"":true,""query"":""?value=1.5""}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]
@@ -208,6 +446,7 @@ namespace TestApi
     [InlineData("PlainEchoController_GetSameTool", @"{""a"":{""id"":7,""note"":""na""},""b"":{""id"":9,""note"":""nb""}}", @"{""aId"":7,""aNote"":""na"",""bId"":9,""bNote"":""nb""}")]
     [InlineData("PlainEchoController_GetRecordNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
     [InlineData("PlainEchoController_GetRecordPropertyNamedTool", @"{""filter"":{""city"":""Brno"",""page"":3}}", @"{""city"":""Brno"",""page"":3,""extra"":0}")]
+    [InlineData("PlainEchoController_GetPrivateGetterTool", @"{""filter"":{""city"":""Brno"",""secret"":""s1""}}", @"{""city"":""Brno"",""query"":""?filter.City=Brno""}")]
     [InlineData("PlainEchoController_GetRecordQueryIdTool", @"{""id"":7,""filter"":{""id"":9,""city"":""Brno""}}", @"{""id"":7,""filterId"":9,""city"":""Brno""}")]
     [InlineData("OrderEchoController_GetByIdTool", @"{""id"":{""value"":""" + OrderGuid + @"""}}", @"{""id"":{""value"":""" + OrderGuid + @"""}}")]
     [InlineData("OrderEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
@@ -220,6 +459,45 @@ namespace TestApi
 
         Assert.True(statusCode == StatusCodes.Status200OK, $"{toolClassName}: {statusCode} {body}");
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedEcho), JsonNode.Parse(body)), $"{toolClassName}: expected {expectedEcho}, MVC bound {body}");
+    }
+
+    [Theory]
+    [InlineData("EchoController_GetAccessTool", @"{""access"":8}")]
+    [InlineData("EchoController_GetAccessTool", @"{""access"":0}")]
+    [InlineData("EchoController_GetDefaultsTool", @"{""unknown"":5}")]
+    public async Task Mvc_RefusesAnEnumValueAsText_ThatNoMemberNorCombinationOfFlagsMakes(string toolClassName, string arguments)
+    {
+        // So a tool that cannot tell whether MVC requires a value leaves out such a default rather than send it.
+        var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
+
+        Assert.True(statusCode == StatusCodes.Status400BadRequest, $"{toolClassName}: {statusCode} {body}");
+    }
+
+    [Fact]
+    public void Tool_RequiresTheArgumentsItsActionRequires_WhenAnOptionalOneComesBeforeThem()
+    {
+        var inputSchema = _host.GetInputSchema("EchoController_GetOrderedTool");
+
+        Assert.Equal(["name", "orderId"], inputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal(["count", "name", "orderId"], inputSchema.GetProperty("properties").EnumerateObject().Select(x => x.Name).Order());
+    }
+
+    [Fact]
+    public void Tool_OfAnActionWithANaNOrInfiniteDefault_HasAnInputSchemaTheSdkCanWrite()
+    {
+        // JSON has no NaN or infinity, so the MCP SDK throws writing such a default into the schema, and the host with it.
+        var properties = _host.GetInputSchema("EchoController_GetNanTool").GetProperty("properties");
+
+        Assert.Equal(["inf", "negInf", "value"], properties.EnumerateObject().Select(x => x.Name).Order());
+    }
+
+    [Fact]
+    public void EveryGeneratedTool_IsBuiltByTheMcpSdk()
+    {
+        var toolClassNames = _host.ToolClassNames;
+
+        Assert.NotEmpty(toolClassNames);
+        Assert.All(toolClassNames, x => _host.GetInputSchema(x));
     }
 
     /// <summary>
@@ -270,12 +548,42 @@ namespace TestApi
                 .GetParameters()
                 .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? _invoker
                     : x.ParameterType == typeof(CancellationToken) ? CancellationToken.None
-                    : argumentValues[x.Name!]?.Deserialize(x.ParameterType, ArgumentOptions))
+                    : argumentValues.TryGetPropertyValue(x.Name!, out var argument) ? argument?.Deserialize(x.ParameterType, ArgumentOptions)
+                    : GetDefaultArgument(x))
                 .ToArray();
 
             await (Task)toolMethod.Invoke(null, parameterValues)!;
 
             return _invoker.LastResponse;
+        }
+
+        public IReadOnlyList<string> ToolClassNames => _assembly.GetTypes()
+            .Where(x => x.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .Select(x => x.Name)
+            .ToList();
+
+        /// <summary>
+        /// The input schema the MCP SDK gives a generated tool, with the invoker bound from the services, as in the app.
+        /// </summary>
+        public JsonElement GetInputSchema(string toolClassName)
+        {
+            var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
+            using var services = new ServiceCollection().AddSingleton<IMcpHttpInvoker>(_invoker).BuildServiceProvider();
+
+            return McpServerTool.Create(toolMethod, options: new McpServerToolCreateOptions { Services = services }).ProtocolTool.InputSchema;
+        }
+
+        /// <summary>
+        /// The value the MCP SDK passes for an argument the call leaves out: the parameter's default, which reflection gives
+        /// an enum's as its number.
+        /// </summary>
+        private static object? GetDefaultArgument(ParameterInfo parameter)
+        {
+            var type = Nullable.GetUnderlyingType(parameter.ParameterType) ?? parameter.ParameterType;
+
+            return !parameter.HasDefaultValue ? null
+                : parameter.DefaultValue is { } value && type.IsEnum ? Enum.ToObject(type, value)
+                : parameter.DefaultValue;
         }
 
         private static Assembly CompileWithGeneratedTools(string source)

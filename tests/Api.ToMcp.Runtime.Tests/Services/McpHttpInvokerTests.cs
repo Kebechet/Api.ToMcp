@@ -3,7 +3,9 @@ using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using ModelContextProtocol.Protocol;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
@@ -847,13 +849,15 @@ public class McpHttpInvokerTests
 
     #endregion
 
-    #region BuildUrl Reverse Proxy Override Tests
+    #region BuildUrl Base Url Tests
 
     [Fact]
-    public async Task BuildUrl_OverridesHttpBaseUrl_WhenIncomingRequestIsHttps()
+    public async Task BuildUrl_UsesTheProvidersHttpAddressAsGiven_WhenTheRequestCameInOverHttps()
     {
+        // An address a custom provider or McpTools:BaseUrl gives is the one to call; the default provider decides
+        // itself whether an address it took from the server bindings has to follow the request to https.
         _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
-        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
+        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit:8443");
 
         HttpRequestMessage? capturedRequest = null;
         SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
@@ -862,11 +866,35 @@ public class McpHttpInvokerTests
         await invoker.GetAsync("/api/changelog");
 
         Assert.NotNull(capturedRequest);
-        Assert.Equal("https://api.satis.fit/api/changelog", capturedRequest.RequestUri?.ToString());
+        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
     }
 
     [Fact]
-    public async Task BuildUrl_DoesNotOverride_WhenBaseUrlIsAlreadyHttps()
+    public async Task BuildUrl_UsesTheConfiguredHttpBaseUrlAsGiven_WhenTheRequestCameInOverHttps()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["McpTools:BaseUrl"] = "http://localhost:8080" })
+            .Build();
+        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
+        var baseUrlProvider = new DefaultBaseUrlProvider(new Mock<IServer>().Object, configuration, _httpContextAccessorMock.Object);
+
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var invoker = new McpHttpInvoker(
+            new HttpClient(_httpMessageHandlerMock.Object),
+            baseUrlProvider,
+            _httpContextAccessorMock.Object,
+            _loggerMock.Object,
+            _scopeOptionsMock.Object);
+        await invoker.GetAsync("/api/changelog");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task BuildUrl_UsesTheProvidersHttpsAddress()
     {
         _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("https://localhost:5100");
         SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
@@ -879,54 +907,6 @@ public class McpHttpInvokerTests
 
         Assert.NotNull(capturedRequest);
         Assert.Equal("https://localhost:5100/api/changelog", capturedRequest.RequestUri?.ToString());
-    }
-
-    [Fact]
-    public async Task BuildUrl_DoesNotOverride_WhenIncomingRequestIsAlsoHttp()
-    {
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
-        SetupHttpContextWithSchemeAndHost("http", "localhost:8080");
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = CreateInvoker();
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
-    }
-
-    [Fact]
-    public async Task BuildUrl_DoesNotOverride_WhenHttpContextIsNull()
-    {
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
-        _httpContextAccessorMock.Setup(x => x.HttpContext).Returns((HttpContext?)null);
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = CreateInvoker();
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
-    }
-
-    [Fact]
-    public async Task BuildUrl_OverridesWithPortFromIncomingRequest()
-    {
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
-        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit:8443");
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = CreateInvoker();
-        await invoker.GetAsync("api/test");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("https://api.satis.fit:8443/api/test", capturedRequest.RequestUri?.ToString());
     }
 
     #endregion
