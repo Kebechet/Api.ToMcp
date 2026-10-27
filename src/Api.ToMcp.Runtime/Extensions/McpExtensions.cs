@@ -2,9 +2,12 @@ using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using Api.ToMcp.Runtime.Middleware;
@@ -27,8 +30,9 @@ public static class McpExtensions
     internal const string DefaultMcpPattern = "mcp";
 
     /// <summary>
-    /// Registers MCP tool services including HTTP invoker and base URL provider, and every tool of the assembly:
-    /// the generated ones and any hand-written <see cref="McpServerToolTypeAttribute"/> class.
+    /// Registers MCP tool services, among them the invoker that serves a tool's API request in process, through the
+    /// request pipeline the host builds for the server, and every tool of the assembly: the generated ones and any
+    /// hand-written <see cref="McpServerToolTypeAttribute"/> class.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
@@ -41,7 +45,16 @@ public static class McpExtensions
     {
         services.AddHttpContextAccessor();
         services.AddSingleton<ISelfBaseUrlProvider, DefaultBaseUrlProvider>();
-        services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>();
+        services.TryAddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
+        services.TryAddSingleton<InProcessApiPipeline>();
+        CaptureThePipelineTheHostBuilds(services);
+        services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) => new McpHttpInvoker(
+            httpClient,
+            serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
+            serviceProvider.GetRequiredService<IHttpContextAccessor>(),
+            serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
+            serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
+            serviceProvider.GetRequiredService<InProcessApiPipeline>()));
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
         services.TryAddSingleton<McpOutputSchemaBuilder>();
@@ -106,6 +119,39 @@ public static class McpExtensions
             endpoint.AllowAnonymous();
         }
         return endpoints;
+    }
+
+    /// <summary>
+    /// Wraps the factory the host builds the app's request pipeline with, so <see cref="InProcessApiPipeline"/> gets that
+    /// pipeline: the one the host registered when it did so before the app's services, as <c>WebApplicationBuilder</c>
+    /// does, and otherwise the default the host would register, which its TryAdd then leaves in place.
+    /// </summary>
+    private static void CaptureThePipelineTheHostBuilds(IServiceCollection services)
+    {
+        var hostFactory = services.LastOrDefault(x => x.ServiceType == typeof(IApplicationBuilderFactory) && !x.IsKeyedService);
+        if (hostFactory is not null)
+        {
+            services.Remove(hostFactory);
+        }
+
+        services.Add(ServiceDescriptor.Describe(
+            typeof(IApplicationBuilderFactory),
+            serviceProvider => new PipelineCapturingApplicationBuilderFactory(
+                CreateHostFactory(serviceProvider, hostFactory),
+                serviceProvider.GetRequiredService<InProcessApiPipeline>()),
+            hostFactory?.Lifetime ?? ServiceLifetime.Singleton));
+    }
+
+    private static IApplicationBuilderFactory CreateHostFactory(IServiceProvider serviceProvider, ServiceDescriptor? hostFactory)
+    {
+        if (hostFactory is null)
+        {
+            return new ApplicationBuilderFactory(serviceProvider);
+        }
+
+        return (IApplicationBuilderFactory)(hostFactory.ImplementationInstance ??
+            hostFactory.ImplementationFactory?.Invoke(serviceProvider) ??
+            ActivatorUtilities.CreateInstance(serviceProvider, hostFactory.ImplementationType!));
     }
 
     /// <summary>
