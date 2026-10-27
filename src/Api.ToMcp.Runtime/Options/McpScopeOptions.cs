@@ -28,4 +28,12 @@ public class McpScopeOptions
     /// startup. Defaults to <see langword="true"/>.
     /// </summary>
     public bool ArePropertyDescriptionsFromXmlDocs { get; set; } = true;
+
+    /// <summary>
+    /// Whether a generated tool serves its API request inside this process, through the request pipeline the host built
+    /// for the server, so it passes every middleware a request the server receives passes, with no socket and no address
+    /// to call. When <see langword="false"/>, or when the host built no pipeline, the request goes over HTTP to the
+    /// address <see cref="ISelfBaseUrlProvider"/> gives. Defaults to <see langword="true"/>.
+    /// </summary>
+    public bool AreApiCallsInProcess { get; set; } = true;
 }
