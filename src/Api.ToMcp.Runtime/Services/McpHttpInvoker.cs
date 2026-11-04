@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net.Mime;
 using System.Text;
 using System.Text.Json;
 using Api.ToMcp.Abstractions.Scopes;
@@ -14,99 +15,91 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 {
     private const string LoopPreventionHeader = "X-MCP-Internal-Call";
     private const string LoopPreventionValue = "true";
+    private const char PathSeparator = '/';
 
     private readonly HttpClient _httpClient;
     private readonly ISelfBaseUrlProvider _baseUrlProvider;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<McpHttpInvoker> _logger;
     private readonly McpScopeOptions _scopeOptions;
+    private readonly InProcessApiPipeline? _inProcessPipeline;
 
+    /// <summary>
+    /// An invoker that sends every request over HTTP. Only the invoker <c>AddMcpTools</c> registers is handed the app's
+    /// request pipeline to serve the requests in process.
+    /// </summary>
     public McpHttpInvoker(
         HttpClient httpClient,
         ISelfBaseUrlProvider baseUrlProvider,
         IHttpContextAccessor httpContextAccessor,
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions)
+        : this(httpClient, baseUrlProvider, httpContextAccessor, logger, scopeOptions, inProcessPipeline: null)
+    {
+    }
+
+    internal McpHttpInvoker(
+        HttpClient httpClient,
+        ISelfBaseUrlProvider baseUrlProvider,
+        IHttpContextAccessor httpContextAccessor,
+        ILogger<McpHttpInvoker> logger,
+        IOptions<McpScopeOptions> scopeOptions,
+        InProcessApiPipeline? inProcessPipeline)
     {
         _httpClient = httpClient;
         _baseUrlProvider = baseUrlProvider;
         _httpContextAccessor = httpContextAccessor;
         _logger = logger;
         _scopeOptions = scopeOptions.Value;
+        _inProcessPipeline = inProcessPipeline;
     }
 
-    public async Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
+    public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
     {
-        var url = BuildUrl(route);
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        ConfigureRequest(request);
-
-        _logger.LogDebug("MCP invoking GET {Url}", url);
-
-        var response = await _httpClient.SendAsync(request, ct);
-        return await HandleResponse(response, ct);
+        return SendAsync(HttpMethod.Get, route, jsonBody: null, ct);
     }
 
-    public async Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default)
+    public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default)
     {
-        var url = BuildUrl(route);
-        using var request = new HttpRequestMessage(HttpMethod.Post, url);
-        ConfigureRequest(request);
-
-        if (jsonBody is not null)
-        {
-            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-        }
-
-        _logger.LogDebug("MCP invoking POST {Url}", url);
-
-        var response = await _httpClient.SendAsync(request, ct);
-        return await HandleResponse(response, ct);
+        return SendAsync(HttpMethod.Post, route, jsonBody, ct);
     }
 
-    public async Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default)
+    public Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default)
     {
-        var url = BuildUrl(route);
-        using var request = new HttpRequestMessage(HttpMethod.Put, url);
-        ConfigureRequest(request);
-
-        if (jsonBody is not null)
-        {
-            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-        }
-
-        _logger.LogDebug("MCP invoking PUT {Url}", url);
-
-        var response = await _httpClient.SendAsync(request, ct);
-        return await HandleResponse(response, ct);
+        return SendAsync(HttpMethod.Put, route, jsonBody, ct);
     }
 
-    public async Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default)
+    public Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default)
     {
-        var url = BuildUrl(route);
-        using var request = new HttpRequestMessage(HttpMethod.Patch, url);
+        return SendAsync(HttpMethod.Patch, route, jsonBody, ct);
+    }
+
+    public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default)
+    {
+        return SendAsync(HttpMethod.Delete, route, jsonBody: null, ct);
+    }
+
+    private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
+    {
+        var caller = _httpContextAccessor.HttpContext;
+        var isInProcess = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is { IsCaptured: true };
+        var url = isInProcess && caller is { Request.Host.HasValue: true }
+            ? BuildInProcessUrl(caller.Request, route)
+            : BuildUrl(route);
+
+        using var request = new HttpRequestMessage(method, url);
         ConfigureRequest(request);
 
         if (jsonBody is not null)
         {
-            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+            request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
         }
 
-        _logger.LogDebug("MCP invoking PATCH {Url}", url);
+        _logger.LogDebug("MCP invoking {Method} {Url}", method.Method, url);
 
-        var response = await _httpClient.SendAsync(request, ct);
-        return await HandleResponse(response, ct);
-    }
-
-    public async Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default)
-    {
-        var url = BuildUrl(route);
-        using var request = new HttpRequestMessage(HttpMethod.Delete, url);
-        ConfigureRequest(request);
-
-        _logger.LogDebug("MCP invoking DELETE {Url}", url);
-
-        var response = await _httpClient.SendAsync(request, ct);
+        using var response = isInProcess
+            ? await _inProcessPipeline!.SendAsync(request, caller, ct)
+            : await _httpClient.SendAsync(request, ct);
         return await HandleResponse(response, ct);
     }
 
@@ -164,10 +157,22 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     /// </summary>
     private string BuildUrl(string route)
     {
-        var baseUrl = _baseUrlProvider.GetBaseUrl();
+        return _baseUrlProvider.GetBaseUrl() + NormalizeRoute(route);
+    }
 
-        var normalizedRoute = route.StartsWith("/") ? route : "/" + route;
-        return baseUrl + normalizedRoute;
+    /// <summary>
+    /// The route at the address the MCP request came to, with its scheme and host as the app saw them, so the app filters
+    /// and redirects the request as it did the MCP request; the pipeline hands over its path base. The request never
+    /// leaves the process, so its host only names the request to the app.
+    /// </summary>
+    private static string BuildInProcessUrl(HttpRequest caller, string route)
+    {
+        return caller.Scheme + Uri.SchemeDelimiter + caller.Host.ToUriComponent() + NormalizeRoute(route);
+    }
+
+    private static string NormalizeRoute(string route)
+    {
+        return route.StartsWith(PathSeparator) ? route : PathSeparator + route;
     }
 
     private void ConfigureRequest(HttpRequestMessage request)

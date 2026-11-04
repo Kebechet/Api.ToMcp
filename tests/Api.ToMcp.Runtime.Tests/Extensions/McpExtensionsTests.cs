@@ -6,6 +6,8 @@ using Api.ToMcp.Abstractions;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
@@ -13,6 +15,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
@@ -274,6 +277,63 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public async Task AddMcpTools_HandsTheInvokerThePipelineTheHostBuilds_WhenTheHostRegisteredItsBuilderFactoryFirst()
+    {
+        // WebApplicationBuilder registers the factory before the app's own services.
+        using var provider = BuildProvider(
+            services =>
+            {
+                RegisterHostServices(services);
+                services.AddMcpTools(ToolAssembly);
+            },
+            logs: null);
+
+        var result = await CallThroughThePipelineTheHostBuildsAsync(provider);
+
+        Assert.Equal("served in process", ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task AddMcpTools_HandsTheInvokerThePipelineTheHostBuilds_WhenTheHostRegistersItsBuilderFactoryAfter()
+    {
+        // A generic host's ConfigureServices callback can run before ConfigureWebHost registers the factory with TryAdd.
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddMcpTools(ToolAssembly);
+                RegisterHostServices(services);
+            },
+            logs: null);
+
+        var result = await CallThroughThePipelineTheHostBuildsAsync(provider);
+
+        Assert.Equal("served in process", ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task AnInvokerRegisteredAgainAsATypedClient_CallsOverHttp_ThroughTheHandlerItIsGiven()
+    {
+        // Tests written before tools ran their requests in process re-register the typed client to hand it a TestServer
+        // handler; such an invoker keeps calling through that handler.
+        var requests = new List<string>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                RegisterHostServices(services);
+                services.AddMcpTools(ToolAssembly);
+                services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
+                services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()
+                    .ConfigurePrimaryHttpMessageHandler(() => new RecordingHandler(requests));
+            },
+            logs: null);
+
+        var result = await CallThroughThePipelineTheHostBuildsAsync(provider);
+
+        Assert.Equal("over http", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Equal(["http://localhost/api/status"], requests);
+    }
+
+    [Fact]
     public void AddMcpTools_RegistersTheStartupCheck_AsAHostedService()
     {
         var services = new ServiceCollection();
@@ -449,6 +509,68 @@ public class McpExtensionsTests
         register(services);
 
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// What the web host registers with TryAdd, and a server with no address, so a request sent over HTTP fails.
+    /// </summary>
+    private static void RegisterHostServices(IServiceCollection services)
+    {
+        var server = new Mock<IServer>();
+        server.Setup(x => x.Features).Returns(new FeatureCollection());
+        services.TryAddSingleton<IApplicationBuilderFactory, ApplicationBuilderFactory>();
+        services.TryAddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
+        services.TryAddSingleton(server.Object);
+        services.TryAddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+    }
+
+    /// <summary>
+    /// Builds the app's pipeline as the host does when it starts, then calls the API through the registered invoker
+    /// during an MCP request.
+    /// </summary>
+    private static Task<CallToolResult> CallThroughThePipelineTheHostBuildsAsync(IServiceProvider provider)
+    {
+        var app = provider.GetRequiredService<IApplicationBuilderFactory>().CreateBuilder(new FeatureCollection());
+        app.Run(context => context.Response.WriteAsync("served in process"));
+        app.Build();
+
+        var caller = new DefaultHttpContext();
+        caller.Request.Scheme = "https";
+        caller.Request.Host = new HostString("api.example.com");
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = caller;
+
+        return provider.GetRequiredService<IMcpHttpInvoker>().GetAsync("/api/status");
+    }
+
+    private sealed class RecordingHandler : HttpMessageHandler
+    {
+        private readonly List<string> _requests;
+
+        public RecordingHandler(List<string> requests)
+        {
+            _requests = requests;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _requests.Add(request.RequestUri!.ToString());
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("over http") });
+        }
+    }
+
+    private sealed class FixedBaseUrlProvider : ISelfBaseUrlProvider
+    {
+        private readonly string _baseUrl;
+
+        public FixedBaseUrlProvider(string baseUrl)
+        {
+            _baseUrl = baseUrl;
+        }
+
+        public string GetBaseUrl()
+        {
+            return _baseUrl;
+        }
     }
 
     private static bool IsGenerated(McpServerTool tool)
