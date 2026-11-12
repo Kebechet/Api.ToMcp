@@ -114,6 +114,10 @@ internal sealed class InProcessApiPipeline
                     // A response without a body has not started yet. Like a server, run its OnStarting callbacks only
                     // when the app succeeded; one that throws fails the request as the app would.
                     await exchange.Response.Feature.StartAsync();
+
+                    // Response.BodyWriter holds what the app wrote until a flush, and a server flushes it once the
+                    // app ends.
+                    await exchange.ResponseBody.CompleteAsync();
                 }
                 catch (Exception exception)
                 {
@@ -153,16 +157,19 @@ internal sealed class InProcessApiPipeline
     /// </summary>
     private sealed class InProcessExchange : IDisposable
     {
-        private InProcessExchange(FeatureCollection features, InProcessResponse response, RequestLifetimeFeature lifetime)
+        private InProcessExchange(FeatureCollection features, InProcessResponse response, StreamResponseBodyFeature responseBody, RequestLifetimeFeature lifetime)
         {
             Features = features;
             Response = response;
+            ResponseBody = responseBody;
             Lifetime = lifetime;
         }
 
         public FeatureCollection Features { get; }
 
         public InProcessResponse Response { get; }
+
+        public StreamResponseBodyFeature ResponseBody { get; }
 
         public RequestLifetimeFeature Lifetime { get; }
 
@@ -204,13 +211,14 @@ internal sealed class InProcessApiPipeline
             }
 
             var response = new InProcessResponse();
+            var responseBody = new StreamResponseBodyFeature(new InProcessResponseBodyStream(response.Body, response.Feature));
             var lifetime = new RequestLifetimeFeature(cancellationToken);
             var features = new FeatureCollection();
             features.Set<IHttpRequestFeature>(requestFeature);
             features.Set<IHttpMaxRequestBodySizeFeature>(requestBody);
             features.Set<IHttpRequestBodyDetectionFeature>(new RequestBodyDetectionFeature(body.Length > 0));
             features.Set<IHttpResponseFeature>(response.Feature);
-            features.Set<IHttpResponseBodyFeature>(new StreamResponseBodyFeature(new InProcessResponseBodyStream(response.Body, response.Feature)));
+            features.Set<IHttpResponseBodyFeature>(responseBody);
             features.Set<IHttpRequestLifetimeFeature>(lifetime);
             features.Set<IHttpConnectionFeature>(new HttpConnectionFeature
             {
@@ -226,7 +234,7 @@ internal sealed class InProcessApiPipeline
                 features.Set(tlsConnection);
             }
 
-            return new InProcessExchange(features, response, lifetime);
+            return new InProcessExchange(features, response, responseBody, lifetime);
         }
 
         public HttpResponseMessage CreateResponseMessage(HttpRequestMessage request)

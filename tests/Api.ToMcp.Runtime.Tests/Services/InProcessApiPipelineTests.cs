@@ -245,6 +245,29 @@ public class InProcessApiPipelineTests
         Assert.Equal(["yes"], response.Headers.GetValues("X-Started"));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SendAsync_ReturnsWhatTheAppLeftInTheBodyWriter_WithoutAFlush(bool isStartedFirst)
+    {
+        // Utf8JsonWriter over Response.BodyWriter does this: it advances the writer and never flushes it.
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            if (isStartedFirst)
+            {
+                await context.Response.StartAsync();
+            }
+
+            var bytes = Encoding.UTF8.GetBytes("unflushed");
+            bytes.CopyTo(context.Response.BodyWriter.GetMemory(bytes.Length));
+            context.Response.BodyWriter.Advance(bytes.Length);
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("unflushed", await response.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task SendAsync_RunsTheOnCompletedCallbacks_AndDisposesTheRequestsServices()
     {
