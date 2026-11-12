@@ -111,30 +111,56 @@ public class McpSignInDiscoveryTests
             var authorizeData = Assert.Single(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
             Assert.Equal(McpAuthenticationDefaults.AuthenticationScheme, authorizeData.AuthenticationSchemes);
             Assert.Null(authorizeData.Policy);
+            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>());
         });
     }
 
     [Fact]
-    public async Task MapMcpEndpoint_LeavesTheEndpointAnonymous_WhenAllowAnonymousIsOn()
+    public async Task MapMcpEndpoint_KeepsRequiringTheAppsFallbackPolicy_WhichItsOwnRequirementWouldEnd()
     {
-        var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: true);
+        var fallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().RequireRole("mcp-user").Build();
+
+        var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: false, fallbackPolicy);
+
+        Assert.All(endpoints, endpoint =>
+        {
+            Assert.Single(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
+            Assert.Same(fallbackPolicy, Assert.Single(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>()));
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MapMcpEndpoint_LeavesTheEndpointAnonymous_WhenAllowAnonymousIsOn(bool hasFallbackPolicy)
+    {
+        var fallbackPolicy = hasFallbackPolicy ? new AuthorizationPolicyBuilder().RequireRole("mcp-user").Build() : null;
+
+        var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: true, fallbackPolicy);
 
         Assert.All(endpoints, endpoint =>
         {
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
+            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
             Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>());
         });
     }
 
-    [Fact]
-    public async Task MapMcpEndpoint_AddsNoAuthorization_WithoutResourceMetadata()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MapMcpEndpoint_AddsNoAuthorization_WithoutResourceMetadata(bool hasFallbackPolicy)
     {
-        var endpoints = await MapMcpEndpointAsync(configureScopes: null, allowAnonymous: false);
+        // Without authorization metadata of its own, the endpoint is left to the fallback policy, as before.
+        var fallbackPolicy = hasFallbackPolicy ? new AuthorizationPolicyBuilder().RequireRole("mcp-user").Build() : null;
+
+        var endpoints = await MapMcpEndpointAsync(configureScopes: null, allowAnonymous: false, fallbackPolicy);
 
         Assert.All(endpoints, endpoint =>
         {
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
+            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>());
         });
     }
@@ -276,13 +302,16 @@ public class McpSignInDiscoveryTests
         });
     }
 
-    private static async Task<List<Endpoint>> MapMcpEndpointAsync(Action<McpScopeOptions>? configureScopes, bool allowAnonymous)
+    private static async Task<List<Endpoint>> MapMcpEndpointAsync(
+        Action<McpScopeOptions>? configureScopes,
+        bool allowAnonymous,
+        AuthorizationPolicy? fallbackPolicy = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton<IParityService, ParityService>();
         builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, SignedInHandler>(AppScheme, null);
-        builder.Services.AddAuthorization();
+        builder.Services.AddAuthorization(options => options.FallbackPolicy = fallbackPolicy);
         AddMcpTools(builder.Services, configureScopes);
         await using var app = builder.Build();
 

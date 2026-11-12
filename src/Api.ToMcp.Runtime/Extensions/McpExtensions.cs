@@ -108,7 +108,8 @@ public static class McpExtensions
     /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
     /// a tool sent. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it requires a signed-in caller and answers
     /// one who is not with a <c>401</c> challenge that points to the protected resource metadata, and it answers a tool
-    /// call that scope validation refuses with a scope challenge.
+    /// call that scope validation refuses with a scope challenge. The app's <see cref="AuthorizationOptions.FallbackPolicy"/>,
+    /// when it has one, still applies to the endpoint.
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
@@ -138,10 +139,17 @@ public static class McpExtensions
         }
         else if (isSignInDiscoverable)
         {
-            // Through the SDK's scheme, which authenticates through the scheme its ForwardAuthenticate names ("Bearer"
-            // unless configured) and challenges with the metadata's address. The app's default policy still applies; its
-            // fallback policy no longer reaches the endpoint, as it covers only endpoints without authorization metadata.
+            // The app's default policy, through the SDK's scheme, which authenticates through the scheme its
+            // ForwardAuthenticate names ("Bearer" unless configured) and challenges with the metadata's address.
             endpoint.RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = McpAuthenticationDefaults.AuthenticationScheme });
+
+            // ASP.NET Core applies the fallback policy only to endpoints without authorization metadata, which the line
+            // above gives this one, so the endpoint requires it itself: opting in must not let in a caller it refused.
+            var fallbackPolicy = endpoints.ServiceProvider.GetRequiredService<IOptions<AuthorizationOptions>>().Value.FallbackPolicy;
+            if (fallbackPolicy is not null)
+            {
+                endpoint.RequireAuthorization(fallbackPolicy);
+            }
         }
         return endpoints;
     }

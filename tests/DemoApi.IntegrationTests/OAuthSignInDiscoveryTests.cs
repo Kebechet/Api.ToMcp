@@ -7,6 +7,7 @@ using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,6 +31,12 @@ public sealed class OAuthSignInDiscoveryTests
 {
     private const string ReadToken = "Bearer read-token";
     private const string WriteToken = "Bearer write-token";
+
+    /// <summary>
+    /// Grants <c>mcp:read</c> to a user in <see cref="MemberRole"/>, the role the fallback policy of some tests requires.
+    /// </summary>
+    private const string MemberToken = "Bearer member-token";
+    private const string MemberRole = "mcp-user";
     private const string AuthorizationServer = "https://login.example.com";
     private const string MetadataPath = "/.well-known/oauth-protected-resource/mcp";
 
@@ -122,6 +129,44 @@ public sealed class OAuthSignInDiscoveryTests
         Assert.Equal($"Bearer resource_metadata=\"{address}{MetadataPath}\", scope=\"mcp:read\"", response.Headers.WwwAuthenticate.ToString());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TheAppsFallbackPolicy_StillRefusesASignedInCallerItDoesNotAllow(bool isSignInDiscoverable)
+    {
+        await using var app = await StartAppAsync(isSignInDiscoverable, requiresMemberRole: true);
+
+        using var response = await PostToolCallAsync(app.Urls.Single(), "Products_GetAll", ReadToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TheAppsFallbackPolicy_LetsInACallerItAllows(bool isSignInDiscoverable)
+    {
+        await using var app = await StartAppAsync(isSignInDiscoverable, requiresMemberRole: true);
+        await using var client = await ConnectAsync(app.Urls.Single(), MemberToken);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task WithTheAppsFallbackPolicy_ARequestWithoutAToken_StillGetsTheChallengeThatPointsToTheMetadata()
+    {
+        await using var app = await StartAppAsync(requiresMemberRole: true);
+        var address = app.Urls.Single();
+
+        using var response = await PostToolCallAsync(address, "Products_GetAll", authorization: null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal($"Bearer resource_metadata=\"{address}{MetadataPath}\"", response.Headers.WwwAuthenticate.ToString());
+    }
+
     [Fact]
     public async Task WithoutResourceMetadata_TheEndpointServesAnyone_TheMetadataIsNotFound_AndARefusedScopeIsAnErrorResult()
     {
@@ -143,7 +188,7 @@ public sealed class OAuthSignInDiscoveryTests
         Assert.Equal("Insufficient scope. Required: Write, Granted: Read", ((TextContentBlock)result.Content[0]).Text);
     }
 
-    private static async Task<WebApplication> StartAppAsync(bool isSignInDiscoverable = true, bool allowAnonymous = false)
+    private static async Task<WebApplication> StartAppAsync(bool isSignInDiscoverable = true, bool allowAnonymous = false, bool requiresMemberRole = false)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -151,7 +196,13 @@ public sealed class OAuthSignInDiscoveryTests
         builder.Services.AddControllers().AddApplicationPart(typeof(Program).Assembly);
         builder.Services.AddAuthentication()
             .AddScheme<AuthenticationSchemeOptions, TokenAuthenticationHandler>(TokenAuthenticationHandler.SchemeName, null);
-        builder.Services.AddAuthorization();
+        builder.Services.AddAuthorization(options =>
+        {
+            if (requiresMemberRole)
+            {
+                options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().RequireRole(MemberRole).Build();
+            }
+        });
         builder.Services.AddMcpTools(typeof(Program).Assembly, options =>
         {
             options.ArePropertyDescriptionsFromXmlDocs = false;
@@ -247,9 +298,10 @@ public sealed class OAuthSignInDiscoveryTests
 
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
-            var scope = Request.Headers.Authorization.ToString() switch
+            var token = Request.Headers.Authorization.ToString();
+            var scope = token switch
             {
-                ReadToken => "mcp:read",
+                ReadToken or MemberToken => "mcp:read",
                 WriteToken => "mcp:read mcp:write",
                 _ => null
             };
@@ -259,6 +311,11 @@ public sealed class OAuthSignInDiscoveryTests
             }
 
             var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "alice"), new Claim("scope", scope)], SchemeName);
+            if (token == MemberToken)
+            {
+                identity.AddClaim(new Claim(ClaimTypes.Role, MemberRole));
+            }
+
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
         }
     }
