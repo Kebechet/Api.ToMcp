@@ -75,12 +75,12 @@ public partial class McpToolGeneratorTests
     }
 
     [Fact]
-    public void Generator_NamesThePropertyThatFillsARequiredRouteValue_WhenItChangesThePath()
+    public void Generator_NamesTheParameterWhosePropertyFillsARequiredRouteValue_AsTheInputSchemaDoes()
     {
         var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"{id}\")] public Task<string> Find(AttributedQuery? q) => Task.FromResult(string.Empty);");
 
         Assert.Contains($"if ({Formatter}.ChangesThePath(routeq_Id, isRequired: true))", tool);
-        Assert.Contains("Text = \"The argument 'q.Id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.\"", tool);
+        Assert.Contains("Text = \"The argument 'q' has a property that fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.\"", tool);
     }
 
     [Theory]
