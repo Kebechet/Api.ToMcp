@@ -82,6 +82,11 @@ internal static class MinimalApiNames
     public const string StringValues = "Microsoft.Extensions.Primitives.StringValues";
 
     /// <summary>
+    /// The type a tool declares for a <c>StringValues</c> parameter, which <c>System.Text.Json</c> cannot fill.
+    /// </summary>
+    public const string StringValuesToolType = "string[]";
+
+    /// <summary>
     /// Entity Framework's base class, whose subclasses an app registers as services and takes as handler parameters.
     /// </summary>
     public const string DbContext = "Microsoft.EntityFrameworkCore.DbContext";

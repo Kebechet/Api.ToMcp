@@ -23,6 +23,11 @@ namespace Api.ToMcp.Generator.Parsing
         private const string RouteValueWord = "By";
 
         /// <summary>
+        /// The <c>?</c> that makes a type nullable in the tool's C#.
+        /// </summary>
+        private const string NullableAnnotationSuffix = "?";
+
+        /// <summary>
         /// The HTTP methods for which a Minimal API infers no body (<c>RouteEndpointDataSource.ShouldDisableInferredBodyParameters</c>):
         /// an endpoint mapped for any of them reads a complex parameter without an attribute from the services only.
         /// </summary>
@@ -348,6 +353,15 @@ namespace Api.ToMcp.Generator.Parsing
             return namedType.TypeArguments.All(IsEffectivelyPublic);
         }
 
+        /// <summary>
+        /// Whether the type is a reference type of code without nullable annotations, which ASP.NET Core's binding takes
+        /// for optional, as its nullability is not known to be not-null.
+        /// </summary>
+        private static bool IsObliviousReferenceType(ITypeSymbol type)
+        {
+            return !type.IsValueType && type.TypeKind != TypeKind.TypeParameter && type.NullableAnnotation == NullableAnnotation.None;
+        }
+
         private static bool IsNonNullableValueType(ITypeSymbol type)
         {
             return type.IsValueType && type.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T;
@@ -557,10 +571,32 @@ namespace Api.ToMcp.Generator.Parsing
             var type = input.Type;
             var isSimpleType = SimpleTypeClassifier.IsParsable(type);
 
+            // System.Text.Json cannot fill a StringValues, so the tool takes its strings as an array, which it sends as the
+            // repeated key the endpoint reads them from; as an optional argument when it has a default.
+            if (GetTypeName(type) == MinimalApiNames.StringValues)
+            {
+                var isOptional = input.IsOptional;
+
+                return new ParameterInfoModel
+                {
+                    Name = input.Name,
+                    Type = isOptional ? MinimalApiNames.StringValuesToolType + NullableAnnotationSuffix : MinimalApiNames.StringValuesToolType,
+                    IsNullable = isOptional,
+                    Source = source,
+                    IsCollection = true,
+                    Description = input.Description,
+                    QueryName = queryName
+                };
+            }
+
             return new ParameterInfoModel
             {
                 Name = input.Name,
-                Type = type.ToDisplayString(),
+                // A reference type of nullable-oblivious code is optional, and declared nullable for the tool's
+                // #nullable enable context to give it the default null.
+                Type = IsObliviousReferenceType(type)
+                    ? type.WithNullableAnnotation(NullableAnnotation.Annotated).ToDisplayString()
+                    : type.ToDisplayString(),
                 IsNullable = input.IsNullable,
                 IsValueType = type.IsValueType,
                 HasDefaultValue = input.HasDefaultValue,
@@ -752,7 +788,8 @@ namespace Api.ToMcp.Generator.Parsing
             public string? Description { get; }
 
             public bool IsNullable => Type.NullableAnnotation == NullableAnnotation.Annotated ||
-                Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+                Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T ||
+                IsObliviousReferenceType(Type);
 
             public bool IsOptional => HasDefaultValue || IsNullable;
 

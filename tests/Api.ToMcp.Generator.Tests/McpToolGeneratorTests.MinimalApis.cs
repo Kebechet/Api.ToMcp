@@ -627,6 +627,46 @@ namespace TestApi
     }
 
     [Fact]
+    public void Endpoint_TakingStringValues_GetsAToolThatTakesAnArrayOfStrings()
+    {
+        // System.Text.Json cannot fill a StringValues, so a tool taking one could never be called.
+        var source = MinimalApi(@"
+            app.MapGet(""/tags"", (Microsoft.Extensions.Primitives.StringValues tags, Microsoft.Extensions.Primitives.StringValues? more) => 1).WithName(""Tags"");");
+
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_TagsTool");
+
+        Assert.Contains("[Description(\"Parameter: tags\")] string[] tags,", tool);
+        Assert.Contains("[Description(\"Parameter: more\")] string[]? more = null,", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"tags\", tags);", tool);
+        Assert.Contains("AddQueryValue(queryParts, \"more\", more);", tool);
+    }
+
+    [Fact]
+    public void Endpoint_OfNullableObliviousCode_TakesAReferenceParameterForOptional()
+    {
+        // ASP.NET Core takes a parameter whose nullability is not known to be not-null for optional, so the endpoint
+        // does without the header, and the tool without the name.
+        var source = MinimalApiClass(@"
+#nullable disable
+        public static void Map(WebApplication app)
+        {
+            app.MapGet(""/x"", ([FromHeader(Name = ""X-Tenant"")] string tenant, string name) => 1).WithName(""X"");
+        }
+#nullable enable");
+
+        CreateDriver(MinimalApisConfig).RunGeneratorsAndUpdateCompilation(CreateCompilation(source), out var output, out var generatorDiagnostics);
+        var tool = GetToolClass(RunGenerator(source, MinimalApisConfig), "Endpoints_XTool");
+        var generatedWarnings = output.GetDiagnostics()
+            .Where(x => x.Severity >= DiagnosticSeverity.Warning && x.Location.SourceTree is not null && x.Location.SourceTree != output.SyntaxTrees.First())
+            .ToList();
+
+        Assert.Empty(generatorDiagnostics);
+        Assert.Contains("[Description(\"Parameter: name\")] string? name = null,", tool);
+        Assert.DoesNotContain("tenant", tool);
+        Assert.False(generatedWarnings.Any(), string.Join(Environment.NewLine, generatedWarnings));
+    }
+
+    [Fact]
     public void MapMethods_WithLowerCaseHttpMethods_InfersABody_AsAspNetCoreDoes()
     {
         // ASP.NET Core compares the methods with "GET" and the others case and all to decide that it infers no body, so
