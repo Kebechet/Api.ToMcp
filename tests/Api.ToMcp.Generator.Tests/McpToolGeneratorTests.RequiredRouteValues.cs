@@ -94,4 +94,30 @@ public partial class McpToolGeneratorTests
 
         Assert.DoesNotContain("IsError", tool);
     }
+
+    [Fact]
+    public void Endpoint_DeclaresTheParameterThatFillsARequiredRouteValue_WithoutADefault_AndRefusesItEmpty()
+    {
+        // Without its id, the call would send DELETE /items, which the endpoint mapped next to it serves.
+        var source = MinimalApi(@"
+            app.MapDelete(""/items/{id}"", (Guid? id) => id);
+            app.MapDelete(""/items"", () => 0);");
+
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_DeleteItemsByIdTool");
+
+        Assert.Contains(" System.Guid? id,", tool);
+        Assert.Contains("if (routeid.Length == 0)", tool);
+        Assert.Contains("Text = \"The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.\"", tool);
+    }
+
+    [Fact]
+    public void Endpoint_KeepsAnOptionalRouteValue_Optional()
+    {
+        var source = MinimalApi(@"app.MapGet(""/items/{id?}"", (int? id) => id);");
+
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetItemsByIdTool");
+
+        Assert.Contains(" int? id = null,", tool);
+        Assert.DoesNotContain("IsError", tool);
+    }
 }
