@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 
 namespace Api.ToMcp.Runtime.Services;
@@ -29,12 +30,17 @@ internal sealed class PipelineCapturingApplicationBuilderFactory : IApplicationB
     {
         var builder = _inner.CreateBuilder(serverFeatures);
 
-        // As the first component, it is handed everything added after it as its next, which is the whole pipeline, and
-        // passes requests straight to it.
+        // As the first component, it is handed everything added after it as its next, which is the whole pipeline. It
+        // records each request as it enters, so a tool's request can be given what the MCP request was given.
         builder.Use(next =>
         {
-            _pipeline.Capture(next);
-            return next;
+            RequestDelegate entry = context =>
+            {
+                context.Features.Set(new PipelineEntryFeature(context));
+                return next(context);
+            };
+            _pipeline.Capture(entry);
+            return entry;
         });
 
         return builder;

@@ -45,7 +45,10 @@ internal sealed class InProcessApiPipeline
     /// Serves the request and returns the response the app wrote, as an <see cref="HttpClient"/> would have received it
     /// from the server.
     /// </summary>
-    /// <param name="request">The request, whose absolute URI gives the scheme, host, path and query the app sees.</param>
+    /// <param name="request">
+    /// The request, whose absolute URI is the address a client would call: the scheme and host the app sees, then the MCP
+    /// request's path base, the path and the query.
+    /// </param>
     /// <param name="caller">The MCP request the tool call came in, whose path base and connection the request carries.</param>
     /// <param name="cancellationToken">Aborts the request, as a client that goes away does.</param>
     /// <exception cref="HttpRequestException">
@@ -57,7 +60,7 @@ internal sealed class InProcessApiPipeline
         var application = _application ?? throw new InvalidOperationException("The host has not built the app's request pipeline yet.");
         var startTimestamp = Stopwatch.GetTimestamp();
 
-        using var exchange = await InProcessExchange.CreateAsync(request, caller, cancellationToken);
+        using var exchange = await InProcessExchange.CreateAsync(request, caller, GetForwardedPathBase(caller), cancellationToken);
         var callerActivity = Activity.Current;
 
         Task<Exception?> serving;
@@ -91,6 +94,38 @@ internal sealed class InProcessApiPipeline
             Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
 
         return exchange.CreateResponseMessage(request);
+    }
+
+    /// <summary>
+    /// The part of the MCP request's path base that did not come out of its path: one the server gave it, as IIS gives the
+    /// application's path, or one a middleware took from a header, as the forwarded-headers middleware takes
+    /// <c>X-Forwarded-Prefix</c>. The rest of it is what <c>Map</c> or <c>UsePathBase</c> moved from its path.
+    /// </summary>
+    private static PathString GetForwardedPathBase(HttpContext? caller)
+    {
+        if (caller is null)
+        {
+            return PathString.Empty;
+        }
+
+        var entry = caller.Features.Get<PipelineEntryFeature>();
+        if (entry is null)
+        {
+            return caller.Request.PathBase;
+        }
+
+        var pathBase = caller.Request.PathBase.Value ?? string.Empty;
+        var path = caller.Request.Path.Value ?? string.Empty;
+        var entryPath = entry.Path.Value ?? string.Empty;
+        if (!entryPath.EndsWith(path, StringComparison.Ordinal))
+        {
+            return caller.Request.PathBase;
+        }
+
+        var movedFromPath = entryPath[..^path.Length];
+        return pathBase.EndsWith(movedFromPath, StringComparison.Ordinal)
+            ? new PathString(pathBase[..^movedFromPath.Length])
+            : caller.Request.PathBase;
     }
 
     /// <summary>
@@ -173,25 +208,38 @@ internal sealed class InProcessApiPipeline
 
         public RequestLifetimeFeature Lifetime { get; }
 
-        public static async Task<InProcessExchange> CreateAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken cancellationToken)
+        public static async Task<InProcessExchange> CreateAsync(
+            HttpRequestMessage request,
+            HttpContext? caller,
+            PathString forwardedPathBase,
+            CancellationToken cancellationToken)
         {
             var uri = request.RequestUri ?? throw new ArgumentException("The request has no URI.", nameof(request));
             var body = request.Content is null
                 ? []
                 : await request.Content.ReadAsByteArrayAsync(cancellationToken);
 
-            // The caller's path base is handed over as such, as the app may have taken it from a header such as
-            // X-Forwarded-Prefix rather than from the path, and a UsePathBase middleware passes a path without it unchanged.
+            // The part of the path base a server or proxy gave the MCP request starts the request as its path base, as the
+            // app may have taken it from a header such as X-Forwarded-Prefix rather than from the path. The rest stays in
+            // the path, for the Map or UsePathBase that took it from the MCP request's path to take it again.
+            var fullPath = PathString.FromUriComponent(uri);
+            var isUnderForwardedPathBase = fullPath.StartsWithSegments(forwardedPathBase, StringComparison.OrdinalIgnoreCase, out var pathBase, out var path);
+            if (!isUnderForwardedPathBase)
+            {
+                pathBase = forwardedPathBase;
+                path = fullPath;
+            }
+
             var requestBody = new InProcessRequestBodyStream(body);
             var requestFeature = new HttpRequestFeature
             {
                 Protocol = HttpProtocol.Http11,
                 Method = request.Method.Method,
                 Scheme = uri.Scheme,
-                PathBase = caller?.Request.PathBase.Value ?? string.Empty,
-                Path = PathString.FromUriComponent(uri).Value ?? string.Empty,
+                PathBase = pathBase.Value ?? string.Empty,
+                Path = path.Value ?? string.Empty,
                 QueryString = uri.Query,
-                RawTarget = uri.PathAndQuery,
+                RawTarget = path.ToUriComponent() + uri.Query,
                 Body = requestBody
             };
             requestFeature.Headers.Host = request.Headers.Host ?? uri.Authority;

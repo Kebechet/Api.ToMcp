@@ -171,8 +171,20 @@ public class InProcessApiPipelineTests
     [Fact]
     public async Task SendAsync_GivesTheRequest_TheCallersPathBase_AndTheRouteAsItsPath()
     {
-        // A path base the app took from X-Forwarded-Prefix is not in the path, so it cannot be handed over in the URL: the
+        // A path base the app took from X-Forwarded-Prefix is not in the path, so it cannot be handed over in the path: the
         // app would route /v1/api/items. A UsePathBase middleware passes a path that does not start with it unchanged.
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync($"{context.Request.PathBase}|{context.Request.Path}")));
+        var caller = new DefaultHttpContext();
+        caller.Request.PathBase = "/v1";
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/v1/api/items"), caller, CancellationToken.None);
+
+        Assert.Equal("/v1|/api/items", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_GivesTheRequest_TheCallersPathBase_WhenItsAddressIsOutsideIt()
+    {
         var pipeline = Build(app => app.Run(context => context.Response.WriteAsync($"{context.Request.PathBase}|{context.Request.Path}")));
         var caller = new DefaultHttpContext();
         caller.Request.PathBase = "/v1";
@@ -180,6 +192,71 @@ public class InProcessApiPipelineTests
         using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller, CancellationToken.None);
 
         Assert.Equal("/v1|/api/items", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("/mcp", "/v1", "/v1/api/items", "/v1|/api/items")]
+    [InlineData("/sub/mcp", "/sub", "/sub/api/items", "|/sub/api/items")]
+    [InlineData("/sub/mcp", "/v1/sub", "/v1/sub/api/items", "/v1|/sub/api/items")]
+    [InlineData("/old/mcp", "/v1", "/v1/api/items", "/v1|/api/items")]
+    [InlineData("/old/mcp", "/tenant", "/tenant/api/items", "/tenant|/api/items")]
+    [InlineData("/legacy", "/v1", "/v1/api/items", "/v1|/api/items")]
+    [InlineData("/v1/xyz", "/v1", "/v1/api/items", "/v1|/api/items")]
+    public async Task SendAsync_StartsTheRequest_WithThePartOfTheCallersPathBase_ThatDidNotComeFromItsPath(
+        string callerEntryPath,
+        string callerPathBase,
+        string path,
+        string expected)
+    {
+        // Map and UsePathBase move a part of the path into the path base, so the tool's request must carry that part in its
+        // path for them to take it again. What came from elsewhere, X-Forwarded-Prefix or a path a middleware rewrote,
+        // starts the request as its path base.
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync($"{context.Request.PathBase}|{context.Request.Path}")));
+        var caller = CreateCaller(callerEntryPath, callerPathBase, "/mcp");
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com" + path), caller, CancellationToken.None);
+
+        Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_RunsTheRequest_InTheMapBranchTheCallerCameThrough()
+    {
+        var pipeline = Build(app =>
+        {
+            app.Map("/sub", branch => branch.Run(context => context.Response.WriteAsync($"branch {context.Request.PathBase}|{context.Request.Path}")));
+            app.Run(context => context.Response.WriteAsync("root"));
+        });
+        var caller = CreateCaller(entryPath: "/sub/mcp", pathBase: "/sub", path: "/mcp");
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/sub/api/items"), caller, CancellationToken.None);
+
+        Assert.Equal("branch /sub|/api/items", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task ThePipeline_RecordsEachRequest_AsItEnteredIt()
+    {
+        PipelineEntryFeature? entry = null;
+        var pathBase = PathString.Empty;
+        var services = CreateServices();
+        var builder = new PipelineCapturingApplicationBuilderFactory(new ApplicationBuilderFactory(services), CreatePipeline(services))
+            .CreateBuilder(new FeatureCollection());
+        builder.UsePathBase("/sub");
+        builder.Run(context =>
+        {
+            entry = context.Features.Get<PipelineEntryFeature>();
+            pathBase = context.Request.PathBase;
+            return Task.CompletedTask;
+        });
+        var application = builder.Build();
+        var mcpRequest = new DefaultHttpContext();
+        mcpRequest.Request.Path = "/sub/mcp";
+
+        await application(mcpRequest);
+
+        Assert.Equal("/sub", pathBase);
+        Assert.Equal("/sub/mcp", entry?.Path);
     }
 
     [Fact]
@@ -462,6 +539,20 @@ public class InProcessApiPipelineTests
 
         trail.Add(name);
         return next(context);
+    }
+
+    /// <summary>
+    /// An MCP request that entered the pipeline at the entry path, and that the pipeline has given the path base and path
+    /// since.
+    /// </summary>
+    private static DefaultHttpContext CreateCaller(string entryPath, string pathBase, string path)
+    {
+        var caller = new DefaultHttpContext();
+        caller.Request.Path = entryPath;
+        caller.Features.Set(new PipelineEntryFeature(caller));
+        caller.Request.PathBase = pathBase;
+        caller.Request.Path = path;
+        return caller;
     }
 
     private static InProcessApiPipeline Build(

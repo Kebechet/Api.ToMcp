@@ -39,6 +39,26 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
+    public async Task GetAsync_ServesTheRequestInProcess_InTheMapBranchTheMcpRequestCameThrough()
+    {
+        var caller = CreateCaller();
+        caller.Request.PathBase = "";
+        caller.Request.Path = "/sub/mcp";
+        caller.Features.Set(new PipelineEntryFeature(caller));
+        caller.Request.PathBase = "/sub";
+        caller.Request.Path = "/mcp";
+        _accessor.HttpContext = caller;
+        var invoker = CreateInvoker(BuildPipeline(app => app.Map("/sub", branch => branch.Run(context =>
+            context.Response.WriteAsync($"{{\"pathBase\":\"{context.Request.PathBase}\",\"path\":\"{context.Request.Path}\"}}")))));
+
+        var result = await invoker.GetAsync("/api/products/7");
+
+        var seen = Echoed(result);
+        Assert.Equal("/sub", seen.GetProperty("pathBase").GetString());
+        Assert.Equal("/api/products/7", seen.GetProperty("path").GetString());
+    }
+
+    [Fact]
     public async Task GetAsync_ForwardsTheAuthorization_AndMarksTheRequestAsInternal_InProcess()
     {
         _accessor.HttpContext = CreateCaller();

@@ -163,13 +163,13 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     }
 
     /// <summary>
-    /// The route at the address the MCP request came to, with its scheme and host as the app saw them, so the app filters
-    /// and redirects the request as it did the MCP request; the pipeline hands over its path base. The request never
-    /// leaves the process, so its host only names the request to the app.
+    /// The route at the address the MCP request came to, with its scheme, host and path base as the app saw them, so the
+    /// app filters and redirects the request as it did the MCP request. The request never leaves the process, so its host
+    /// only names the request to the app.
     /// </summary>
     private static string BuildInProcessUrl(HttpRequest caller, string route)
     {
-        return caller.Scheme + Uri.SchemeDelimiter + caller.Host.ToUriComponent() + NormalizeRoute(route);
+        return caller.Scheme + Uri.SchemeDelimiter + caller.Host.ToUriComponent() + caller.PathBase.ToUriComponent() + NormalizeRoute(route);
     }
 
     private static string NormalizeRoute(string route)
