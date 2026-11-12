@@ -49,12 +49,12 @@ namespace Api.ToMcp.Generator.Parsing
         };
 
         /// <summary>
-        /// The HTTP method and route template each action declaration's routing attributes give, and its XML docs. Like the
+        /// The HTTP method and route templates each action declaration's routing attributes give, and its XML docs. Like the
         /// flow analysis of its body, they are the declaration's, the same for every controller that inherits the action,
         /// so they are read once per compilation; the route's tokens and prefix are each controller's.
         /// </summary>
-        private static readonly CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?> HttpMethodInfos =
-            new CompilationCache<IMethodSymbol, (string Method, string? Template, string? Problem)?>(SymbolEqualityComparer.Default);
+        private static readonly CompilationCache<IMethodSymbol, HttpMethodInfo?> HttpMethodInfos =
+            new CompilationCache<IMethodSymbol, HttpMethodInfo?>(SymbolEqualityComparer.Default);
 
         /// <summary>
         /// The types MVC binds from a source of their own, resolved once per compilation, and whether a property's type is
@@ -108,6 +108,13 @@ namespace Api.ToMcp.Generator.Parsing
 
                 var fullRoute = BuildFullRoute(routePrefix, httpInfo.Value.Template, controller.Name, GetRouteActionName(method));
                 fullRoute = ResolveApiVersionInRoute(fullRoute, controller, method);
+                var servedRoutes = httpInfo.Value.ServedRoutes
+                    .Select(x => new ServedRouteModel
+                    {
+                        Template = ResolveApiVersionInRoute(BuildFullRoute(routePrefix, x.Template, controller.Name, GetRouteActionName(method)), controller, method),
+                        HttpMethods = x.HttpMethods.ToImmutableArray()
+                    })
+                    .ToImmutableArray();
 
                 string? customToolName = null;
                 string? customTitle = null;
@@ -161,7 +168,8 @@ namespace Api.ToMcp.Generator.Parsing
                     // An action of a referenced assembly has no place in source, so its warnings point at the controller
                     // that inherits it, where a #pragma or an .editorconfig section can suppress them.
                     SourceLocation = SourceLocationModel.From(
-                        method.Locations.FirstOrDefault(x => x.IsInSource) ?? controller.Locations.FirstOrDefault(x => x.IsInSource))
+                        method.Locations.FirstOrDefault(x => x.IsInSource) ?? controller.Locations.FirstOrDefault(x => x.IsInSource)),
+                    ServedRoutes = servedRoutes
                 });
             }
 
@@ -254,10 +262,11 @@ namespace Api.ToMcp.Generator.Parsing
         /// overrides as first declared, skipping the overrides in between, as reflection's <c>GetBaseDefinition()</c> does.
         /// Other <c>IActionHttpMethodProvider</c> attributes it reads as the action inherits them. Of the routes MVC serves
         /// the action at (<c>DefaultApplicationModelProvider.CreateSelectors</c>), the tool takes the first with an HTTP
-        /// method it sends. Null when no route has one, such as a <c>[Route]</c> alone, which MVC serves for every method,
-        /// or an <c>[HttpHead]</c>; a problem when the route that may have one cannot be read.
+        /// method it sends, and every route it serves the action at. Null when no route has one, such as a <c>[Route]</c>
+        /// alone, which MVC serves for every method, or an <c>[HttpHead]</c>; a problem when the route that may have one
+        /// cannot be read.
         /// </summary>
-        private static (string Method, string? Template, string? Problem)? GetHttpMethodInfo(IMethodSymbol method, Compilation compilation, CancellationToken ct)
+        private static HttpMethodInfo? GetHttpMethodInfo(IMethodSymbol method, Compilation compilation, CancellationToken ct)
         {
             var routedMethod = method.GetAttributes().Any(RouteAttributeReader.IsRouteTemplateProvider) ? method : GetBaseDefinition(method);
             var routeAttributes = routedMethod.GetAttributes()
@@ -296,7 +305,7 @@ namespace Api.ToMcp.Generator.Parsing
 
             if (httpMethod is null)
             {
-                return problem is null ? null : ("", null, problem);
+                return problem is null ? null : new HttpMethodInfo("", null, problem, Array.Empty<(string?, IReadOnlyList<string>)>());
             }
 
             // MVC serves the method at each route that gives it, and at each that gives none, which serves every method.
@@ -309,8 +318,27 @@ namespace Api.ToMcp.Generator.Parsing
                 .ToList();
             var servingRoute = servingRoutes.FirstOrDefault(x => x?.Template != null) ?? servingRoutes.First();
 
-            return (httpMethod, servingRoute?.Template, null);
+            // A route whose HTTP methods cannot be read may serve any of them.
+            var servedRoutes = selectors
+                .Where(x => x.Route is not { IsTemplateKnown: false })
+                .Select(x => (x.Route?.Template, (IReadOnlyList<string>)(x.HttpMethodProviders.All(provider => provider.AreHttpMethodsKnown)
+                    ? x.HttpMethodProviders.SelectMany(provider => provider.HttpMethods).Distinct(StringComparer.Ordinal).ToList()
+                    : new List<string>())))
+                .ToList();
+
+            return new HttpMethodInfo(httpMethod, servingRoute?.Template, null, servedRoutes);
         }
+
+        /// <param name="Template">The template of the route the tool calls, or null for the controller's route alone.</param>
+        /// <param name="ServedRoutes">
+        /// Every route MVC serves the action at whose template can be read, with the HTTP methods it serves it for, or none
+        /// for every method.
+        /// </param>
+        private readonly record struct HttpMethodInfo(
+            string Method,
+            string? Template,
+            string? Problem,
+            IReadOnlyList<(string? Template, IReadOnlyList<string> HttpMethods)> ServedRoutes);
 
         /// <summary>
         /// The routes MVC serves an action at, each with the attributes that give its HTTP methods, as

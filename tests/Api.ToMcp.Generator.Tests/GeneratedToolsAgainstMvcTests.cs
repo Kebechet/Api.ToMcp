@@ -193,6 +193,63 @@ namespace TestApi
         public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
 
+    // Without its id, a call to Get or Delete requests the URL that List or DeleteAll is served at.
+    [ApiController]
+    [Route(""api/items"")]
+    public class ItemsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public object Get(Guid? id) => new { id };
+
+        [HttpGet]
+        public object List() => new { listed = ""all"" };
+
+        [HttpDelete(""{id}"")]
+        public object Delete(Guid? id) => new { deleted = id };
+
+        [HttpDelete]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object DeleteAll() => new { deleted = ""all"" };
+
+        [HttpGet(""d/{id}/x"")]
+        public object Find(int? id) => new { id };
+
+        // With .. the URL reaches DeleteAll, as System.Uri removes a dot segment with the one before it.
+        [HttpDelete(""named/{name}"")]
+        public object DeleteNamed(string name) => new { deleted = name };
+
+        [HttpGet(""files/{**path}"")]
+        public object GetFile(string? path) => new { path };
+
+        [HttpGet(""labels/{label?}"")]
+        public object GetLabel(string? label) => new { label };
+
+        [HttpGet(""secret"")]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object Secret() => new { secret = true };
+
+        // MVC serves the action at multi too, so a call may leave out its id.
+        [HttpGet(""multi/{id}"")]
+        [HttpGet(""multi"")]
+        public object GetMulti(int? id) => new { id, path = Request.Path.Value };
+
+        // Without their value, DELETE api/items/opt/ and DELETE api/items/files/ reach the action served there, which MVC
+        // puts ahead of the optional route value and of the catch-all.
+        [HttpDelete(""opt/{id?}"")]
+        public object DeleteOpt(Guid? id) => new { deleted = id };
+
+        [HttpDelete(""opt"")]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object DeleteAllOpt() => new { deleted = ""allOpt"" };
+
+        [HttpDelete(""files/{**path}"")]
+        public object DeleteFile(string? path) => new { deleted = path };
+
+        [HttpDelete(""files"")]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object DeleteAllFiles() => new { deleted = ""allFiles"" };
+    }
+
     [Route(""plain"")]
     public class PlainEchoController : ControllerBase
     {
@@ -453,6 +510,18 @@ namespace TestApi
     [InlineData("OrderEchoController_FindTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""overridden"":true}")]
     [InlineData("OrderEchoController_FindNamedTool", @"{""town"":""Brno""}", @"{""town"":""Brno"",""overridden"":true}")]
     [InlineData("OrderEchoController_MaskTool", @"{""city"":""Brno""}", @"{""city"":""Brno""}")]
+    [InlineData("ItemsController_GetTool", @"{""id"":""" + OrderGuid + @"""}", @"{""id"":""" + OrderGuid + @"""}")]
+    [InlineData("ItemsController_DeleteTool", @"{""id"":""" + OrderGuid + @"""}", @"{""deleted"":""" + OrderGuid + @"""}")]
+    [InlineData("ItemsController_FindTool", @"{""id"":7}", @"{""id"":7}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""a.b""}", @"{""deleted"":""a.b""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""...""}", @"{""deleted"":""...""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""..a/b..""}", @"{""path"":""..a/b..""}")]
+    [InlineData("ItemsController_GetFileTool", @"{}", @"{""path"":null}")]
+    [InlineData("ItemsController_GetLabelTool", @"{}", @"{""label"":null}")]
+    [InlineData("ItemsController_GetMultiTool", @"{""id"":7}", @"{""id"":7,""path"":""/api/items/multi/7""}")]
+    [InlineData("ItemsController_GetMultiTool", @"{}", @"{""id"":null,""path"":""/api/items/multi/""}")]
+    [InlineData("ItemsController_DeleteOptTool", @"{""id"":""" + OrderGuid + @"""}", @"{""deleted"":""" + OrderGuid + @"""}")]
+    [InlineData("ItemsController_DeleteFileTool", @"{""path"":""a/b""}", @"{""deleted"":""a/b""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
@@ -471,6 +540,86 @@ namespace TestApi
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
 
         Assert.True(statusCode == StatusCodes.Status400BadRequest, $"{toolClassName}: {statusCode} {body}");
+    }
+
+    [Theory]
+    [InlineData("ItemsController_DeleteTool")]
+    [InlineData("ItemsController_GetTool")]
+    [InlineData("ItemsController_FindTool")]
+    [InlineData("ItemsController_DeleteOptTool")]
+    [InlineData("ItemsController_DeleteFileTool")]
+    public async Task Tool_RefusesACallThatLeavesOutARequiredRouteValue_WithoutCallingTheApi(string toolClassName)
+    {
+        // The URL without the value is another action's: DELETE api/items/ runs DeleteAll, which [McpIgnore] keeps out of MCP.
+        var requestCount = _host.RequestCount;
+
+        var exception = await Record.ExceptionAsync(() => _host.CallToolAsync(toolClassName, "{}"));
+
+        Assert.True(requestCount == _host.RequestCount, $"{toolClassName} called the API, which answered {_host.LastResponse}");
+        Assert.IsType<ArgumentException>(exception);
+    }
+
+    [Theory]
+    [InlineData("ItemsController_DeleteTool", @"{""id"":null}")]
+    [InlineData("ItemsController_GetTool", @"{""id"":null}")]
+    [InlineData("ItemsController_FindTool", @"{""id"":null}")]
+    [InlineData("EchoController_GetFileNameTool", @"{""name"":""""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":"".""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""..""}")]
+    [InlineData("EchoController_GetFileNameTool", @"{""name"":"".""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":"".""}")]
+    [InlineData("ItemsController_GetLabelTool", @"{""label"":""..""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""../secret""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""a/./b""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""..""}")]
+    [InlineData("ItemsController_DeleteOptTool", @"{""id"":null}")]
+    [InlineData("ItemsController_DeleteFileTool", @"{""path"":""""}")]
+    [InlineData("ItemsController_DeleteFileTool", @"{""path"":null}")]
+    public async Task Tool_RefusesARouteValueThatChangesThePath_WithoutCallingTheApi(string toolClassName, string arguments)
+    {
+        // DELETE api/items/named/.. is DELETE api/items/, DeleteAll's URL, and files/../secret reaches Secret, both kept
+        // out of MCP.
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync(toolClassName, arguments);
+
+        Assert.True(requestCount == _host.RequestCount, $"{toolClassName} called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError, $"{toolClassName}: {GetText(result)}");
+    }
+
+    [Fact]
+    public async Task Tool_NamesTheArgument_WhenTheClientSendsNullForARequiredRouteValue()
+    {
+        var result = await _host.CallToolAsync("ItemsController_DeleteTool", @"{""id"":null}");
+
+        Assert.True(result.IsError);
+        Assert.Equal("The argument 'id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.", GetText(result));
+    }
+
+    [Theory]
+    [InlineData("ItemsController_DeleteTool", "id")]
+    [InlineData("ItemsController_GetTool", "id")]
+    [InlineData("ItemsController_FindTool", "id")]
+    [InlineData("ItemsController_DeleteOptTool", "id")]
+    [InlineData("ItemsController_DeleteFileTool", "path")]
+    public void Tool_RequiresTheArgumentThatFillsARequiredRouteValue_WhateverItsType(string toolClassName, string argumentName)
+    {
+        var inputSchema = _host.GetInputSchema(toolClassName);
+
+        Assert.Equal([argumentName], inputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+    }
+
+    [Fact]
+    public async Task Tool_LeavesOutARouteValue_ThatAnotherRouteOfTheActionIsServedWithout()
+    {
+        var inputSchema = _host.GetInputSchema("ItemsController_GetMultiTool");
+
+        var result = await _host.CallToolAsync("ItemsController_GetMultiTool", "{}");
+
+        Assert.False(inputSchema.TryGetProperty("required", out _), inputSchema.GetRawText());
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal((StatusCodes.Status200OK, @"{""id"":null,""path"":""/api/items/multi/""}"), _host.LastResponse);
     }
 
     [Fact]
@@ -498,6 +647,11 @@ namespace TestApi
 
         Assert.NotEmpty(toolClassNames);
         Assert.All(toolClassNames, x => _host.GetInputSchema(x));
+    }
+
+    private static string GetText(CallToolResult result)
+    {
+        return string.Concat(result.Content.OfType<TextContentBlock>().Select(x => x.Text));
     }
 
     /// <summary>
@@ -556,6 +710,28 @@ namespace TestApi
 
             return _invoker.LastResponse;
         }
+
+        /// <summary>
+        /// Calls a generated tool through the MCP SDK, as a client's <c>tools/call</c> reaches it: the SDK reads the
+        /// arguments, and throws for a call that leaves out one the tool requires, before the tool runs.
+        /// </summary>
+        public async Task<CallToolResult> CallToolAsync(string toolClassName, string arguments)
+        {
+            var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
+            await using var services = new ServiceCollection().AddSingleton<IMcpHttpInvoker>(_invoker).BuildServiceProvider();
+            var tool = McpServerTool.Create(toolMethod, options: new McpServerToolCreateOptions { Services = services });
+            await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions(), serviceProvider: services);
+            var context = new RequestContext<CallToolRequestParams>(
+                server,
+                new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+                new CallToolRequestParams { Name = tool.ProtocolTool.Name, Arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(arguments) });
+
+            return await tool.InvokeAsync(context, CancellationToken.None);
+        }
+
+        public int RequestCount => _invoker.RequestCount;
+
+        public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
 
         public IReadOnlyList<string> ToolClassNames => _assembly.GetTypes()
             .Where(x => x.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
@@ -618,6 +794,8 @@ namespace TestApi
     {
         public (int StatusCode, string Body) LastResponse { get; private set; }
 
+        public int RequestCount { get; private set; }
+
         public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => SendAsync(HttpMethod.Get, route, null, ct);
 
         public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(HttpMethod.Post, route, jsonBody, ct);
@@ -638,6 +816,7 @@ namespace TestApi
                 request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
             }
 
+            RequestCount++;
             using var response = await client.SendAsync(request, ct);
             LastResponse = ((int)response.StatusCode, await response.Content.ReadAsStringAsync(ct));
 

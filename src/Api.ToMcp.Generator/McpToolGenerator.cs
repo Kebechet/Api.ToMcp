@@ -108,7 +108,7 @@ namespace Api.ToMcp.Generator
             var selectedActions = SelectActions(controllers, config, controllerEntryNames);
             var entryNames = GetEntryNames(controllers);
             var unbuildableRouteDiagnostics = new List<DiagnosticInfoModel>();
-            var toolActions = SkipActionsWithoutARoute(unbuildableRouteDiagnostics, selectedActions);
+            var toolActions = SkipActionsWithoutARoute(unbuildableRouteDiagnostics, RouteEndResolver.Resolve(selectedActions, controllers));
 
             // An invalid config gets MCP001 instead of MCP006: MCP006 would advise on the fallback, not on what the
             // file says.

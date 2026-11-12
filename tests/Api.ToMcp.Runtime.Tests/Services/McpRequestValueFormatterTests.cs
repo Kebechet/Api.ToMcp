@@ -50,6 +50,39 @@ public class McpRequestValueFormatterTests
         Assert.Equal(string.Empty, McpRequestValueFormatter.Format(null));
     }
 
+    [Theory]
+    [InlineData("", true, true)]
+    [InlineData("", false, false)]
+    [InlineData(".", false, true)]
+    [InlineData("..", false, true)]
+    [InlineData(".", true, true)]
+    [InlineData("../secret", false, true)]
+    [InlineData("a/./b", false, true)]
+    [InlineData("a/..", false, true)]
+    [InlineData("a", true, false)]
+    [InlineData("...", true, false)]
+    [InlineData(".a", true, false)]
+    [InlineData("a..", true, false)]
+    [InlineData("..a/b..", false, false)]
+    [InlineData("a//b", false, false)]
+    [InlineData("..%2Fsecret", false, false)]
+    public void ChangesThePath_TellsAValueTheUrlLosesOrNormalizesAway(string routeValue, bool isRequired, bool expected)
+    {
+        Assert.Equal(expected, McpRequestValueFormatter.ChangesThePath(routeValue, isRequired));
+    }
+
+    [Theory]
+    [InlineData("http://h/api/items/.", "/api/items/")]
+    [InlineData("http://h/api/items/named/..", "/api/items/")]
+    [InlineData("http://h/api/items/files/../secret", "/api/items/secret")]
+    [InlineData("http://h/api/items/%2E%2E", "/api/")]
+    [InlineData("http://h/api/items/..%2Fsecret", "/api/items/..%2Fsecret")]
+    public void SystemUri_RemovesTheDotSegments_ThatChangesThePathRefuses(string url, string expectedPath)
+    {
+        // Why the tool refuses such a value: the request it builds from the URL goes to the shorter path.
+        Assert.Equal(expectedPath, new Uri(url).AbsolutePath);
+    }
+
     [Fact]
     public void AddQueryValue_SkipsNull()
     {
