@@ -233,10 +233,17 @@ namespace Api.ToMcp.Generator.Emitting
                 .Where(p => p.Source != ParameterSourceModel.Services)
                 .ToList();
             var unfilledName = ResolveRouteValues(action, parameters).UnfilledName;
+            if (unfilledName is null)
+            {
+                return null;
+            }
 
-            return unfilledName is null
-                ? null
-                : $"no parameter or property fills the route value '{{{unfilledName}}}' of {action.HttpMethod} {action.RouteTemplate}";
+            // The URL leaves out an optional route value at its end that nothing fills, unless that URL may be another
+            // action's.
+            var reason = $"no parameter or property fills the route value '{{{unfilledName}}}' of {action.HttpMethod} {action.RouteTemplate}";
+            return action.RouteEnd == RouteEndModel.Required
+                ? reason + ", which the URL needs, as another action may be served at the URL without it"
+                : reason;
         }
 
         /// <summary>
@@ -247,6 +254,8 @@ namespace Api.ToMcp.Generator.Emitting
         {
             var template = RouteTemplate.Parse(action.RouteTemplate);
             var routePlaceholders = template.ParameterNames;
+            var lastPart = template.Parts.Count == 0 ? null : template.Parts[template.Parts.Count - 1];
+            var isEndRequired = action.RouteEnd == RouteEndModel.Required;
 
             // Build mapping from placeholder to source expression
             var placeholderSources = new Dictionary<string, (string Expression, string VariableName)>(StringComparer.OrdinalIgnoreCase);
@@ -277,9 +286,9 @@ namespace Api.ToMcp.Generator.Emitting
                     // the action's default when the URL leaves it out, as it does a query value. Only a whole segment is
                     // left out so: of {name}.{ext?}, the tool sends the value it is given, and leaves out the dot only
                     // with an empty one.
-                    var lastPart = template.Parts.Count == 0 ? null : template.Parts[template.Parts.Count - 1];
                     var partBefore = template.Parts.Count < 2 ? null : template.Parts[template.Parts.Count - 2];
-                    var canBeLeftOut = lastPart is { IsParameter: true, IsOptional: true, HasDefaultValue: false } &&
+                    var canBeLeftOut = !isEndRequired &&
+                        lastPart is { IsParameter: true, IsOptional: true, HasDefaultValue: false } &&
                         string.Equals(lastPart.Text, placeholder, StringComparison.OrdinalIgnoreCase) &&
                         partBefore is { IsParameter: false } && partBefore.Text.EndsWith(PathSeparator, StringComparison.Ordinal);
                     placeholderSources[placeholder] = (canBeLeftOut ? GetSentValue(directParam) : EscapeIdentifier(directParam.Name), directParam.Name);
@@ -319,14 +328,28 @@ namespace Api.ToMcp.Generator.Emitting
             }
 
             var parts = template.Parts.ToList();
-            RemoveUnfilledOptionalEnd(parts, placeholderSources);
+            if (!isEndRequired)
+            {
+                RemoveUnfilledOptionalEnd(parts, placeholderSources);
+            }
 
             // A URL without a value the template requires matches another route, possibly another action's of the same
-            // HTTP method: DELETE api/items/ instead of DELETE api/items/{id}.
+            // HTTP method: DELETE api/items/ instead of DELETE api/items/{id}. So may one without the optional value at its
+            // end, and one that another route of the same action leaves out is served by the action anyway.
+            bool IsRequired(RouteTemplatePart part)
+            {
+                if (!ReferenceEquals(part, lastPart) || action.RouteEnd == RouteEndModel.AsTemplate)
+                {
+                    return !part.IsOptional;
+                }
+
+                return isEndRequired;
+            }
+
             var arguments = placeholderArguments.ToDictionary(
                 x => x.Key,
                 x => (x.Value.Parameter, x.Value.IsProperty, IsRequired: template.Parts.Any(part =>
-                    part.IsParameter && !part.IsOptional && string.Equals(part.Text, x.Key, StringComparison.OrdinalIgnoreCase))),
+                    part.IsParameter && IsRequired(part) && string.Equals(part.Text, x.Key, StringComparison.OrdinalIgnoreCase))),
                 StringComparer.OrdinalIgnoreCase);
 
             return new RouteValues(

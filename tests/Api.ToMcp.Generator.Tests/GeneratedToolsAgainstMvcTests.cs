@@ -227,6 +227,27 @@ namespace TestApi
         [HttpGet(""secret"")]
         [Api.ToMcp.Abstractions.McpIgnore]
         public object Secret() => new { secret = true };
+
+        // MVC serves the action at multi too, so a call may leave out its id.
+        [HttpGet(""multi/{id}"")]
+        [HttpGet(""multi"")]
+        public object GetMulti(int? id) => new { id, path = Request.Path.Value };
+
+        // Without their value, DELETE api/items/opt/ and DELETE api/items/files/ reach the action served there, which MVC
+        // puts ahead of the optional route value and of the catch-all.
+        [HttpDelete(""opt/{id?}"")]
+        public object DeleteOpt(Guid? id) => new { deleted = id };
+
+        [HttpDelete(""opt"")]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object DeleteAllOpt() => new { deleted = ""allOpt"" };
+
+        [HttpDelete(""files/{**path}"")]
+        public object DeleteFile(string? path) => new { deleted = path };
+
+        [HttpDelete(""files"")]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object DeleteAllFiles() => new { deleted = ""allFiles"" };
     }
 
     [Route(""plain"")]
@@ -497,6 +518,10 @@ namespace TestApi
     [InlineData("ItemsController_GetFileTool", @"{""path"":""..a/b..""}", @"{""path"":""..a/b..""}")]
     [InlineData("ItemsController_GetFileTool", @"{}", @"{""path"":null}")]
     [InlineData("ItemsController_GetLabelTool", @"{}", @"{""label"":null}")]
+    [InlineData("ItemsController_GetMultiTool", @"{""id"":7}", @"{""id"":7,""path"":""/api/items/multi/7""}")]
+    [InlineData("ItemsController_GetMultiTool", @"{}", @"{""id"":null,""path"":""/api/items/multi/""}")]
+    [InlineData("ItemsController_DeleteOptTool", @"{""id"":""" + OrderGuid + @"""}", @"{""deleted"":""" + OrderGuid + @"""}")]
+    [InlineData("ItemsController_DeleteFileTool", @"{""path"":""a/b""}", @"{""deleted"":""a/b""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
@@ -521,6 +546,8 @@ namespace TestApi
     [InlineData("ItemsController_DeleteTool")]
     [InlineData("ItemsController_GetTool")]
     [InlineData("ItemsController_FindTool")]
+    [InlineData("ItemsController_DeleteOptTool")]
+    [InlineData("ItemsController_DeleteFileTool")]
     public async Task Tool_RefusesACallThatLeavesOutARequiredRouteValue_WithoutCallingTheApi(string toolClassName)
     {
         // The URL without the value is another action's: DELETE api/items/ runs DeleteAll, which [McpIgnore] keeps out of MCP.
@@ -546,6 +573,9 @@ namespace TestApi
     [InlineData("ItemsController_GetFileTool", @"{""path"":""../secret""}")]
     [InlineData("ItemsController_GetFileTool", @"{""path"":""a/./b""}")]
     [InlineData("ItemsController_GetFileTool", @"{""path"":""..""}")]
+    [InlineData("ItemsController_DeleteOptTool", @"{""id"":null}")]
+    [InlineData("ItemsController_DeleteFileTool", @"{""path"":""""}")]
+    [InlineData("ItemsController_DeleteFileTool", @"{""path"":null}")]
     public async Task Tool_RefusesARouteValueThatChangesThePath_WithoutCallingTheApi(string toolClassName, string arguments)
     {
         // DELETE api/items/named/.. is DELETE api/items/, DeleteAll's URL, and files/../secret reaches Secret, both kept
@@ -571,11 +601,25 @@ namespace TestApi
     [InlineData("ItemsController_DeleteTool", "id")]
     [InlineData("ItemsController_GetTool", "id")]
     [InlineData("ItemsController_FindTool", "id")]
+    [InlineData("ItemsController_DeleteOptTool", "id")]
+    [InlineData("ItemsController_DeleteFileTool", "path")]
     public void Tool_RequiresTheArgumentThatFillsARequiredRouteValue_WhateverItsType(string toolClassName, string argumentName)
     {
         var inputSchema = _host.GetInputSchema(toolClassName);
 
         Assert.Equal([argumentName], inputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+    }
+
+    [Fact]
+    public async Task Tool_LeavesOutARouteValue_ThatAnotherRouteOfTheActionIsServedWithout()
+    {
+        var inputSchema = _host.GetInputSchema("ItemsController_GetMultiTool");
+
+        var result = await _host.CallToolAsync("ItemsController_GetMultiTool", "{}");
+
+        Assert.False(inputSchema.TryGetProperty("required", out _), inputSchema.GetRawText());
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal((StatusCodes.Status200OK, @"{""id"":null,""path"":""/api/items/multi/""}"), _host.LastResponse);
     }
 
     [Fact]

@@ -128,6 +128,12 @@ namespace Api.ToMcp.Generator.Models
         public EquatableArray<ServedRouteModel> ServedRoutes { get; init; } = EquatableArray<ServedRouteModel>.Empty;
 
         /// <summary>
+        /// Whether a call may leave out the route value that ends <see cref="RouteTemplate"/>, which the routes of the
+        /// other actions decide. See <see cref="RouteEndModel"/>.
+        /// </summary>
+        public RouteEndModel RouteEnd { get; init; }
+
+        /// <summary>
         /// Why the generator cannot read the route or HTTP method MVC serves the action at from its routing attributes, as
         /// a clause of MCP009's message, or null when it can.
         /// </summary>
@@ -435,6 +441,28 @@ namespace Api.ToMcp.Generator.Models
         /// methods the generator cannot read.
         /// </summary>
         public EquatableArray<string> HttpMethods { get; init; } = EquatableArray<string>.Empty;
+    }
+
+    /// <summary>
+    /// Whether a call may leave out the route value that ends an action's template, so that its URL ends a segment
+    /// earlier. That URL can be another action's, of the same HTTP method.
+    /// </summary>
+    internal enum RouteEndModel
+    {
+        /// <summary>
+        /// As the template says: <c>{id}</c> needs a value, and <c>{id?}</c>, <c>{id=5}</c> or a catch-all can be left out.
+        /// </summary>
+        AsTemplate,
+
+        /// <summary>
+        /// Can be left out though the template needs a value: another route of the same action serves the URL without it.
+        /// </summary>
+        Optional,
+
+        /// <summary>
+        /// Needs a value though the template lets the URL leave it out: another action may serve the URL without it.
+        /// </summary>
+        Required
     }
 
     internal enum ParameterSourceModel
