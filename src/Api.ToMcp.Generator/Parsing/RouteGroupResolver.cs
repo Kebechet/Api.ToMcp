@@ -92,6 +92,13 @@ namespace Api.ToMcp.Generator.Parsing
         private static readonly CompilationCache<Compilation, ILookup<string, InvocationExpressionSyntax>> InvocationsByName =
             new CompilationCache<Compilation, ILookup<string, InvocationExpressionSyntax>>(EqualityComparer<Compilation>.Default);
 
+        /// <summary>
+        /// The calls of each method, which every endpoint the method maps asks for. A local function is not kept, as each
+        /// semantic model makes its symbol anew.
+        /// </summary>
+        private static readonly CompilationCache<IMethodSymbol, List<(IInvocationOperation Call, SemanticModel SemanticModel)>> CallsByMethod =
+            new CompilationCache<IMethodSymbol, List<(IInvocationOperation Call, SemanticModel SemanticModel)>>(SymbolEqualityComparer.Default);
+
         public static RouteGroups Resolve(ExpressionSyntax builder, SemanticModel semanticModel, CancellationToken ct)
         {
             return Resolve(builder, semanticModel, new HashSet<SyntaxReference>(SyntaxReferenceComparer.Instance), depth: 0, ct);
@@ -353,14 +360,31 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static List<(IInvocationOperation Call, SemanticModel SemanticModel)> FindCalls(IMethodSymbol method, Compilation compilation, CancellationToken ct)
         {
+            return method.MethodKind == MethodKind.LocalFunction
+                ? FindUncachedCalls(method, compilation, ct)
+                : CallsByMethod.GetOrAdd(compilation, method.OriginalDefinition, x => FindUncachedCalls(x, compilation, ct));
+        }
+
+        /// <summary>
+        /// The calls among the invocations of the method's name, told apart by the symbol each binds to, which is cheaper
+        /// to get than the operation of a call whose arguments hold lambdas.
+        /// </summary>
+        private static List<(IInvocationOperation Call, SemanticModel SemanticModel)> FindUncachedCalls(IMethodSymbol method, Compilation compilation, CancellationToken ct)
+        {
             var invocations = InvocationsByName.GetOrAdd(compilation, compilation, x => IndexInvocations(x, ct));
             var calls = new List<(IInvocationOperation Call, SemanticModel SemanticModel)>();
 
             foreach (var invocation in invocations[method.Name])
             {
                 var semanticModel = compilation.GetSemanticModel(invocation.SyntaxTree);
+                var target = semanticModel.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
+                if (target is null || !IsSameMethod(target, method))
+                {
+                    continue;
+                }
+
                 var call = semanticModel.GetOperation(invocation, ct) as IInvocationOperation;
-                if (call is not null && IsSameMethod(call.TargetMethod, method))
+                if (call is not null)
                 {
                     calls.Add((call, semanticModel));
                 }

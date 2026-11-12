@@ -296,6 +296,17 @@ namespace TestApi
     }
 
     [Fact]
+    public void Endpoint_HandledByARequestDelegate_GetsAToolWithoutArguments()
+    {
+        var source = MinimalApi(@"app.MapGet(""/ping"", async context => await context.Response.WriteAsync(""pong""));");
+
+        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_GetPingTool");
+
+        Assert.Contains("IMcpHttpInvoker invoker,\n            System.Threading.CancellationToken cancellationToken = default", tool.Replace("\r", ""));
+        Assert.DoesNotContain("UseStructuredContent", tool);
+    }
+
+    [Fact]
     public void Endpoint_IsNamedByWithName_ThenEndpointName_ThenItsMethod_ThenItsRoute()
     {
         var source = MinimalApiClass(@"
