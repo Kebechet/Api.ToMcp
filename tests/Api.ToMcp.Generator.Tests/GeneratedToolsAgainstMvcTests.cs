@@ -193,6 +193,28 @@ namespace TestApi
         public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
     }
 
+    // Without its id, a call to Get or Delete requests the URL that List or DeleteAll is served at.
+    [ApiController]
+    [Route(""api/items"")]
+    public class ItemsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public object Get(Guid? id) => new { id };
+
+        [HttpGet]
+        public object List() => new { listed = ""all"" };
+
+        [HttpDelete(""{id}"")]
+        public object Delete(Guid? id) => new { deleted = id };
+
+        [HttpDelete]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object DeleteAll() => new { deleted = ""all"" };
+
+        [HttpGet(""d/{id}/x"")]
+        public object Find(int? id) => new { id };
+    }
+
     [Route(""plain"")]
     public class PlainEchoController : ControllerBase
     {
@@ -453,6 +475,9 @@ namespace TestApi
     [InlineData("OrderEchoController_FindTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""overridden"":true}")]
     [InlineData("OrderEchoController_FindNamedTool", @"{""town"":""Brno""}", @"{""town"":""Brno"",""overridden"":true}")]
     [InlineData("OrderEchoController_MaskTool", @"{""city"":""Brno""}", @"{""city"":""Brno""}")]
+    [InlineData("ItemsController_GetTool", @"{""id"":""" + OrderGuid + @"""}", @"{""id"":""" + OrderGuid + @"""}")]
+    [InlineData("ItemsController_DeleteTool", @"{""id"":""" + OrderGuid + @"""}", @"{""deleted"":""" + OrderGuid + @"""}")]
+    [InlineData("ItemsController_FindTool", @"{""id"":7}", @"{""id"":7}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
@@ -471,6 +496,32 @@ namespace TestApi
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
 
         Assert.True(statusCode == StatusCodes.Status400BadRequest, $"{toolClassName}: {statusCode} {body}");
+    }
+
+    [Theory]
+    [InlineData("ItemsController_DeleteTool")]
+    [InlineData("ItemsController_GetTool")]
+    [InlineData("ItemsController_FindTool")]
+    public async Task Tool_RefusesACallThatLeavesOutARequiredRouteValue_WithoutCallingTheApi(string toolClassName)
+    {
+        // The URL without the value is another action's: DELETE api/items/ runs DeleteAll, which [McpIgnore] keeps out of MCP.
+        var requestCount = _host.RequestCount;
+
+        var exception = await Record.ExceptionAsync(() => _host.CallToolAsync(toolClassName, "{}"));
+
+        Assert.True(requestCount == _host.RequestCount, $"{toolClassName} called the API, which answered {_host.LastResponse}");
+        Assert.IsType<ArgumentException>(exception);
+    }
+
+    [Theory]
+    [InlineData("ItemsController_DeleteTool", "id")]
+    [InlineData("ItemsController_GetTool", "id")]
+    [InlineData("ItemsController_FindTool", "id")]
+    public void Tool_RequiresTheArgumentThatFillsARequiredRouteValue_WhateverItsType(string toolClassName, string argumentName)
+    {
+        var inputSchema = _host.GetInputSchema(toolClassName);
+
+        Assert.Equal([argumentName], inputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
     }
 
     [Fact]
@@ -557,6 +608,28 @@ namespace TestApi
             return _invoker.LastResponse;
         }
 
+        /// <summary>
+        /// Calls a generated tool through the MCP SDK, as a client's <c>tools/call</c> reaches it: the SDK reads the
+        /// arguments, and throws for a call that leaves out one the tool requires, before the tool runs.
+        /// </summary>
+        public async Task<CallToolResult> CallToolAsync(string toolClassName, string arguments)
+        {
+            var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
+            await using var services = new ServiceCollection().AddSingleton<IMcpHttpInvoker>(_invoker).BuildServiceProvider();
+            var tool = McpServerTool.Create(toolMethod, options: new McpServerToolCreateOptions { Services = services });
+            await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions(), serviceProvider: services);
+            var context = new RequestContext<CallToolRequestParams>(
+                server,
+                new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+                new CallToolRequestParams { Name = tool.ProtocolTool.Name, Arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(arguments) });
+
+            return await tool.InvokeAsync(context, CancellationToken.None);
+        }
+
+        public int RequestCount => _invoker.RequestCount;
+
+        public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
+
         public IReadOnlyList<string> ToolClassNames => _assembly.GetTypes()
             .Where(x => x.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
             .Select(x => x.Name)
@@ -618,6 +691,8 @@ namespace TestApi
     {
         public (int StatusCode, string Body) LastResponse { get; private set; }
 
+        public int RequestCount { get; private set; }
+
         public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => SendAsync(HttpMethod.Get, route, null, ct);
 
         public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(HttpMethod.Post, route, jsonBody, ct);
@@ -638,6 +713,7 @@ namespace TestApi
                 request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
             }
 
+            RequestCount++;
             using var response = await client.SendAsync(request, ct);
             LastResponse = ((int)response.StatusCode, await response.Content.ReadAsStringAsync(ct));
 

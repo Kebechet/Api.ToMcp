@@ -256,6 +256,17 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_ToolsCall_RefusesACallThatLeavesOutARequiredRouteValue()
+    {
+        // The SDK refuses it before the tool runs, as the input schema requires the argument.
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Weather_GetByCity", new JsonObject());
+
+        Assert.True(result["isError"]?.GetValue<bool>() == true, result.ToJsonString());
+    }
+
+    [Fact]
     public async Task McpProtocol_ToolsCall_SendsTheApiRequestOverHttp_WhenInProcessCallsAreOff()
     {
         var requests = new List<string>();

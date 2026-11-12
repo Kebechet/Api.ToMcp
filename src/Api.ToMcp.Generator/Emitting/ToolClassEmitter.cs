@@ -86,6 +86,8 @@ namespace Api.ToMcp.Generator.Emitting
             var parameters = action.Parameters
                 .Where(p => p.Source != ParameterSourceModel.Services)
                 .ToList();
+            var routeValues = ResolveRouteValues(action, parameters);
+            var routeParameters = new HashSet<ParameterInfoModel>(routeValues.RequiredArguments.Values.Select(x => x.Parameter));
 
             // The MCP server injects the request's CancellationToken into any tool method that
             // declares one (bound by type, so it is not surfaced as a tool input parameter).
@@ -94,7 +96,10 @@ namespace Api.ToMcp.Generator.Emitting
             // a nullable one without a default is optional, and C# wants every optional parameter after the required ones.
             var names = new ToolNames(parameters);
             var paramDecls = new List<string> { $"IMcpHttpInvoker {names.Invoker}" };
-            paramDecls.AddRange(parameters.Where(x => !IsOptional(x)).Concat(parameters.Where(IsOptional)).Select(FormatParameterDeclaration));
+            paramDecls.AddRange(parameters
+                .Where(x => !IsOptional(x, routeParameters))
+                .Concat(parameters.Where(x => IsOptional(x, routeParameters)))
+                .Select(x => FormatParameterDeclaration(x, IsOptional(x, routeParameters))));
             paramDecls.Add($"System.Threading.CancellationToken {names.CancellationToken} = default");
 
             var annotations = FormatAnnotationArguments(action.Annotations);
@@ -128,7 +133,7 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        )");
             sb.AppendLine("        {");
 
-            EmitRouteBuilding(sb, action, parameters, names);
+            EmitRouteBuilding(sb, action, parameters, routeValues, names);
             EmitHttpCall(sb, action, parameters, hasOutputSchema, names);
 
             sb.AppendLine("        }");
@@ -138,10 +143,9 @@ namespace Api.ToMcp.Generator.Emitting
             StringBuilder sb,
             ActionInfoModel action,
             List<ParameterInfoModel> parameters,
+            RouteValues routeValues,
             ToolNames names)
         {
-            var routeValues = ResolveRouteValues(action, parameters);
-
             // Generate route variables
             var routeVariables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var part in routeValues.Parts.Where(x => x.IsParameter))
@@ -239,6 +243,7 @@ namespace Api.ToMcp.Generator.Emitting
 
             // Build mapping from placeholder to source expression
             var placeholderSources = new Dictionary<string, (string Expression, string VariableName)>(StringComparer.OrdinalIgnoreCase);
+            var placeholderArguments = new Dictionary<string, (ParameterInfoModel Parameter, string Name)>(StringComparer.OrdinalIgnoreCase);
 
             // Of a parameter bound from the route, query and form values, MVC reads a [FromRoute] property only from the
             // route value of its name, and only when the parameter carries no prefix, whichever parameter fills that route
@@ -271,6 +276,7 @@ namespace Api.ToMcp.Generator.Emitting
                         string.Equals(lastPart.Text, placeholder, StringComparison.OrdinalIgnoreCase) &&
                         partBefore is { IsParameter: false } && partBefore.Text.EndsWith(PathSeparator, StringComparison.Ordinal);
                     placeholderSources[placeholder] = (canBeLeftOut ? GetSentValue(directParam) : EscapeIdentifier(directParam.Name), directParam.Name);
+                    placeholderArguments[placeholder] = (directParam, directParam.Name);
                 }
                 else
                 {
@@ -295,6 +301,7 @@ namespace Api.ToMcp.Generator.Emitting
                     if (propertySource.Property != null)
                     {
                         placeholderSources[placeholder] = GetRouteValueSource(propertySource.Parameter, propertySource.Property);
+                        placeholderArguments[placeholder] = (propertySource.Parameter, $"{propertySource.Parameter.Name}.{propertySource.Property.Name}");
 
                         if (valueProviderParams.Contains(propertySource.Parameter) && ReadsRouteValue(propertySource.Property, placeholder))
                         {
@@ -307,11 +314,18 @@ namespace Api.ToMcp.Generator.Emitting
             var parts = template.Parts.ToList();
             RemoveUnfilledOptionalEnd(parts, placeholderSources);
 
+            // A URL without a value the template requires matches another route, possibly another action's of the same
+            // HTTP method: DELETE api/items/ instead of DELETE api/items/{id}.
+            var requiredArguments = placeholderArguments
+                .Where(x => template.Parts.Any(part => part.IsParameter && !part.IsOptional && string.Equals(part.Text, x.Key, StringComparison.OrdinalIgnoreCase)))
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+
             return new RouteValues(
                 template,
                 parts,
                 placeholderSources,
                 routeProperties,
+                requiredArguments,
                 parts.FirstOrDefault(x => x.IsParameter && !placeholderSources.ContainsKey(x.Text))?.Text);
         }
 
@@ -678,14 +692,15 @@ namespace Api.ToMcp.Generator.Emitting
 
         /// <summary>
         /// Whether the tool declares the parameter with a default value, which the MCP SDK leaves out of the input
-        /// schema's <c>required</c>: the action's own default, else <c>null</c> for a nullable type.
+        /// schema's <c>required</c>: the action's own default, else <c>null</c> for a nullable type. Never one that fills a
+        /// route value the template requires, of <paramref name="routeParameters"/>, as no URL of the action leaves it out.
         /// </summary>
-        private static bool IsOptional(ParameterInfoModel param)
+        private static bool IsOptional(ParameterInfoModel param, HashSet<ParameterInfoModel> routeParameters)
         {
-            return param.HasDefaultValue || param.IsNullable;
+            return (param.HasDefaultValue || param.IsNullable) && !routeParameters.Contains(param);
         }
 
-        private static string FormatParameterDeclaration(ParameterInfoModel param)
+        private static string FormatParameterDeclaration(ParameterInfoModel param, bool isOptional)
         {
             var type = param.Type;
 
@@ -698,11 +713,11 @@ namespace Api.ToMcp.Generator.Emitting
             }
 
             var defaultPart = "";
-            if (param.HasDefaultValue)
+            if (isOptional && param.HasDefaultValue)
             {
                 defaultPart = $" = {param.DefaultValueExpression}";
             }
-            else if (param.IsNullable)
+            else if (isOptional)
             {
                 defaultPart = $" = {NullLiteral}";
             }
@@ -735,12 +750,14 @@ namespace Api.ToMcp.Generator.Emitting
                 IReadOnlyList<RouteTemplatePart> parts,
                 Dictionary<string, (string Expression, string VariableName)> sources,
                 HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties,
+                Dictionary<string, (ParameterInfoModel Parameter, string Name)> requiredArguments,
                 string? unfilledName)
             {
                 Template = template;
                 Parts = parts;
                 Sources = sources;
                 RouteProperties = routeProperties;
+                RequiredArguments = requiredArguments;
                 UnfilledName = unfilledName;
             }
 
@@ -754,6 +771,12 @@ namespace Api.ToMcp.Generator.Emitting
             /// so two parameters of one type have equal properties, of which one may fill the route and the other not.
             /// </summary>
             public HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> RouteProperties { get; }
+
+            /// <summary>
+            /// What fills each route value the template requires, by the value's name: the parameter, which the tool
+            /// declares without a default, and the argument's name, <c>id</c> or for a property <c>q.Id</c>.
+            /// </summary>
+            public Dictionary<string, (ParameterInfoModel Parameter, string Name)> RequiredArguments { get; }
 
             public string? UnfilledName { get; }
         }
