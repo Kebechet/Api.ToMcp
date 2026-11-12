@@ -13,15 +13,15 @@ A C# source generator that automatically transforms your ASP.NET Core API endpoi
 
 ## What is this?
 
-Api.ToMcp analyzes your existing ASP.NET Core controllers at compile time and generates MCP-compatible tool classes. This allows AI assistants (like Claude) to interact with your REST API through the MCP protocol without writing any integration code manually.
+Api.ToMcp analyzes your existing ASP.NET Core controllers and Minimal API endpoints at compile time and generates MCP-compatible tool classes. This allows AI assistants (like Claude) to interact with your REST API through the MCP protocol without writing any integration code manually.
 
 > **For APIs you own the source of.** Api.ToMcp is a source generator — it runs inside your API project's compilation, which is what lets it read your XML doc comments for tool descriptions, fail at build time instead of runtime, and route tool calls through your real middleware pipeline (auth, validation, filters). If you only have an OpenAPI spec — a third-party or legacy API you can't recompile — this package is not the right fit; use an OpenAPI-to-MCP proxy instead.
 
-> **Controllers only.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`), and finds their actions the way MVC does; see [Controllers and Actions](#controllers-and-actions). Minimal API endpoints (`app.MapGet(...)`, `app.MapPost(...)`, etc.) are **not** discovered. See [Limitations](#limitations).
+> **Controllers and Minimal APIs.** The generator scans classes that inherit from `ControllerBase` (or are annotated with `[ApiController]`), and finds their actions the way MVC does; see [Controllers and Actions](#controllers-and-actions). It also finds the Minimal API endpoints your code maps with `app.MapGet(...)`, `app.MapPost(...)` and the like, when it can read their routes at build time; see [Minimal API Endpoints](#minimal-api-endpoints).
 
 ## Features
 
-- **Automatic Tool Generation** - Scans controllers and generates MCP tools at compile time
+- **Automatic Tool Generation** - Scans controllers and Minimal API endpoints and generates MCP tools at compile time
 - **Descriptions from XML docs** - Tool, argument and request-field descriptions come from the `<summary>` and `<param>` comments you already write
 - **Typed results** - Each tool advertises its action's response type as an output schema and returns the response as structured content
 - **Tool annotations** - Every tool states its read-only, destructive, idempotent and open-world hints, derived from its scope and HTTP method
@@ -171,6 +171,45 @@ public class ProductsController : CrudController<Product> { }   // Products_GetA
 public class OrdersController : CrudController<Order> { }       // Orders_GetAll: GET /api/orders, a List<Order>
 ```
 
+## Minimal API Endpoints
+
+The generator finds the endpoints your code maps with Minimal APIs and gives each one a tool, the same kind of tool an action gets: selected by `generator.json`, `[McpExpose]` and `[McpIgnore]`, named by `toolNameFormat`, scoped by its HTTP method, and called through your app's own pipeline. It reads the code at build time, so it takes what it can tell there and warns about the rest with [`MCP010`](#troubleshooting).
+
+```csharp
+var app = builder.Build();
+
+var api = app.MapGroup("/api");
+api.MapGet("/orders/{id:int}", OrderHandlers.GetById);              // OrderHandlers_GetById: GET /api/orders/{id:int}
+api.MapPost("/orders", (CreateOrder request, ShopDb db) => ...)    // Program_CreateOrder: POST /api/orders, request as the body
+    .WithName("CreateOrder")
+    .WithDescription("Places an order.");
+api.MapTodoEndpoints();                                            // the endpoints it maps take the /api prefix from here
+```
+
+- **Endpoints.** A call of `MapGet`, `MapPost`, `MapPut`, `MapPatch` or `MapDelete`, or of `MapMethods` with its HTTP methods written in the call, as strings or as `HttpMethods.Get` and the like. An endpoint `MapMethods` maps for several HTTP methods a tool sends gets one tool, for the first of them, and build warning [`MCP011`](#troubleshooting); one mapped only for methods no tool sends, such as `HEAD`, gets none. `Map` and `MapFallback`, which serve every method, get none, as an action with a `[Route]` alone does.
+- **Routes.** The route pattern, and the prefix of each `MapGroup` the endpoint is mapped in, are constant strings: literals, `const` fields, and strings joined from them with `+` or interpolation. The generator follows the route builder back to the `WebApplication`: through `MapGroup` calls, ASP.NET Core's conventions that return the builder they are called on, such as `WithTags` or `RequireAuthorization`, local variables assigned only where they are declared, and the parameters of your own methods, to every call of the method in the project. That includes extension methods such as `api.MapTodoEndpoints()`, and a method called through an interface it implements or a base method it overrides, as an app does that lists classes mapping endpoints and calls each through its interface. A method called from several places maps its endpoints at the route of each, and each of those gets a tool. The callback of `app.UseEndpoints(endpoints => ...)` maps at the root.
+- **Handlers.** A lambda, a local function, or a static or instance method.
+- **Names.** `{Controller}` in `toolNameFormat` is the class that declares the handler: `Program` for a lambda in top-level statements, `OrderHandlers` for `OrderHandlers.GetById`. `{Action}` is the endpoint's name: the one `.WithName(...)` gives it, else `[EndpointName]` on the handler, else the name of the handler's method or local function, else one made of the HTTP method and the route, with `By` before each route value: `GET /api/orders/{id}` is `GetApiOrdersById`. `[McpExpose(ToolName = ...)]` on the handler replaces the whole tool name, and the title follows the name, as for an action.
+- **Selection.** A `generator.json` entry names an endpoint as it names an action, by its class and name: `"Program"` selects every endpoint whose handler `Program` declares, and `"Program.CreateOrder"` or `"OrderHandlers.GetById"` one of them. `[McpExpose]` and `[McpIgnore]` go on the lambda (`app.MapGet("/x", [McpIgnore] () => ...)`), the method or local function, or the class that declares it, and work as on an action and its controller, `Scope` and the hints included.
+- **Descriptions.** `[McpExpose(Description = ...)]`, else `.WithDescription(...)`, else `[EndpointDescription]`, else `.WithSummary(...)`, else `[EndpointSummary]`, else `[Description]` on the handler, else the method's XML `<summary>`, else `Invokes GET /api/orders/{id}`. An argument is described by `[Description]` on its parameter, else the method's XML `<param>`.
+- **Output schema.** The handler's return type, without `Task<T>` or `ValueTask<T>`, as for an action, and `[ProducesResponseType]` on the handler. A typed result names its body: `Ok<T>`, `Created<T>`, `CreatedAtRoute<T>`, `Accepted<T>` and `AcceptedAtRoute<T>` give `T`, so `Results<Ok<Order>, NotFound>` gives `Order`. Errors, such as `NotFound` or `BadRequest<T>`, do not count, and a success without a body, such as `NoContent`, lets the schema allow null. A `string`, which is sent as text, an anonymous type, which C# cannot name, `IResult`, and a typed result whose status the handler picks, such as `JsonHttpResult<T>`, give none.
+
+### Where each argument of an endpoint is sent
+
+A tool sends each parameter of the handler where the Minimal API binds it from ([parameter binding](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding)):
+
+- `[FromRoute]`, `[FromQuery]` and `[FromBody]` decide for themselves. `[FromQuery(Name = "q")]` is sent as `q`.
+- A type the Minimal API parses from one string, through a static `TryParse`, as it does `string`, the numbers, `bool`, `Guid`, the date and time types, enums and `Uri`, fills the route value of its name, else goes to the query string. A `[TypeConverter]` does not make a type one: unlike MVC, a Minimal API never asks it.
+- An array of such a type, on an endpoint mapped for GET or DELETE, goes to the query string with its key repeated, `?ids=1&ids=2`. On POST, PUT and PATCH it is the body.
+- `HttpContext`, `HttpRequest`, `HttpResponse`, `ClaimsPrincipal`, `CancellationToken`, and parameters with `[FromServices]` or `[FromKeyedServices]`, are no arguments: the endpoint gets them from the request and the services.
+- A complex type without an attribute is a service on an endpoint mapped for GET or DELETE, as a Minimal API reads no body there and the app would not start otherwise, so it is no argument. On POST, PUT and PATCH it is the body, unless the app registered it as a service, which only the running app knows. So the generator takes for a service an interface, other than the collection interfaces `System.Text.Json` reads a body into (`IList<T>`, `ICollection<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `ISet<T>`, `IDictionary<TKey, TValue>` and `IReadOnlyDictionary<TKey, TValue>`), an abstract class, a delegate, an Entity Framework `DbContext`, and a class of the framework, in `System.*` or `Microsoft.*`, that is neither a collection nor JSON. Of the others, all are services when a `[FromBody]` parameter is the body; else one of them is the body, and several get build warning `MCP010`, as the generator cannot tell which.
+- `[AsParameters]`: each member of the type is an argument of its own, named after its property: the parameters of the constructor the Minimal API creates the type with, its only public one or else its parameterless one, or else its public settable properties, each with the binding attributes of the constructor parameter and the property.
+- An optional `[FromHeader]` parameter, nullable or with a default, is no argument, as a tool sends no headers, and the endpoint gets its default.
+
+> **Mark a class of your own that the app registers as a service `[FromServices]`** in a POST, PUT or PATCH handler. The generator cannot see the registration, so when it is the only complex parameter without an attribute, it is taken for the body, and the tool asks for its properties as an argument.
+
+An endpoint gets no tool, and build warning [`MCP010`](#troubleshooting), when the generator cannot tell its route or cannot send what it reads: a route pattern or group prefix that is not a constant, a route builder it cannot follow to the app, a handler held in a variable, a route value no parameter fills, a form (`[FromForm]`, `IFormFile`), the body as a `Stream` or `PipeReader`, a type with a `BindAsync` of its own, a required header, a body on GET or DELETE, a body it cannot tell from the services, two arguments of one name, and a parameter type the generated tool cannot refer to, such as a `private` class nested in the handler's.
+
 ## Configuration
 
 ### Selection Modes
@@ -184,13 +223,15 @@ public class OrdersController : CrudController<Order> { }       // Orders_GetAll
 
 | Option | Description |
 |--------|-------------|
-| `toolNameFormat` | Format string for tool names. Supports `{Controller}` and `{Action}` placeholders. `{Controller}` is the controller that serves the action, also for an action it inherits |
+| `toolNameFormat` | Format string for tool names. Supports `{Controller}` and `{Action}` placeholders. `{Controller}` is the controller that serves the action, also for an action it inherits; for a Minimal API endpoint, the class that declares its handler, and `{Action}` the endpoint's name (see [Minimal API Endpoints](#minimal-api-endpoints)) |
 | `removeControllerSuffix` | When `true`, strips "Controller" from the controller name |
 
 ### Include/Exclude Patterns
 
 - `"ProductsController"` - Include/exclude entire controller
 - `"ProductsController.GetById"` - Include/exclude specific action
+- `"OrderHandlers"` - Include/exclude every Minimal API endpoint whose handler the class declares, `Program` for lambdas in top-level statements
+- `"OrderHandlers.GetById"` - Include/exclude one endpoint, by its name: from `.WithName(...)`, its handler method, or its HTTP method and route (`Program.GetApiOrdersById`)
 
 Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`, and one the generator cannot use as written, such as malformed JSON or an unknown `mode`, with `MCP001`; see [Troubleshooting](#troubleshooting). The file may contain comments, but not trailing commas.
 
@@ -311,7 +352,7 @@ Good descriptions matter for MCP — they're what the AI client reads to decide 
 public Task<ActionResult<Product>> GetById(Guid id) { ... }
 ```
 
-Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`). Titles are derived from the action name instead; see [Tool titles](#tool-titles).
+Precedence: `[McpExpose(ToolName/Description)]` overrides → XML doc → a generic fallback (`Invokes Controller.Action` / `Parameter: name`). Titles are derived from the action name instead; see [Tool titles](#tool-titles). A Minimal API endpoint is also described by `.WithDescription(...)`, `.WithSummary(...)` and `[Description]`; see [Minimal API Endpoints](#minimal-api-endpoints).
 
 An override without a `<summary>` of its own, or with only `<inheritdoc/>`, is described by the `<summary>` of the action it overrides, and a parameter it leaves undocumented takes that action's `<param>` for the parameter in the same position, as an override may rename it.
 
@@ -671,7 +712,7 @@ Over HTTP, turning off .NET's activity propagation, with the `System.Net.Http.En
 
 ## Limitations
 
-- **Controllers only.** Minimal API endpoints (`app.MapGet`, `app.MapPost`, …) are not scanned; only `ControllerBase`-derived / `[ApiController]` classes are. Support is tracked in [#11](https://github.com/Kebechet/Api.ToMcp/issues/11).
+- **Minimal API endpoints as the code maps them.** The generator reads the endpoints at build time (https://github.com/Kebechet/Api.ToMcp/issues/11), so it does not find one mapped in a referenced assembly, and one whose route builder a library hands to your code, such as a Carter module's, gets `MCP010`, as no call in the project gives its route. It reads `.WithName`, `.WithDescription` and `.WithSummary` only when chained to the `Map*` call, not from a later statement or from a route group, and does not read `.Produces<T>()`. It cannot see which types the app registers as services; see [Where each argument of an endpoint is sent](#where-each-argument-of-an-endpoint-is-sent).
 - **One route per action.** MVC serves an action at every route and HTTP method its attributes give it. Its tool takes the first method a tool sends, in the order of the routes, `GET` for `[HttpHead] [HttpGet]` and `PUT` for `[AcceptVerbs("HEAD", "PUT", "POST")]`, and calls it at the first route serving that method with a template of its own, else at the controller's route: `[HttpGet(Name = "find")] [Route("{id}")]`, which MVC serves for GET at both, is called at `{id}`.
 - **No `[FromForm]` / file uploads.** Form-bound parameters and `IFormFile` are not mapped.
 - **API versioning is partial.** URL-segment versioning (`[Route("api/v{version:apiVersion}/[controller]")]`) is supported — the concrete version from `[ApiVersion]` is baked into the generated route (defaulting to `1.0` if the attribute is absent), so each tool targets a fixed version. Query-string (`?api-version=`) and header/media-type versioning are **not** sent by the generated tools, so those rely on the API's default version.
@@ -761,7 +802,8 @@ A scope rejection comes back like a failed API call, as an error result whose te
 - Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
 - An `include` entry that names no controller or action, through a typo or a base controller's name, selects nothing. The build warns with `MCP008`; see [Troubleshooting](#troubleshooting).
 - An action whose route the generator cannot build, such as one with a route value no parameter fills, gets no tool. The build warns with `MCP009`; see [Troubleshooting](#troubleshooting).
-- `AdditionalFiles`, include names and minimal APIs: see [Troubleshooting](#troubleshooting).
+- A Minimal API endpoint whose route the generator cannot tell, or whose request it cannot send, gets no tool. The build warns with `MCP010`; see [Minimal API Endpoints](#minimal-api-endpoints).
+- `AdditionalFiles` and include names: see [Troubleshooting](#troubleshooting).
 
 To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the project. A build then writes it to `obj/<Configuration>/<TargetFramework>/generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`, one file per tool, such as `ProductsController_GetByIdTool.g.cs`. A project can move it with `<CompilerGeneratedFilesOutputPath>`: the demo sets `$(BaseIntermediateOutputPath)Generated`, so its files are in `obj/Generated/Api.ToMcp.Generator/Api.ToMcp.Generator.McpToolGenerator/`. A file stays there after its tool is gone; `McpToolsRegistration.g.cs` lists the current tools.
 
@@ -778,10 +820,12 @@ The build reports these warnings:
 | Code | From | When |
 |------|------|------|
 | `MCP001` | Generator | `generator.json` cannot be used as written: malformed JSON, a value of the wrong type, an unknown `mode`, an empty file, or an unreadable one |
-| `MCP006` | Generator | The config selects none of the project's actions, or only actions `MCP009` leaves without a tool, so no tools are generated |
+| `MCP006` | Generator | The config selects none of the project's actions, or only actions `MCP009` or `MCP010` leaves without a tool, so no tools are generated |
 | `MCP007` | Generator | Two or more generated tools get the same name, and the MCP SDK keeps only one of them |
 | `MCP008` | Generator | An `include` or `exclude` entry names no controller or action of the project, so it selects or excludes nothing |
 | `MCP009` | Generator | An action gets no tool, as the generator cannot build its route: a route value no parameter fills, or a routing attribute whose code it cannot read |
+| `MCP010` | Generator | A Minimal API endpoint gets no tool, as the generator cannot tell its route or cannot send what it reads |
+| `MCP011` | Generator | A Minimal API endpoint that `MapMethods` maps for several HTTP methods a tool sends gets a tool for the first of them only |
 | `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
 | `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
 
@@ -793,7 +837,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - In `SelectedOnly` mode, only endpoints listed in `include` are exposed — check the names match `Controller.Action`, including their case, where `Controller` is the controller that serves the action, not a base class it inherits the action from.
 - Each `include` entry that names no controller or action gets build warning `MCP008`, which says what is wrong with it; `MCP006` then only points there.
 - When every action the config selects gets build warning `MCP009`, as its route cannot be built, no tool is generated either, and `MCP006` says so and points at `MCP009`, naming the `include` entries that select only such actions.
-- Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). Minimal APIs are not supported.
+- Ensure the endpoint lives on a controller MVC serves: a public, non-abstract, non-generic `ControllerBase`-derived class (or one with `[ApiController]`) without `[NonController]`; see [Controllers and Actions](#controllers-and-actions). A Minimal API endpoint is named by the class that declares its handler, `Program` for a lambda in top-level statements; see [Minimal API Endpoints](#minimal-api-endpoints).
 - With `TreatWarningsAsErrors`, `MCP006` fails the build until the config selects an action. To build with no tools on purpose, add `MCP006` to `<NoWarn>` or `<WarningsNotAsErrors>`.
 
 **Build warning `MCP001`: `generator.json cannot be used as written`.**
@@ -817,6 +861,18 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - `no parameter or property fills the route value '{id}'`: no parameter of the action, and no property of one, fills a placeholder of its route, such as `[HttpGet("z/{id}")] public IActionResult Z()`, which reads the value from `RouteData` itself. Give the action a parameter for it, `Z(int id)`. An optional route value nothing fills only gets the warning before the end of the route, where MVC needs it; at the end, the URL leaves it out.
 - `the generator cannot read the route template of its [...] attribute, as ...` (or `of the [...] attribute on <controller>`, or `the HTTP methods of ...`): a routing attribute of your own gives the template or the HTTP methods through code the generator cannot follow, and the rest of the message says which: `the referenced assembly '...' holds no code of the constructor of ...` for an attribute declared in another assembly, whose metadata holds no constructor code; `it is computed by '...', which the generator cannot evaluate` for code other than constants, parameters and strings joined from them; `it is computed from '...', a double, which C# writes in the culture the app runs under` for a number whose text depends on the culture. Route the action, or its controller, with MVC's `[Route]` and `[Http*]` attributes, declare the attribute in the project, or pass the template as a string. See [Controllers and Actions](#controllers-and-actions).
 - To keep the action from MCP without the warning, mark it `[McpIgnore]` or exclude it in `generator.json`, or suppress the warning like any other.
+
+**Build warning `MCP010: No MCP tool is generated for endpoint '...'`.**
+- The generator cannot tell where the Minimal API endpoint is served, or cannot send what it reads, so it generates no tool for it. The warning gives the reason and points at the `Map*` call; the other tools are generated as usual. It names the endpoint as a `generator.json` entry does, such as `Program.GetApiOrdersById`.
+- `the generator cannot read its route pattern` or `the prefix of the route group '...'`: pass a constant string, such as a literal or a `const` field.
+- `the generator cannot tell which route group '...' is`, `the generator finds no call of '...'` or `'...' calls itself`: the generator follows the builder through `MapGroup`, ASP.NET Core's conventions, local variables assigned once, and the calls of your own methods in the project. A builder held in a field or a property, one a library passes to your method, such as Carter's, and a method nothing in the project calls end that path. Map the endpoint on a builder that a call in the project passes down from `app`.
+- `it reads '...' from a form`, `from a header`, `the request body of '...' as a stream` or `binds '...' through ....BindAsync`: a tool sends a JSON body, the route and the query string only.
+- `the generator cannot tell which of '...' and '...' it reads from the body`: mark the services `[FromServices]`, or the body `[FromBody]`. See [Where each argument of an endpoint is sent](#where-each-argument-of-an-endpoint-is-sent).
+- `no parameter or property fills the route value '{id}'`: as for `MCP009`, give the handler a parameter of that name.
+- To keep the endpoint from MCP without the warning, mark its handler `[McpIgnore]` or exclude it in `generator.json`, or suppress the warning like any other.
+
+**Build warning `MCP011: The MCP tool of endpoint '...' calls it with GET only`.**
+- `MapMethods` maps the endpoint for several HTTP methods a tool sends, and its tool calls it with the first of them, so the others have no tool. Map each method with a call of its own, such as `MapGet` and `MapPost`, to give each one a tool, or suppress the warning.
 
 **Build warning `MCP100`: `Api.ToMcp created a starter config at ...`.**
 - No config existed at `ApiToMcpConfigPath`, so the build wrote a starter one there, which generates no tools until you fill in its `include`. The warning points at that file, and comes only from the build that writes it. `TreatWarningsAsErrors` leaves it a warning, as it covers compiler warnings only, while `-warnaserror` makes it fail that build unless `MCP100` is in `<WarningsNotAsErrors>`.
@@ -849,7 +905,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 
 ## How It Works
 
-1. **Compile Time**: The source generator scans your controllers for HTTP actions
+1. **Compile Time**: The source generator scans your controllers for HTTP actions, and your code for the Minimal API endpoints it maps
 2. **Code Generation**: For each selected endpoint, a tool class is generated with `[McpServerToolType]` attribute
 3. **Startup**: `AddMcpTools` registers every `[McpServerToolType]` class of the assembly (generated and hand-written) and builds the tools and their argument schemas when the host starts, so a tool that cannot be created fails at startup rather than at the first request
 4. **Runtime**: When an MCP client calls a tool, the tool runs your API's request through your app's own middleware pipeline, inside the process; see [How Tools Call Your API](#how-tools-call-your-api)
@@ -926,7 +982,7 @@ The tool's arguments keep the names of the action's parameters, as MCP passes th
 ## Requirements
 
 - .NET 8.0 or later
-- ASP.NET Core with controller-based endpoints (see [Limitations](#limitations))
+- ASP.NET Core with controllers or Minimal API endpoints (see [Limitations](#limitations))
 - `ModelContextProtocol.AspNetCore` **`2.2.0`** — this is a transitive dependency of the package. **Do not add a different version of any `ModelContextProtocol.*` package to your app.** The MCP SDK makes breaking API changes between versions; a version mismatch causes a `MissingMethodException` at startup (see [Troubleshooting](#troubleshooting)). Either omit the reference entirely and let it flow transitively, or pin the exact same version.
 
 ## License
