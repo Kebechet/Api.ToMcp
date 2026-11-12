@@ -547,6 +547,8 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         var missing = await CallToolRawAsync(client, "TodoEndpoints_GetById", new JsonObject { ["id"] = 999 });
 
         Assert.Equal("Write the release notes", todo["structuredContent"]!["title"]!.GetValue<string>());
+        // CreateTodoRequest is internal, so its tool is an internal class, which AddMcpTools registers all the same.
+        Assert.False(typeof(Program).Assembly.GetType("Api.ToMcp.Generated.TodoEndpoints_CreateTodoTool", throwOnError: true)!.IsPublic);
         Assert.Equal("Buy milk", created["structuredContent"]!["title"]!.GetValue<string>());
         Assert.False(created["structuredContent"]!["isDone"]!.GetValue<bool>());
         Assert.NotEmpty(done["structuredContent"]!.AsArray());

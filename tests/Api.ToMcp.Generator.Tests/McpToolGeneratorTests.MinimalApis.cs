@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Xunit;
 
 namespace Api.ToMcp.Generator.Tests;
@@ -723,6 +724,60 @@ namespace TestApi
 
         Assert.EndsWith($": {reason}", warning.GetMessage());
         Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, MinimalApisConfig));
+    }
+
+    [Fact]
+    public void Endpoint_WithAnInternalParameterType_GetsAnInternalToolThatCompiles()
+    {
+        // A public tool method cannot take an internal type (CS0051), which a handler often does.
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app)
+        {
+            app.MapPost(""/todos"", (CreateTodo todo) => 1).WithName(""Create"");
+            app.MapGet(""/todos"", (TodoStatus status, TodoStatus[] others) => 1).WithName(""List"");
+            app.MapPost(""/lines"", (List<Line> lines) => 1).WithName(""Lines"");
+            app.MapGet(""/public/{id}"", (int id) => 1).WithName(""Public"");
+        }") + @"
+namespace TestApi
+{
+    internal sealed record CreateTodo(string Title);
+    internal enum TodoStatus { Open, Done }
+    internal sealed class Line { public int Id { get; set; } }
+}
+";
+        var generated = RunGenerator(source, MinimalApisConfig);
+
+        AssertCompiles(source, MinimalApisConfig);
+        Assert.Contains("internal static class Endpoints_CreateTool", generated);
+        Assert.Contains("internal static class Endpoints_ListTool", generated);
+        Assert.Contains("internal static class Endpoints_LinesTool", generated);
+        Assert.Contains("public static class Endpoints_PublicTool", generated);
+    }
+
+    [Fact]
+    public void Endpoint_OfATopLevelProgram_TakingARecordDeclaredThere_GetsAToolThatCompiles()
+    {
+        // A record declared without a modifier at the end of Program.cs is internal.
+        const string program = MinimalApiUsings + @"
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+var api = app.MapGroup(""/api"");
+api.MapGet(""/todos/{id}"", (int id) => id);
+api.MapPost(""/todos"", (Todo todo) => todo);
+app.Run();
+
+record Todo(int Id, string Title);
+";
+        var compilation = CreateCompilation(program).WithOptions(new CSharpCompilationOptions(OutputKind.ConsoleApplication));
+
+        CreateDriver(MinimalApisConfig).RunGeneratorsAndUpdateCompilation(compilation, out var output, out var generatorDiagnostics);
+        var generated = string.Join("\n", output.SyntaxTrees.Skip(1).Select(x => x.ToString()));
+        var errors = output.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error).ToList();
+
+        Assert.Empty(generatorDiagnostics);
+        Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
+        Assert.Contains("internal static class Program_PostApiTodosTool", generated);
+        Assert.Contains("public static class Program_GetApiTodosByIdTool", generated);
     }
 
     [Fact]

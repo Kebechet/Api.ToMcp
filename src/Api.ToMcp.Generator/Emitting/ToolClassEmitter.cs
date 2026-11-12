@@ -62,7 +62,9 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("namespace Api.ToMcp.Generated");
             sb.AppendLine("{");
             sb.AppendLine("    [McpServerToolType]");
-            sb.AppendLine($"    public static class {className}");
+            sb.AppendLine(action.HasNonPublicParameterTypes
+                ? $"    internal static class {className}"
+                : $"    public static class {className}");
             sb.AppendLine("    {");
 
             EmitToolMethod(sb, action, toolName, description, hasOutputSchema: structuredOutput && action.OutputSchemaType != null);

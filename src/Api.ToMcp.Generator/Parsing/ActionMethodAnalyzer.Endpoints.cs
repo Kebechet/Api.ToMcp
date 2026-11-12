@@ -161,10 +161,11 @@ namespace Api.ToMcp.Generator.Parsing
 
             var parameters = ImmutableArray<ParameterInfoModel>.Empty;
             string? parameterProblem = null;
+            var hasNonPublicParameterTypes = false;
             var responseType = new ResponseTypeInfo(null, hasBodylessSuccess: false);
             if (handler is not null)
             {
-                (parameters, parameterProblem) = AnalyzeEndpointParameters(handler, endpoint, route, compilation, ct);
+                (parameters, parameterProblem, hasNonPublicParameterTypes) = AnalyzeEndpointParameters(handler, endpoint, route, compilation, ct);
                 responseType = ResponseTypeResolver.ResolveEndpoint(handler, compilation);
             }
 
@@ -183,6 +184,7 @@ namespace Api.ToMcp.Generator.Parsing
                 RouteTemplate = route,
                 RouteProblem = routeProblem ?? parameterProblem,
                 Parameters = parameters,
+                HasNonPublicParameterTypes = hasNonPublicParameterTypes,
                 ReturnType = handler is null ? new ReturnTypeInfoModel() : AnalyzeReturnType(handler),
                 HasMcpExposeAttribute = handlerMcpExpose is not null,
                 HasMcpIgnoreAttribute = hasHandlerMcpIgnore,
@@ -315,6 +317,36 @@ namespace Api.ToMcp.Generator.Parsing
             return word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word.Substring(1);
         }
 
+        /// <summary>
+        /// Whether code of any assembly can name the type: it, the types it is nested in, its type arguments and its
+        /// array's elements are public. A Minimal API handler takes internal types, such as a record declared without a
+        /// modifier in <c>Program.cs</c>, which a public tool method cannot.
+        /// </summary>
+        private static bool IsEffectivelyPublic(ITypeSymbol type)
+        {
+            var arrayType = type as IArrayTypeSymbol;
+            if (arrayType is not null)
+            {
+                return IsEffectivelyPublic(arrayType.ElementType);
+            }
+
+            var namedType = type as INamedTypeSymbol;
+            if (namedType is null)
+            {
+                return true;
+            }
+
+            for (var current = namedType; current is not null; current = current.ContainingType)
+            {
+                if (current.DeclaredAccessibility != Accessibility.Public)
+                {
+                    return false;
+                }
+            }
+
+            return namedType.TypeArguments.All(IsEffectivelyPublic);
+        }
+
         private static bool IsNonNullableValueType(ITypeSymbol type)
         {
             return type.IsValueType && type.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T;
@@ -325,7 +357,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// members of an <c>[AsParameters]</c> parameter take its place. A problem, as a clause of MCP010's message, when
         /// the tool cannot send what the endpoint reads.
         /// </summary>
-        private static (ImmutableArray<ParameterInfoModel> Parameters, string? Problem) AnalyzeEndpointParameters(
+        private static (ImmutableArray<ParameterInfoModel> Parameters, string? Problem, bool HasNonPublicTypes) AnalyzeEndpointParameters(
             IMethodSymbol handler,
             EndpointDeclaration endpoint,
             string route,
@@ -347,7 +379,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var (members, membersProblem) = GetAsParametersMembers(parameter);
                 if (membersProblem is not null)
                 {
-                    return (ImmutableArray<ParameterInfoModel>.Empty, membersProblem);
+                    return (ImmutableArray<ParameterInfoModel>.Empty, membersProblem, false);
                 }
 
                 inputs.AddRange(members);
@@ -360,7 +392,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var (binding, queryName, problem) = GetEndpointBinding(input, isBodyInferred);
                 if (problem is not null)
                 {
-                    return (ImmutableArray<ParameterInfoModel>.Empty, problem);
+                    return (ImmutableArray<ParameterInfoModel>.Empty, problem, false);
                 }
 
                 if (binding != EndpointBinding.None)
@@ -372,7 +404,7 @@ namespace Api.ToMcp.Generator.Parsing
             var bodyProblem = ResolveBody(bindings, endpoint.HttpMethod);
             if (bodyProblem is not null)
             {
-                return (ImmutableArray<ParameterInfoModel>.Empty, bodyProblem);
+                return (ImmutableArray<ParameterInfoModel>.Empty, bodyProblem, false);
             }
 
             var sharedName = bindings
@@ -380,20 +412,20 @@ namespace Api.ToMcp.Generator.Parsing
                 .FirstOrDefault(x => x.Count() > 1)?.Key;
             if (sharedName is not null)
             {
-                return (ImmutableArray<ParameterInfoModel>.Empty, $"two of its inputs are named '{sharedName}', which the endpoint reads from the same value and a tool cannot tell apart");
+                return (ImmutableArray<ParameterInfoModel>.Empty, $"two of its inputs are named '{sharedName}', which the endpoint reads from the same value and a tool cannot tell apart", false);
             }
 
             var hidden = bindings.FirstOrDefault(x => !compilation.IsSymbolAccessibleWithin(x.Input.Type, compilation.Assembly)).Input;
             if (hidden is not null)
             {
-                return (ImmutableArray<ParameterInfoModel>.Empty, $"its input '{hidden.Name}' is of type {hidden.Type.ToDisplayString()}, which the generated tool cannot refer to");
+                return (ImmutableArray<ParameterInfoModel>.Empty, $"its input '{hidden.Name}' is of type {hidden.Type.ToDisplayString()}, which the generated tool cannot refer to", false);
             }
 
             var parameters = bindings
                 .Select(x => CreateEndpointParameter(x.Input, ToParameterSource(x.Binding), x.QueryName, compilation))
                 .ToImmutableArray();
 
-            return (parameters, null);
+            return (parameters, null, bindings.Any(x => !IsEffectivelyPublic(x.Input.Type)));
         }
 
         /// <summary>

@@ -127,6 +127,13 @@ namespace Api.ToMcp.Generator.Models
         public string? RouteProblem { get; init; }
 
         public EquatableArray<ParameterInfoModel> Parameters { get; init; } = EquatableArray<ParameterInfoModel>.Empty;
+
+        /// <summary>
+        /// Whether a parameter's type is not public, which only a Minimal API handler can take: its tool is then an
+        /// internal class, as a public tool method could not name the type.
+        /// </summary>
+        public bool HasNonPublicParameterTypes { get; init; }
+
         public ReturnTypeInfoModel ReturnType { get; init; } = new ReturnTypeInfoModel();
         public bool HasMcpExposeAttribute { get; init; }
         public bool HasMcpIgnoreAttribute { get; init; }

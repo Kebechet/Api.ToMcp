@@ -14,7 +14,8 @@ public class Todo
 }
 
 /// <summary>An item to add to the to-do list.</summary>
-public class CreateTodoRequest
+/// <remarks>Internal, as an app's request types often are: its tool is then an internal class.</remarks>
+internal class CreateTodoRequest
 {
     /// <summary>What has to be done.</summary>
     public string Title { get; set; } = "";
