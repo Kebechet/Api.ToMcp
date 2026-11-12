@@ -516,6 +516,46 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_ListsTheToolsOfMinimalApiEndpoints_WithTheirDescriptionsAndSchemas()
+    {
+        // TodoEndpoints maps its endpoints in a group of its own, under the /api group Program.cs maps it in.
+        // https://github.com/Kebechet/Api.ToMcp/issues/11
+        await using var client = await ConnectMcpClientAsync();
+
+        var tools = await client.ListToolsAsync();
+
+        var getById = tools.Single(x => x.Name == "TodoEndpoints_GetById");
+        Assert.Equal("Gets a to-do item by its id.", getById.Description);
+        Assert.Equal("The id of the to-do item.", GetDescription(getById.JsonSchema.GetProperty("properties"), "id"));
+        // Results<Ok<Todo>, NotFound> gives the schema; Ok<T> writes no body for a null value, so it allows null.
+        var todoSchema = GetOutputSchema(tools, "TodoEndpoints_GetById").GetProperty("anyOf")[0];
+        Assert.Equal("What has to be done.", GetDescription(todoSchema.GetProperty("properties"), "title"));
+        Assert.Equal("Adds an item to the to-do list.", tools.Single(x => x.Name == "TodoEndpoints_CreateTodo").Description);
+        Assert.Contains(tools, x => x.Name == "TodoEndpoints_GetAll");
+        Assert.DoesNotContain(tools, x => x.Name.StartsWith("TodoEndpoints_Delete", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task McpProtocol_CallsTheToolsOfMinimalApiEndpoints_InProcess()
+    {
+        // The invoker's HTTP client refuses every request, so each call reaches the endpoint through the app's pipeline.
+        await using var client = await ConnectMcpClientAsync();
+
+        var todo = await CallToolRawAsync(client, "TodoEndpoints_GetById", new JsonObject { ["id"] = 1 });
+        var created = await CallToolRawAsync(client, "TodoEndpoints_CreateTodo", new JsonObject { ["request"] = new JsonObject { ["title"] = "Buy milk" } });
+        var done = await CallToolRawAsync(client, "TodoEndpoints_GetAll", new JsonObject { ["isDone"] = true });
+        var missing = await CallToolRawAsync(client, "TodoEndpoints_GetById", new JsonObject { ["id"] = 999 });
+
+        Assert.Equal("Write the release notes", todo["structuredContent"]!["title"]!.GetValue<string>());
+        Assert.Equal("Buy milk", created["structuredContent"]!["title"]!.GetValue<string>());
+        Assert.False(created["structuredContent"]!["isDone"]!.GetValue<bool>());
+        Assert.NotEmpty(done["structuredContent"]!.AsArray());
+        Assert.All(done["structuredContent"]!.AsArray(), x => Assert.True(x!["isDone"]!.GetValue<bool>()));
+        Assert.True(missing["isError"]!.GetValue<bool>());
+        Assert.Contains("404", missing["content"]![0]!["text"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task McpProtocol_ListsAndCallsAHandWrittenTool_WithItsAnnotationsAndInjectedService()
     {
         // ServerTools has no endpoint behind it; AddMcpTools must register it exactly as the SDK's assembly scan
