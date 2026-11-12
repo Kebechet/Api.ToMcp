@@ -54,11 +54,12 @@ internal sealed class InProcessResponseFeature : HttpResponseFeature
     }
 
     /// <summary>
-    /// Replaces what the app set with a bare 500, as a server answers an exception thrown before the response started.
+    /// Replaces what the app set with a bare response of the status, as a server answers an exception thrown before the
+    /// response started.
     /// </summary>
-    public void AnswerUnhandledException()
+    public void AnswerUnhandledException(int statusCode)
     {
-        StatusCode = StatusCodes.Status500InternalServerError;
+        StatusCode = statusCode;
         ReasonPhrase = null;
         Headers.Clear();
         _hasStarted = true;

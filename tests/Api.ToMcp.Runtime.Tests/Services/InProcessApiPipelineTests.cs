@@ -312,6 +312,24 @@ public class InProcessApiPipelineTests
         Assert.Contains(logs, x => x.Level == LogLevel.Error);
     }
 
+    [Theory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge)]
+    [InlineData(StatusCodes.Status404NotFound)]
+    public async Task SendAsync_AnswersAnEscapedBadHttpRequestException_WithItsStatusAndNothingElse(int statusCode)
+    {
+        var pipeline = Build(app => app.Run(context =>
+        {
+            context.Response.Headers["X-Partial"] = "partial";
+            throw new BadHttpRequestException("refused", statusCode);
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(statusCode, (int)response.StatusCode);
+        Assert.False(response.Headers.Contains("X-Partial"));
+        Assert.Equal("", await response.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task SendAsync_Throws_WhenTheAppFailsAfterTheResponseStarted()
     {

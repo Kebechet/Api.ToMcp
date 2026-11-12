@@ -123,7 +123,7 @@ internal sealed class InProcessApiPipeline
                 {
                     unhandledException = exception;
                     LogUnhandledException(exception, context);
-                    exchange.Response.AnswerUnhandledException();
+                    exchange.Response.AnswerUnhandledException(exception);
                 }
 
                 await exchange.Response.Feature.CompleteAsync(_logger);
@@ -276,14 +276,20 @@ internal sealed class InProcessApiPipeline
 
         public bool IsAnsweredWithUnhandledException { get; private set; }
 
-        public void AnswerUnhandledException()
+        /// <summary>
+        /// Answers an exception thrown before the response started as Kestrel does: with the status a
+        /// <see cref="BadHttpRequestException"/> carries, such as the 413 of a body over <c>[RequestSizeLimit]</c>, and
+        /// with 500 otherwise.
+        /// </summary>
+        public void AnswerUnhandledException(Exception exception)
         {
             if (Feature.HasStarted)
             {
                 return;
             }
 
-            Feature.AnswerUnhandledException();
+            var badRequest = exception as BadHttpRequestException;
+            Feature.AnswerUnhandledException(badRequest?.StatusCode ?? StatusCodes.Status500InternalServerError);
             Body.SetLength(0);
             IsAnsweredWithUnhandledException = true;
         }
