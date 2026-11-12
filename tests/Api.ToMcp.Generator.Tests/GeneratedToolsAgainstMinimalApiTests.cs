@@ -31,9 +31,10 @@ namespace Api.ToMcp.Generator.Tests;
 
 /// <summary>
 /// Runs generated tools against real Minimal API endpoints. The endpoints and the tools the generator emits for them are
-/// compiled into one assembly, the app maps the endpoints on a loopback port, and each tool sends its request there;
+/// compiled into one assembly, the app maps the endpoints on a loopback port and registers the tools with AddMcpTools,
+/// and each tool is called through the MCP SDK with JSON arguments, as a client calls it, and sends its request there;
 /// every endpoint echoes what it bound. A binding rule the generator gets wrong fails here even when the emitted code
-/// looks right. See https://github.com/Kebechet/Api.ToMcp/issues/11.
+/// looks right, and so does a tool argument the SDK cannot read. See https://github.com/Kebechet/Api.ToMcp/issues/11.
 /// </summary>
 public sealed class GeneratedToolsAgainstMinimalApiTests : IClassFixture<GeneratedToolsAgainstMinimalApiTests.MinimalApiHost>
 {
@@ -46,6 +47,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Primitives;
 ";
 
     private const string Endpoints = @"
@@ -80,6 +82,8 @@ namespace TestApi
     }
 
     public record EchoQuery(int Id, [FromQuery(Name = ""p"")] int Page = 1);
+
+    internal sealed record InternalEcho(string City);
 
     public sealed class EchoFilter
     {
@@ -116,22 +120,30 @@ namespace TestApi
             app.MapGet(""/as/{id:int}"", ([AsParameters] EchoQuery query) => query).WithName(""AsRecord"");
             app.MapGet(""/as-filter"", ([AsParameters] EchoFilter filter) => filter).WithName(""AsFilter"");
             app.MapGet(""/derived/{orderId:int}/lines"", (int orderId) => new { orderId });
+            app.MapGet(""/strings"", (StringValues tags) => new { tags = tags.ToArray() }).WithName(""Strings"");
+            app.MapPost(""/internal"", (InternalEcho echo) => echo).WithName(""Internal"");
+            app.MapMethods(""/lower/{id:int}"", new[] { ""post"" }, (int id, EchoDto dto, HttpRequest request) => new { id, dto.City, method = request.Method })
+                .WithName(""LowerCaseMethod"");
+            app.MapPost(""/login"", (Microsoft.AspNetCore.Identity.Data.LoginRequest login) => new { login.Email }).WithName(""Login"");
 
             var tenants = app.MapGroup(""/group"").MapGroup(""{tenant}"");
             tenants.MapGet(""/codes/{code}"", GetCode);
             tenants.MapGet(""/local"", Local);
             tenants.MapEchoes();
+            app.MapGroup(""/v2/{tenant}"").MapEchoes();
 
             static object Local(string tenant, int take = 3) => new { tenant, take };
         }
 
         public static RouteGroupBuilder MapEchoes(this RouteGroupBuilder group)
         {
-            group.MapPost(""/echo"", (string tenant, EchoDto dto) => new { tenant, dto.City }).WithName(""GroupEcho"");
+            group.MapPost(""/echo"", GroupEcho);
             return group;
         }
 
         private static object GetCode(string tenant, EchoCode code) => new { tenant, code = code.Value };
+
+        private static object GroupEcho(string tenant, EchoDto dto, HttpRequest request) => new { tenant, dto.City, path = request.Path.Value };
     }
 }
 ";
@@ -170,7 +182,12 @@ namespace TestApi
     [InlineData("EchoEndpoints_GetDerivedByOrderIdLinesTool", @"{""orderId"":7}", @"{""orderId"":7}")]
     [InlineData("EchoEndpoints_GetCodeTool", @"{""tenant"":""t1"",""code"":{""value"":""A-7""}}", @"{""tenant"":""t1"",""code"":""A-7""}")]
     [InlineData("EchoEndpoints_LocalTool", @"{""tenant"":""t1""}", @"{""tenant"":""t1"",""take"":3}")]
-    [InlineData("EchoEndpoints_GroupEchoTool", @"{""tenant"":""t1"",""dto"":{""city"":""Brno""}}", @"{""tenant"":""t1"",""city"":""Brno""}")]
+    [InlineData("EchoEndpoints_GroupGroupEchoTool", @"{""tenant"":""t1"",""dto"":{""city"":""Brno""}}", @"{""tenant"":""t1"",""city"":""Brno"",""path"":""/group/t1/echo""}")]
+    [InlineData("EchoEndpoints_V2GroupEchoTool", @"{""tenant"":""t1"",""dto"":{""city"":""Brno""}}", @"{""tenant"":""t1"",""city"":""Brno"",""path"":""/v2/t1/echo""}")]
+    [InlineData("EchoEndpoints_StringsTool", @"{""tags"":[""a"",""b c""]}", @"{""tags"":[""a"",""b c""]}")]
+    [InlineData("EchoEndpoints_InternalTool", @"{""echo"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
+    [InlineData("EchoEndpoints_LowerCaseMethodTool", @"{""id"":7,""dto"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""POST""}")]
+    [InlineData("EchoEndpoints_LoginTool", @"{""login"":{""email"":""a@b.c"",""password"":""p""}}", @"{""email"":""a@b.c""}")]
     public async Task Tool_DeliversItsArguments_AsTheMinimalApiBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
@@ -194,21 +211,19 @@ namespace TestApi
     }
 
     [Fact]
-    public void EveryGeneratedTool_IsBuiltByTheMcpSdk()
+    public void EveryGeneratedTool_IsRegisteredByAddMcpTools()
     {
-        var toolClassNames = _host.ToolClassNames;
-
-        Assert.Equal(22, toolClassNames.Count);
-        Assert.All(toolClassNames, x => _host.GetInputSchema(x));
+        Assert.Equal(27, _host.ToolClassNames.Count);
+        Assert.Equal(_host.ToolClassNames.Count, _host.Tools.Count);
+        Assert.False(_host.GetToolType("EchoEndpoints_InternalTool").IsPublic);
     }
 
     /// <summary>
-    /// The test endpoints with their generated tools, mapped by a Minimal API app on a loopback port the OS picks.
+    /// The test endpoints with their generated tools, mapped by a Minimal API app on a loopback port the OS picks, with
+    /// the tools registered as an app registers them.
     /// </summary>
     public sealed class MinimalApiHost : IAsyncLifetime
     {
-        private static readonly JsonSerializerOptions ArgumentOptions = new(JsonSerializerDefaults.Web);
-
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
         private HttpClient _client = null!;
@@ -222,6 +237,9 @@ namespace TestApi
             builder.Logging.ClearProviders();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddSingleton(_assembly.GetType("TestApi.EchoService", throwOnError: true)!);
+            builder.Services.AddMcpTools(_assembly);
+            // Registered last, so the tools record what the endpoint answers rather than call through the MCP request.
+            builder.Services.AddSingleton<IMcpHttpInvoker>(_ => _invoker);
             _app = builder.Build();
             _assembly.GetType("TestApi.EchoEndpoints", throwOnError: true)!.GetMethod("Map")!.Invoke(null, [_app]);
             await _app.StartAsync();
@@ -238,42 +256,52 @@ namespace TestApi
             await _app.DisposeAsync();
         }
 
-        /// <summary>
-        /// Calls a generated tool with arguments deserialized from JSON, as the MCP server does, and returns what the
-        /// endpoint answered.
-        /// </summary>
-        public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments)
-        {
-            var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
-            var argumentValues = JsonNode.Parse(arguments)!.AsObject();
-            var parameterValues = toolMethod
-                .GetParameters()
-                .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? _invoker
-                    : x.ParameterType == typeof(CancellationToken) ? CancellationToken.None
-                    : argumentValues.TryGetPropertyValue(x.Name!, out var argument) ? argument?.Deserialize(x.ParameterType, ArgumentOptions)
-                    : x.HasDefaultValue ? x.DefaultValue
-                    : null)
-                .ToArray();
-
-            await (Task)toolMethod.Invoke(null, parameterValues)!;
-
-            return _invoker.LastResponse;
-        }
+        public IReadOnlyList<McpServerTool> Tools => _app.Services.GetServices<McpServerTool>().ToList();
 
         public IReadOnlyList<string> ToolClassNames => _assembly.GetTypes()
             .Where(x => x.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
             .Select(x => x.Name)
             .ToList();
 
+        public Type GetToolType(string toolClassName)
+        {
+            return _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!;
+        }
+
         /// <summary>
-        /// The input schema the MCP SDK gives a generated tool, with the invoker bound from the services, as in the app.
+        /// Calls a generated tool through the MCP SDK with the arguments as JSON, as a client's tools/call does, and
+        /// returns what the endpoint answered.
+        /// </summary>
+        public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments)
+        {
+            var tool = GetTool(toolClassName);
+            await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions(), loggerFactory: null, _app.Services);
+            var context = new RequestContext<CallToolRequestParams>(
+                server,
+                new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+                new CallToolRequestParams { Name = tool.ProtocolTool.Name, Arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(arguments) });
+            _invoker.Clear();
+
+            var result = await tool.InvokeAsync(context, CancellationToken.None);
+
+            // A tool the SDK could not call reaches no endpoint, and says why in its result.
+            Assert.True(_invoker.LastResponse.HasValue, $"{toolClassName}: {string.Join(" ", result.Content.OfType<TextContentBlock>().Select(x => x.Text))}");
+            return _invoker.LastResponse.Value;
+        }
+
+        /// <summary>
+        /// The input schema the app's MCP server gives a generated tool.
         /// </summary>
         public JsonElement GetInputSchema(string toolClassName)
         {
-            var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
-            using var services = new ServiceCollection().AddSingleton<IMcpHttpInvoker>(_invoker).BuildServiceProvider();
+            return GetTool(toolClassName).ProtocolTool.InputSchema;
+        }
 
-            return McpServerTool.Create(toolMethod, options: new McpServerToolCreateOptions { Services = services }).ProtocolTool.InputSchema;
+        private McpServerTool GetTool(string toolClassName)
+        {
+            var toolName = GetToolType(toolClassName).GetMethod("InvokeAsync")!.GetCustomAttribute<McpServerToolAttribute>()!.Name;
+
+            return Tools.Single(x => x.ProtocolTool.Name == toolName);
         }
 
         private static Assembly CompileWithGeneratedTools(string source)
@@ -308,7 +336,9 @@ namespace TestApi
 
     private sealed class RecordingInvoker(HttpClient client) : IMcpHttpInvoker
     {
-        public (int StatusCode, string Body) LastResponse { get; private set; }
+        public (int StatusCode, string Body)? LastResponse { get; private set; }
+
+        public void Clear() => LastResponse = null;
 
         public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => SendAsync(HttpMethod.Get, route, null, ct);
         public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(HttpMethod.Post, route, jsonBody, ct);
