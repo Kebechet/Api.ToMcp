@@ -7,6 +7,7 @@ using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -102,47 +103,65 @@ public class McpSignInDiscoveryTests
     }
 
     [Fact]
-    public async Task MapMcpEndpoint_RequiresASignedInCaller_ThroughTheSdksScheme()
+    public void AddMcpTools_ListsAScopeNamedForSeveralFlags_Once()
+    {
+        using var provider = BuildProvider(options =>
+        {
+            EnableSignInDiscovery(options);
+            options.ScopeNames[McpScope.Read] = "api";
+            options.ScopeNames[McpScope.Write] = "api";
+            options.ScopeNames[McpScope.Delete] = "api";
+        }, toolNames: [ScopedTools.ReadTool, ScopedTools.WriteTool, ScopedTools.ReadDeleteTool]);
+
+        var metadata = GetSchemeMetadata(provider);
+
+        Assert.Equal(["api"], metadata.ScopesSupported);
+    }
+
+    [Fact]
+    public async Task AddMcpTools_AddsNoScheme_WhenTheAppHasNoSchemeOfItsOwn_SoItCannotBecomeTheAppsDefault()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IParityService, ParityService>();
+        services.AddAuthentication();
+        AddMcpTools(services, EnableSignInDiscovery);
+        using var provider = services.BuildServiceProvider();
+        var schemes = provider.GetRequiredService<IAuthenticationSchemeProvider>();
+
+        var allSchemes = await schemes.GetAllSchemesAsync();
+        var defaultScheme = await schemes.GetDefaultAuthenticateSchemeAsync();
+
+        Assert.Empty(allSchemes);
+        Assert.Null(defaultScheme);
+    }
+
+    [Fact]
+    public async Task MapMcpEndpoint_SignsTheCallerInThroughTheSdksScheme_AndAppliesTheAppsPolicies()
     {
         var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: false);
 
         Assert.All(endpoints, endpoint =>
         {
-            var authorizeData = Assert.Single(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
-            Assert.Equal(McpAuthenticationDefaults.AuthenticationScheme, authorizeData.AuthenticationSchemes);
-            Assert.Null(authorizeData.Policy);
-            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+            var policy = Assert.Single(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+            Assert.Equal([McpAuthenticationDefaults.AuthenticationScheme], policy.AuthenticationSchemes);
+            Assert.Contains(policy.Requirements, x => x is DenyAnonymousAuthorizationRequirement);
+            Assert.Contains(policy.Requirements, x => x is McpAppPoliciesRequirement);
+            // RequireAuthorization adds a bare [Authorize] with the policy; it names no policy, role or scheme of its own.
+            Assert.All(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(), x => Assert.True(x.Policy is null && x.Roles is null && x.AuthenticationSchemes is null));
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>());
         });
     }
 
     [Fact]
-    public async Task MapMcpEndpoint_KeepsRequiringTheAppsFallbackPolicy_WhichItsOwnRequirementWouldEnd()
+    public async Task MapMcpEndpoint_SignsTheCallerInThroughTheSdksScheme_AndLetsAnonymousCallersThrough_WhenAllowAnonymousIsOn()
     {
-        var fallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().RequireRole("mcp-user").Build();
-
-        var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: false, fallbackPolicy);
+        var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: true);
 
         Assert.All(endpoints, endpoint =>
         {
-            Assert.Single(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
-            Assert.Same(fallbackPolicy, Assert.Single(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>()));
-        });
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task MapMcpEndpoint_LeavesTheEndpointAnonymous_WhenAllowAnonymousIsOn(bool hasFallbackPolicy)
-    {
-        var fallbackPolicy = hasFallbackPolicy ? new AuthorizationPolicyBuilder().RequireRole("mcp-user").Build() : null;
-
-        var endpoints = await MapMcpEndpointAsync(EnableSignInDiscovery, allowAnonymous: true, fallbackPolicy);
-
-        Assert.All(endpoints, endpoint =>
-        {
-            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
-            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+            var policy = Assert.Single(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+            Assert.Equal([McpAuthenticationDefaults.AuthenticationScheme], policy.AuthenticationSchemes);
             Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>());
         });
     }
@@ -150,19 +169,71 @@ public class McpSignInDiscoveryTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task MapMcpEndpoint_AddsNoAuthorization_WithoutResourceMetadata(bool hasFallbackPolicy)
+    public async Task MapMcpEndpoint_AddsNoAuthorization_WithoutResourceMetadata(bool allowAnonymous)
     {
         // Without authorization metadata of its own, the endpoint is left to the fallback policy, as before.
-        var fallbackPolicy = hasFallbackPolicy ? new AuthorizationPolicyBuilder().RequireRole("mcp-user").Build() : null;
-
-        var endpoints = await MapMcpEndpointAsync(configureScopes: null, allowAnonymous: false, fallbackPolicy);
+        var endpoints = await MapMcpEndpointAsync(configureScopes: null, allowAnonymous);
 
         Assert.All(endpoints, endpoint =>
         {
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
             Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
-            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>());
+            Assert.Equal(allowAnonymous, endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>().Count > 0);
         });
+    }
+
+    [Fact]
+    public async Task StartupCheck_ReportsAnError_WhenTheAppHasNoSchemeOfItsOwn()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddProvider(new ListLoggerProvider(logs)));
+        services.AddSingleton<IParityService, ParityService>();
+        services.AddAuthentication();
+        AddMcpTools(services, EnableSignInDiscovery);
+        using var provider = services.BuildServiceProvider();
+
+        await ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider).StartAsync(CancellationToken.None);
+
+        var error = Assert.Single(logs, x => x.Level == LogLevel.Error);
+        Assert.Contains("registered no authentication scheme", error.Message);
+    }
+
+    [Theory]
+    [InlineData("Auth0", null, "'Bearer', which is not registered")]
+    [InlineData(AppScheme, "", "ForwardAuthenticate of the MCP SDK's scheme 'McpAuth' is null")]
+    [InlineData(AppScheme, "Missing", "'Missing', which is not registered")]
+    public async Task StartupCheck_ReportsAnError_WhenTheSchemeTheSdksSchemeForwardsToIsMissing(string appScheme, string? forwardAuthenticate, string expectedText)
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddProvider(new ListLoggerProvider(logs)));
+        services.AddSingleton<IParityService, ParityService>();
+        services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, SignedInHandler>(appScheme, null);
+        AddMcpTools(services, EnableSignInDiscovery);
+        if (forwardAuthenticate is not null)
+        {
+            services.Configure<McpAuthenticationOptions>(McpAuthenticationDefaults.AuthenticationScheme, options =>
+                options.ForwardAuthenticate = forwardAuthenticate.Length == 0 ? null : forwardAuthenticate);
+        }
+
+        using var provider = services.BuildServiceProvider();
+
+        await ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider).StartAsync(CancellationToken.None);
+
+        var error = Assert.Single(logs, x => x.Level == LogLevel.Error);
+        Assert.Contains(expectedText, error.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_ReportsNoError_WhenTheSchemeTheSdksSchemeForwardsToIsRegistered()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(EnableSignInDiscovery, logs: logs);
+
+        await ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider).StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Error);
     }
 
     [Fact]
@@ -302,16 +373,13 @@ public class McpSignInDiscoveryTests
         });
     }
 
-    private static async Task<List<Endpoint>> MapMcpEndpointAsync(
-        Action<McpScopeOptions>? configureScopes,
-        bool allowAnonymous,
-        AuthorizationPolicy? fallbackPolicy = null)
+    private static async Task<List<Endpoint>> MapMcpEndpointAsync(Action<McpScopeOptions>? configureScopes, bool allowAnonymous)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton<IParityService, ParityService>();
         builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, SignedInHandler>(AppScheme, null);
-        builder.Services.AddAuthorization(options => options.FallbackPolicy = fallbackPolicy);
+        builder.Services.AddAuthorization();
         AddMcpTools(builder.Services, configureScopes);
         await using var app = builder.Build();
 

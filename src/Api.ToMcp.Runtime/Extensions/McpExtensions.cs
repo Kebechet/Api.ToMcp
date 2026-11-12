@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 using Api.ToMcp.Runtime.Middleware;
@@ -106,10 +107,10 @@ public static class McpExtensions
 
     /// <summary>
     /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
-    /// a tool sent. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it requires a signed-in caller and answers
-    /// one who is not with a <c>401</c> challenge that points to the protected resource metadata, and it answers a tool
-    /// call that scope validation refuses with a scope challenge. The app's <see cref="AuthorizationOptions.FallbackPolicy"/>,
-    /// when it has one, still applies to the endpoint.
+    /// a tool sent. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
+    /// scheme, requires a signed-in caller who meets the app's default and fallback policies, answers a caller who is not
+    /// signed in with a <c>401</c> challenge that points to the protected resource metadata, and answers a tool call that
+    /// scope validation refuses with a scope challenge.
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
@@ -133,25 +134,39 @@ public static class McpExtensions
                 : builder.RequestDelegate;
             builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
         });
+        if (isSignInDiscoverable)
+        {
+            endpoint.RequireAuthorization(allowAnonymous
+                ? McpEndpointAuthorization.CreateAnonymousPolicy()
+                : McpEndpointAuthorization.CreateSignedInPolicy(endpoints.ServiceProvider.GetRequiredService<IHttpContextAccessor>()));
+            if (allowAnonymous)
+            {
+                WarnAboutAnonymousStatefulSessions(endpoints.ServiceProvider);
+            }
+        }
+
         if (allowAnonymous)
         {
             endpoint.AllowAnonymous();
         }
-        else if (isSignInDiscoverable)
-        {
-            // The app's default policy, through the SDK's scheme, which authenticates through the scheme its
-            // ForwardAuthenticate names ("Bearer" unless configured) and challenges with the metadata's address.
-            endpoint.RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = McpAuthenticationDefaults.AuthenticationScheme });
-
-            // ASP.NET Core applies the fallback policy only to endpoints without authorization metadata, which the line
-            // above gives this one, so the endpoint requires it itself: opting in must not let in a caller it refused.
-            var fallbackPolicy = endpoints.ServiceProvider.GetRequiredService<IOptions<AuthorizationOptions>>().Value.FallbackPolicy;
-            if (fallbackPolicy is not null)
-            {
-                endpoint.RequireAuthorization(fallbackPolicy);
-            }
-        }
         return endpoints;
+    }
+
+    /// <summary>
+    /// A stateful session belongs to the user who started it, and the SDK refuses a request of another user in it, so a
+    /// client that starts one without a token and signs in when a tool call asks for it cannot go on in that session.
+    /// </summary>
+    private static void WarnAboutAnonymousStatefulSessions(IServiceProvider services)
+    {
+        var sessionMode = services.GetRequiredService<IOptions<HttpServerTransportOptions>>().Value.SessionMode;
+        if (sessionMode == HttpServerSessionMode.Stateless)
+        {
+            return;
+        }
+
+        services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(McpExtensions).FullName!).LogWarning(
+            "MapMcpEndpoint allows anonymous callers with OAuth sign-in discovery on, and SessionMode is {SessionMode}. The SDK ties a stateful session to the user who started it, so a client that starts one without a token and signs in when a tool call asks for it is refused with 403 in that session. Use HttpServerSessionMode.Stateless, or require sign-in on the endpoint.",
+            sessionMode);
     }
 
     /// <summary>

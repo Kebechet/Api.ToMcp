@@ -36,8 +36,15 @@ internal sealed class McpAuthenticationSetup : IPostConfigureOptions<Authenticat
             return;
         }
 
-        // With a single scheme and no default, ASP.NET Core uses that scheme as the default; a second scheme would end that.
+        // As the only scheme, the SDK's would become the default of the whole app, and with no scheme to forward to it
+        // would fail every request. The MCP endpoint, which names it, fails instead, and the startup check says why.
         var schemes = options.Schemes.ToList();
+        if (schemes.Count == 0)
+        {
+            return;
+        }
+
+        // With a single scheme and no default, ASP.NET Core uses that scheme as the default; a second scheme would end that.
         var isAutoDefaultSchemeSuppressed = AppContext.TryGetSwitch(SuppressAutoDefaultSchemeSwitch, out var isSuppressed) && isSuppressed;
         if (options.DefaultScheme is null && !isAutoDefaultSchemeSuppressed && schemes.Count == 1)
         {

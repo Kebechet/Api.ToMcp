@@ -1,10 +1,12 @@
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Options;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 
 namespace Api.ToMcp.Runtime.Services;
@@ -55,7 +57,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
         _logger = logger;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         var toolCount = _serviceProvider.GetServices<McpServerTool>().Count();
         _logger.LogDebug("Built {ToolCount} MCP tools.", toolCount);
@@ -67,7 +69,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
                 _transportOptions.SessionMode);
         }
 
-        WarnAboutSignInDiscovery();
+        await WarnAboutSignInDiscoveryAsync();
 
         if (_outputSchemaBuilder.HasBuiltAnyValueSchema)
         {
@@ -102,8 +104,6 @@ internal sealed class McpToolsStartupCheck : IHostedService
                 xmlDocReadFailure.Exception.Message,
                 OptionName);
         }
-
-        return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -111,7 +111,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
         return Task.CompletedTask;
     }
 
-    private void WarnAboutSignInDiscovery()
+    private async Task WarnAboutSignInDiscoveryAsync()
     {
         var resourceMetadata = _scopeOptions.ResourceMetadata;
         if (resourceMetadata is null)
@@ -134,6 +134,50 @@ internal sealed class McpToolsStartupCheck : IHostedService
             _logger.LogWarning(
                 "Generated tools require the scope {Scope}, for which McpScopeOptions.ScopeNames names no OAuth scope, so scopes_supported leaves it out and a tool call that scope validation refuses for it gets an error result instead of a scope challenge. Add an entry for each flag, as in ScopeNames[McpScope.Read] = \"mcp:read\".",
                 unnamedScope);
+        }
+
+        await ReportMissingSignInSchemeAsync();
+    }
+
+    /// <summary>
+    /// Every request to the MCP endpoint fails when the MCP SDK's scheme is missing, which happens when the app registered
+    /// no scheme of its own, or when the scheme it forwards authentication to is.
+    /// </summary>
+    private async Task ReportMissingSignInSchemeAsync()
+    {
+        var schemeProvider = _serviceProvider.GetService<IAuthenticationSchemeProvider>();
+        var mcpScheme = schemeProvider is not null
+            ? await schemeProvider.GetSchemeAsync(McpAuthenticationDefaults.AuthenticationScheme)
+            : null;
+        if (schemeProvider is null || mcpScheme is null)
+        {
+            _logger.LogError(
+                "OAuth sign-in discovery is on, but the app registered no authentication scheme that validates its access tokens, so every request to the MCP endpoint fails. Register one, as in AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(...).");
+            return;
+        }
+
+        var mcpOptions = _serviceProvider.GetRequiredService<IOptionsMonitor<McpAuthenticationOptions>>().Get(McpAuthenticationDefaults.AuthenticationScheme);
+        if (mcpOptions.ForwardDefaultSelector is not null)
+        {
+            return;
+        }
+
+        var forwardScheme = mcpOptions.ForwardAuthenticate ?? mcpOptions.ForwardDefault;
+        if (forwardScheme is null)
+        {
+            _logger.LogError(
+                "OAuth sign-in discovery is on, but McpAuthenticationOptions.ForwardAuthenticate of the MCP SDK's scheme '{McpScheme}' is null, so it reads no access token and the MCP endpoint signs no caller in. Set it to the scheme that validates your access tokens.",
+                McpAuthenticationDefaults.AuthenticationScheme);
+            return;
+        }
+
+        var forwardTarget = await schemeProvider.GetSchemeAsync(forwardScheme);
+        if (forwardTarget is null)
+        {
+            _logger.LogError(
+                "OAuth sign-in discovery is on, and the MCP SDK's scheme '{McpScheme}' reads the access token through the scheme '{ForwardScheme}', which is not registered, so every request to the MCP endpoint fails. Set McpAuthenticationOptions.ForwardAuthenticate to the scheme that validates your access tokens: services.Configure<McpAuthenticationOptions>(McpAuthenticationDefaults.AuthenticationScheme, options => options.ForwardAuthenticate = \"<scheme>\").",
+                McpAuthenticationDefaults.AuthenticationScheme,
+                forwardScheme);
         }
     }
 
