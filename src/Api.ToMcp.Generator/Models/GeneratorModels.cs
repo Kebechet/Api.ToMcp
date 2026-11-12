@@ -121,6 +121,13 @@ namespace Api.ToMcp.Generator.Models
         public string RouteTemplate { get; init; } = "";
 
         /// <summary>
+        /// Every route MVC serves a controller's action at, the one the tool calls included, whose template the generator
+        /// can read: with <c>[HttpGet("{id}")]</c> and <c>[HttpGet]</c>, the controller's route as well. Empty for a
+        /// Minimal API endpoint, served at <see cref="RouteTemplate"/> alone.
+        /// </summary>
+        public EquatableArray<ServedRouteModel> ServedRoutes { get; init; } = EquatableArray<ServedRouteModel>.Empty;
+
+        /// <summary>
         /// Why the generator cannot read the route or HTTP method MVC serves the action at from its routing attributes, as
         /// a clause of MCP009's message, or null when it can.
         /// </summary>
@@ -414,6 +421,20 @@ namespace Api.ToMcp.Generator.Models
         /// leaves the properties a record's constructor sets out of that check (<c>ModelMetadata.BoundProperties</c>).
         /// </summary>
         public bool NamesBindingSource => !IsSetByConstructor && Source != ParameterSourceModel.Auto;
+    }
+
+    /// <summary>
+    /// A route MVC serves an action at.
+    /// </summary>
+    internal sealed record ServedRouteModel
+    {
+        public string Template { get; init; } = "";
+
+        /// <summary>
+        /// The HTTP methods MVC serves the route for, or none for every method: a <c>[Route]</c> alone, or one whose
+        /// methods the generator cannot read.
+        /// </summary>
+        public EquatableArray<string> HttpMethods { get; init; } = EquatableArray<string>.Empty;
     }
 
     internal enum ParameterSourceModel
