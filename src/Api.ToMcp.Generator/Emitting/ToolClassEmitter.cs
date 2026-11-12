@@ -159,6 +159,14 @@ namespace Api.ToMcp.Generator.Emitting
                 // A catch-all value spans path segments, which MVC reads back with their slashes.
                 var keptSlashes = part.IsCatchAll ? ".Replace(\"%2F\", \"/\")" : "";
                 sb.AppendLine($"            var {routeVariable} = {names.SystemNamespace}.Uri.EscapeDataString({RequestValueFormatter}.Format({source.Expression})){keptSlashes};");
+
+                // A required argument can still be sent as null or an empty string, which would request another URL.
+                if (routeValues.RequiredArguments.TryGetValue(part.Text, out var argument))
+                {
+                    var message = $"The argument '{argument.Name}' needs a value: it fills the route value {{{part.Text}}} of the API's URL, which cannot be empty.";
+                    sb.AppendLine($"            if ({routeVariable}.Length == 0)");
+                    sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
+                }
             }
 
             sb.AppendLine($"            var {names.Route} = {FormatRouteString(routeValues.Parts, routeVariables)};");

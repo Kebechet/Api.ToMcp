@@ -59,4 +59,39 @@ public partial class McpToolGeneratorTests
 
         Assert.Equal("id, filter", string.Join(", ", declaredNames));
     }
+
+    [Fact]
+    public void Generator_RefusesAnEmptyRequiredRouteValue_BeforeTheToolCallsTheApi()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpDelete(\"{id}\")] public Task<string> Find(Guid? id) => Task.FromResult(string.Empty);");
+
+        var lines = tool.Split('\n').Select(x => x.Trim()).ToList();
+        var routeVariable = lines.FindIndex(x => x.StartsWith("var routeid = ", StringComparison.Ordinal));
+        Assert.Equal("if (routeid.Length == 0)", lines[routeVariable + 1]);
+        Assert.Equal(
+            "return new CallToolResult { IsError = true, Content = { new TextContentBlock { Text = \"The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.\" } } };",
+            lines[routeVariable + 2]);
+        Assert.True(routeVariable + 2 < lines.FindIndex(x => x.Contains("invoker.DeleteAsync(")), "The tool checks the route value only after it calls the API.");
+    }
+
+    [Fact]
+    public void Generator_NamesThePropertyThatFillsARequiredRouteValue_WhenItIsEmpty()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"{id}\")] public Task<string> Find(AttributedQuery? q) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("if (routeq_Id.Length == 0)", tool);
+        Assert.Contains("Text = \"The argument 'q.Id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.\"", tool);
+    }
+
+    [Theory]
+    [InlineData("[HttpGet(\"{id?}\")]", "int? id")]
+    [InlineData("[HttpGet(\"{id=5}\")]", "int? id")]
+    [InlineData("[HttpGet(\"{*path}\")]", "string? path")]
+    [InlineData("[HttpGet]", "int? count")]
+    public void Generator_LetsAnOptionalRouteValueACatchAllAndAQueryValue_BeEmpty(string httpAttribute, string parameters)
+    {
+        var tool = GenerateCompilingSimpleTypeTool($"{httpAttribute} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        Assert.DoesNotContain("IsError", tool);
+    }
 }

@@ -62,6 +62,8 @@ namespace Api.ToMcp.Generated
         )
         {
             var routeid = System.Uri.EscapeDataString(global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter.Format(id));
+            if (routeid.Length == 0)
+                return new CallToolResult { IsError = true, Content = { new TextContentBlock { Text = "The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty." } } };
             var route = $"/api/products/{routeid}/label";
             await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);
             return await invoker.GetAsync(route, cancellationToken);
@@ -128,6 +130,8 @@ namespace Api.ToMcp.Generated
         )
         {
             var routeid = System.Uri.EscapeDataString(global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter.Format(id));
+            if (routeid.Length == 0)
+                return new CallToolResult { IsError = true, Content = { new TextContentBlock { Text = "The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty." } } };
             var route = $"/api/products/{routeid}";
             await invoker.BeforeInvokeAsync(McpScope.Delete, cancellationToken);
             return await invoker.DeleteAsync(route, cancellationToken);

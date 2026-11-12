@@ -1001,8 +1001,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains($"var routerequest_MeasurementTypeId = System.Uri.EscapeDataString({Formatter}.Format(request.MeasurementTypeId));", result);
-        Assert.Contains("{routerequest_MeasurementTypeId}", result);
-        Assert.DoesNotContain("{measurementTypeId}", result);
+        Assert.Contains("var route = $\"/api/measurement/{routerequest_MeasurementTypeId}\";", result);
     }
 
     [Fact]
@@ -1123,7 +1122,7 @@ public class ToolClassEmitterTests
         var result = ToolClassEmitter.Emit(action, config);
 
         Assert.Contains($"{Formatter}.Format(request.itemId)", result);
-        Assert.DoesNotContain("{ItemId}", result);
+        Assert.Contains("var route = $\"/api/items/{routerequest_itemId}\";", result);
     }
 
     #endregion

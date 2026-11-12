@@ -514,6 +514,30 @@ namespace TestApi
     }
 
     [Theory]
+    [InlineData("ItemsController_DeleteTool", @"{""id"":null}")]
+    [InlineData("ItemsController_GetTool", @"{""id"":null}")]
+    [InlineData("ItemsController_FindTool", @"{""id"":null}")]
+    [InlineData("EchoController_GetFileNameTool", @"{""name"":""""}")]
+    public async Task Tool_RefusesACallThatSendsNullOrEmptyForARequiredRouteValue_WithoutCallingTheApi(string toolClassName, string arguments)
+    {
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync(toolClassName, arguments);
+
+        Assert.True(requestCount == _host.RequestCount, $"{toolClassName} called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError, $"{toolClassName}: {GetText(result)}");
+    }
+
+    [Fact]
+    public async Task Tool_NamesTheArgument_WhenTheClientSendsNullForARequiredRouteValue()
+    {
+        var result = await _host.CallToolAsync("ItemsController_DeleteTool", @"{""id"":null}");
+
+        Assert.True(result.IsError);
+        Assert.Equal("The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.", GetText(result));
+    }
+
+    [Theory]
     [InlineData("ItemsController_DeleteTool", "id")]
     [InlineData("ItemsController_GetTool", "id")]
     [InlineData("ItemsController_FindTool", "id")]
@@ -549,6 +573,11 @@ namespace TestApi
 
         Assert.NotEmpty(toolClassNames);
         Assert.All(toolClassNames, x => _host.GetInputSchema(x));
+    }
+
+    private static string GetText(CallToolResult result)
+    {
+        return string.Concat(result.Content.OfType<TextContentBlock>().Select(x => x.Text));
     }
 
     /// <summary>

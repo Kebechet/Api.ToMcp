@@ -255,6 +255,24 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Contains("404", ((TextContentBlock)failed.Content[0]).Text);
     }
 
+    [Theory]
+    [InlineData("Weather_GetByCity", "")]
+    [InlineData("Weather_GetByCity", null)]
+    [InlineData("Weather_DeleteByCity", "")]
+    public async Task McpProtocol_ToolsCall_RefusesAnEmptyRequiredRouteValue_RatherThanRequestAnotherUrl(string toolName, string? city)
+    {
+        // GET api/weather/ is GetAll's URL, so GetByCity answered with the forecasts of the default city.
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, toolName, new JsonObject { ["city"] = city });
+
+        Assert.True(result["isError"]?.GetValue<bool>() == true, result.ToJsonString());
+        Assert.False(result.AsObject().ContainsKey("structuredContent"));
+        Assert.Equal(
+            "The argument 'city' needs a value: it fills the route value {city} of the API's URL, which cannot be empty.",
+            Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
+    }
+
     [Fact]
     public async Task McpProtocol_ToolsCall_RefusesACallThatLeavesOutARequiredRouteValue()
     {
