@@ -19,19 +19,19 @@ internal static class McpScopeCheck
     {
         if (user?.Identity?.IsAuthenticated != true)
         {
-            return McpScopeCheckResult.Refuse("User is not authenticated. Scope validation requires authentication.", isAuthenticated: false);
+            return McpScopeCheckResult.Refuse("User is not authenticated. Scope validation requires authentication.", isAuthenticated: false, McpScope.None);
         }
 
         var claimValue = user.FindFirst(claimName)?.Value;
         if (string.IsNullOrEmpty(claimValue))
         {
-            return McpScopeCheckResult.Refuse($"Claim '{claimName}' not found. Required scope: {requiredScope}", isAuthenticated: true);
+            return McpScopeCheckResult.Refuse($"Claim '{claimName}' not found. Required scope: {requiredScope}", isAuthenticated: true, McpScope.None);
         }
 
         var grantedScope = claimToScopeMapper(claimValue);
         if ((grantedScope & requiredScope) != requiredScope)
         {
-            return McpScopeCheckResult.Refuse($"Insufficient scope. Required: {requiredScope}, Granted: {grantedScope}", isAuthenticated: true);
+            return McpScopeCheckResult.Refuse($"Insufficient scope. Required: {requiredScope}, Granted: {grantedScope}", isAuthenticated: true, grantedScope);
         }
 
         return new McpScopeCheckResult(IsAuthenticated: true, GrantedScope: grantedScope, Refusal: null);
@@ -39,15 +39,13 @@ internal static class McpScopeCheck
 }
 
 /// <param name="IsAuthenticated">Whether the caller is signed in.</param>
-/// <param name="GrantedScope">The scope the caller's claim grants, when the call is allowed.</param>
+/// <param name="GrantedScope">The scope the caller's claim grants; <see cref="McpScope.None"/> without the claim.</param>
 /// <param name="Refusal">Why the call is refused, meant for the client: it names scopes and the claim, never a token or a
 /// claim's value. <see langword="null"/> when the call is allowed.</param>
 internal readonly record struct McpScopeCheckResult(bool IsAuthenticated, McpScope GrantedScope, string? Refusal)
 {
-    public bool IsAllowed => Refusal is null;
-
-    public static McpScopeCheckResult Refuse(string reason, bool isAuthenticated)
+    public static McpScopeCheckResult Refuse(string reason, bool isAuthenticated, McpScope grantedScope)
     {
-        return new McpScopeCheckResult(isAuthenticated, McpScope.None, reason);
+        return new McpScopeCheckResult(isAuthenticated, grantedScope, reason);
     }
 }

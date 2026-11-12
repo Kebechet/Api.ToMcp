@@ -1,11 +1,13 @@
 using System.Security.Claims;
 using System.Text;
+using System.Text.RegularExpressions;
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -96,6 +98,60 @@ public class McpScopeChallengeTests
         Assert.Equal(0, context.Response.Headers.WWWAuthenticate.Count);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ChallengeRefusedToolCalls_LeavesACallLargerThanTheLimit_ToTheSdk_WithItsWholeBody(bool isLengthKnown)
+    {
+        var body = ToolCallBody(ScopedTools.WriteTool, padding: McpScopeChallenge.MaxToolCallBodyBytes);
+        var context = CreateRequest(body, grantedScope: "mcp:read");
+        context.Request.ContentLength = isLengthKnown ? Encoding.UTF8.GetByteCount(body) : null;
+
+        var servedBody = await ServeAsync(context);
+
+        Assert.Equal(body, servedBody);
+        Assert.Equal(0, context.Response.Headers.WWWAuthenticate.Count);
+    }
+
+    [Fact]
+    public async Task ChallengeRefusedToolCalls_ReadsACallUpToTheLimit()
+    {
+        var body = ToolCallBody(ScopedTools.WriteTool, padding: McpScopeChallenge.MaxToolCallBodyBytes - 200);
+        var context = CreateRequest(body, grantedScope: "mcp:read");
+
+        var isServed = await RunAsync(context);
+
+        Assert.True(Encoding.UTF8.GetByteCount(body) <= McpScopeChallenge.MaxToolCallBodyBytes);
+        Assert.False(isServed);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData(null)]
+    public async Task ChallengeRefusedToolCalls_LeavesABodyThatIsNotJson_ToTheSdk(string? contentType)
+    {
+        var context = CreateToolCall(ScopedTools.WriteTool, grantedScope: "mcp:read");
+        context.Request.ContentType = contentType;
+
+        var isServed = await RunAsync(context);
+
+        Assert.True(isServed);
+    }
+
+    [Fact]
+    public async Task ChallengeRefusedToolCalls_ReadsTheBodyInTheCharsetItsContentTypeNames()
+    {
+        var context = CreateToolCall(ScopedTools.WriteTool, grantedScope: "mcp:read");
+        context.Request.ContentType = "application/json; charset=utf-16";
+        context.Request.Body = new MemoryStream(Encoding.Unicode.GetBytes(ToolCallBody(ScopedTools.WriteTool)));
+
+        var isServed = await RunAsync(context);
+
+        Assert.False(isServed);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+    }
+
     [Fact]
     public async Task ChallengeRefusedToolCalls_LeavesAGetRequest_ToTheSdk()
     {
@@ -130,24 +186,55 @@ public class McpScopeChallengeTests
     }
 
     [Theory]
-    [InlineData("/oauth/resource", "", "https://mcp.example.com/oauth/resource")]
-    [InlineData("oauth/resource", "/tenant", "https://mcp.example.com/tenant/oauth/resource")]
-    [InlineData("https://metadata.example.com/prm", "", "https://metadata.example.com/prm")]
-    [InlineData(null, "/tenant", "https://mcp.example.com/tenant/.well-known/oauth-protected-resource/mcp")]
-    public async Task ChallengeRefusedToolCalls_PointsToTheMetadata_WhereTheSdksHandlerDoes(string? configuredUri, string pathBase, string expectedUri)
+    [InlineData(null, "")]
+    [InlineData(null, "/tenant")]
+    [InlineData("/oauth/resource", "")]
+    [InlineData("oauth/resource", "/tenant")]
+    [InlineData("https://metadata.example.com/prm", "/tenant")]
+    public async Task ChallengeRefusedToolCalls_PointsToTheMetadata_AsTheSdksHandlerDoesInItsOwnChallenge(string? configuredUri, string pathBase)
     {
-        var context = CreateToolCall(ScopedTools.WriteTool, grantedScope: "mcp:read");
-        context.Request.PathBase = pathBase;
-
-        await RunAsync(context, configureAuthentication: options =>
+        void Configure(McpAuthenticationOptions options)
         {
             if (configuredUri is not null)
             {
                 options.ResourceMetadataUri = new Uri(configuredUri, UriKind.RelativeOrAbsolute);
             }
+        }
+
+        var context = CreateToolCall(ScopedTools.WriteTool, grantedScope: "mcp:read");
+        context.Request.PathBase = pathBase;
+
+        await RunAsync(context, configureAuthentication: Configure);
+        var sdkChallenge = await GetSdkChallengeAsync(pathBase, Configure);
+
+        Assert.Equal(GetResourceMetadata(sdkChallenge), GetResourceMetadata(context.Response.Headers.WWWAuthenticate.ToString()));
+    }
+
+    [Fact]
+    public async Task ChallengeRefusedToolCalls_NamesTheScopesTheCallerHas_AlongWithTheOnesTheToolRequires()
+    {
+        // A 2025-11-25 client asks for the challenge's scopes alone, and would lose mcp:write otherwise.
+        var context = CreateToolCall(ScopedTools.ReadDeleteTool, grantedScope: "mcp:write");
+
+        await RunAsync(context);
+
+        Assert.Contains("scope=\"mcp:read mcp:write mcp:delete\"", context.Response.Headers.WWWAuthenticate.ToString());
+    }
+
+    [Fact]
+    public async Task ChallengeRefusedToolCalls_NamesAScopeNamedForSeveralFlags_Once()
+    {
+        var context = CreateToolCall(ScopedTools.ReadDeleteTool, grantedScope: "other");
+
+        await RunAsync(context, options =>
+        {
+            options.ScopeNames[McpScope.Read] = "api";
+            options.ScopeNames[McpScope.Write] = "api";
+            options.ScopeNames[McpScope.Delete] = "api";
         });
 
-        Assert.Contains($"resource_metadata=\"{expectedUri}\"", context.Response.Headers.WWWAuthenticate.ToString());
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Contains("scope=\"api\"", context.Response.Headers.WWWAuthenticate.ToString());
     }
 
     [Fact]
@@ -178,6 +265,32 @@ public class McpScopeChallengeTests
         })(context);
 
         return isServed;
+    }
+
+    /// <summary>
+    /// The <c>WWW-Authenticate</c> header of the MCP SDK's own <c>401</c> challenge for a request to the MCP endpoint.
+    /// </summary>
+    private static async Task<string> GetSdkChallengeAsync(string pathBase, Action<McpAuthenticationOptions> configure)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAuthentication().AddMcp(configure);
+        await using var provider = services.BuildServiceProvider();
+        var context = CreateToolCall(ScopedTools.WriteTool);
+        context.Request.PathBase = pathBase;
+        context.RequestServices = provider;
+
+        await context.ChallengeAsync(McpAuthenticationDefaults.AuthenticationScheme);
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+        return context.Response.Headers.WWWAuthenticate.ToString();
+    }
+
+    private static string GetResourceMetadata(string challenge)
+    {
+        var match = Regex.Match(challenge, "resource_metadata=\"([^\"]*)\"");
+        Assert.True(match.Success, challenge);
+        return match.Groups[1].Value;
     }
 
     /// <summary>
@@ -241,9 +354,13 @@ public class McpScopeChallengeTests
         return CreateRequest(ToolCallBody(toolName), grantedScope);
     }
 
-    private static string ToolCallBody(string toolName)
+    /// <summary>
+    /// A <c>tools/call</c> request, with an argument of <paramref name="padding"/> characters to make it large.
+    /// </summary>
+    private static string ToolCallBody(string toolName, int padding = 0)
     {
-        return $"{{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{{\"name\":\"{toolName}\",\"arguments\":{{}}}}}}";
+        var arguments = padding > 0 ? $"{{\"note\":\"{new string('x', padding)}\"}}" : "{}";
+        return $"{{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{{\"name\":\"{toolName}\",\"arguments\":{arguments}}}}}";
     }
 
     /// <summary>
@@ -257,6 +374,7 @@ public class McpScopeChallengeTests
         context.Request.Scheme = "https";
         context.Request.Host = new HostString("mcp.example.com");
         context.Request.Path = "/mcp";
+        context.Request.ContentType = "application/json";
         context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(body));
 
         var claims = grantedScope is null ? [] : new[] { new Claim("scope", grantedScope) };

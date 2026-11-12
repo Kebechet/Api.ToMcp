@@ -15,7 +15,8 @@ namespace Api.ToMcp.Runtime.Middleware;
 
 /// <summary>
 /// With OAuth sign-in discovery on, answers a <c>tools/call</c> that scope validation refuses before the MCP SDK runs the
-/// tool: with <c>403</c> and an <c>insufficient_scope</c> challenge that names the scopes the tool requires, or with
+/// tool: with <c>403</c> and an <c>insufficient_scope</c> challenge that names the scopes the tool requires and the ones
+/// the caller already has, or with
 /// <c>401</c> and a sign-in challenge when the caller is not signed in, as the MCP authorization spec asks, so the client
 /// can ask the user for them. It has to happen here: the SDK sends the status of a tool call before it runs the tool, at
 /// once for a protocol version before <c>2026-07-28</c> and after 250 ms from then on, so a filter around the tool
@@ -42,6 +43,15 @@ internal sealed class McpScopeChallenge
     private const string ErrorDescriptionParameter = "error_description";
     private const string ScopeParameter = "scope";
     private const string ResourceMetadataParameter = "resource_metadata";
+
+    /// <summary>
+    /// The largest <c>tools/call</c> body read before the SDK reads it. A larger call goes to the SDK unread, and the tool's
+    /// own check refuses it with an error result instead of a challenge, so a request never holds more of the endpoint's
+    /// memory than this before the SDK reads it, and none of its disk.
+    /// </summary>
+    internal const int MaxToolCallBodyBytes = 1024 * 1024;
+
+    private const int ReadChunkBytes = 16 * 1024;
 
     private static readonly JsonTypeInfo MessageTypeInfo = McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(JsonRpcMessage));
     private static readonly JsonTypeInfo ToolCallTypeInfo = McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(CallToolRequestParams));
@@ -100,13 +110,15 @@ internal sealed class McpScopeChallenge
 
         // A challenge naming only some of the scopes would send the client to sign in for too little, so a scope without a
         // name is left to the tool's own check, which refuses the call with an error result.
-        var scopeNames = _toolScopes.GetScopeNames(requiredScope, out var unnamedScope);
+        _toolScopes.GetScopeNames(requiredScope, out var unnamedScope);
         if (unnamedScope != McpScope.None)
         {
             return false;
         }
 
-        var scope = string.Join(ScopeSeparator, scopeNames);
+        // A 2025-11-25 client asks for the challenge's scopes alone, so the scopes the caller already has are named too,
+        // or the new token would lose them.
+        var scope = string.Join(ScopeSeparator, _toolScopes.GetScopeNames(requiredScope | scopeCheck.GrantedScope, out _));
         var resourceMetadataUri = GetResourceMetadataUri(context.Request);
         string challenge;
         if (scopeCheck.IsAuthenticated)
@@ -137,30 +149,76 @@ internal sealed class McpScopeChallenge
 
     /// <summary>
     /// The tool a <c>tools/call</c> request calls, or <see langword="null"/> for any other request, including one that is
-    /// not a JSON-RPC message, which the SDK answers. The body is buffered and rewound for the SDK to read again.
+    /// not a JSON-RPC message, which the SDK answers, and one larger than <see cref="MaxToolCallBodyBytes"/>. The body is
+    /// read the way the SDK reads it, with <c>ReadFromJsonAsync</c>, which follows the content type's charset, and is put
+    /// back for the SDK to read again.
     /// </summary>
     private static async Task<string?> ReadCalledToolNameAsync(HttpContext context)
     {
-        context.Request.EnableBuffering();
+        var request = context.Request;
+        if (request.ContentLength > MaxToolCallBodyBytes || !request.HasJsonContentType())
+        {
+            return null;
+        }
+
+        var body = await ReadBodyAsync(request, context.RequestAborted);
+        if (body is null)
+        {
+            return null;
+        }
+
         try
         {
-            var request = await JsonSerializer.DeserializeAsync(context.Request.Body, MessageTypeInfo, context.RequestAborted) as JsonRpcRequest;
-            if (request is null || request.Method != RequestMethods.ToolsCall || request.Params is null)
+            var message = await request.ReadFromJsonAsync(MessageTypeInfo, context.RequestAborted) as JsonRpcRequest;
+            if (message is null || message.Method != RequestMethods.ToolsCall || message.Params is null)
             {
                 return null;
             }
 
-            var toolCall = JsonSerializer.Deserialize(request.Params, ToolCallTypeInfo) as CallToolRequestParams;
+            var toolCall = JsonSerializer.Deserialize(message.Params, ToolCallTypeInfo) as CallToolRequestParams;
             return toolCall?.Name;
         }
         catch (JsonException)
         {
             return null;
         }
+        catch (InvalidOperationException)
+        {
+            // A charset ReadFromJsonAsync does not know; the SDK answers it.
+            return null;
+        }
         finally
         {
-            context.Request.Body.Position = 0;
+            body.Position = 0;
         }
+    }
+
+    /// <summary>
+    /// The body in memory, now <see cref="HttpRequest.Body"/>, when it holds at most <see cref="MaxToolCallBodyBytes"/>;
+    /// otherwise <see langword="null"/>, with what was read put back in front of the rest of the body. The length is not
+    /// always known beforehand: the MCP SDK's own client sends its requests chunked.
+    /// </summary>
+    private static async Task<MemoryStream?> ReadBodyAsync(HttpRequest request, CancellationToken cancellationToken)
+    {
+        var body = request.Body;
+        var readBody = new MemoryStream();
+        var chunk = new byte[ReadChunkBytes];
+        while (readBody.Length <= MaxToolCallBodyBytes)
+        {
+            var read = await body.ReadAsync(chunk, cancellationToken);
+            if (read == 0)
+            {
+                readBody.Position = 0;
+                request.Body = readBody;
+                return readBody;
+            }
+
+            readBody.Write(chunk, 0, read);
+        }
+
+        readBody.Position = 0;
+        request.Body = new ReadAheadStream(readBody, body);
+        return null;
     }
 
     /// <summary>
@@ -198,5 +256,68 @@ internal sealed class McpScopeChallenge
     private static string ToErrorDescription(string reason)
     {
         return new string(reason.Where(x => x is >= ' ' and <= '~' and not '"' and not '\\').ToArray());
+    }
+
+    /// <summary>
+    /// The bytes read ahead, then the rest of the body, read only forward as the server's own body stream is.
+    /// </summary>
+    private sealed class ReadAheadStream : Stream
+    {
+        private readonly Stream _readAhead;
+        private readonly Stream _rest;
+
+        public ReadAheadStream(Stream readAhead, Stream rest)
+        {
+            _readAhead = readAhead;
+            _rest = rest;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            return Read(buffer.AsSpan(offset, count));
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var read = _readAhead.Read(buffer);
+            return read > 0 ? read : _rest.Read(buffer);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = _readAhead.Read(buffer.Span);
+            if (read > 0)
+            {
+                return read;
+            }
+
+            return await _rest.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

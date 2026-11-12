@@ -87,7 +87,7 @@ public sealed class OAuthSignInDiscoveryTests
     }
 
     [Fact]
-    public async Task AToolCallWithTooLittleScope_GetsA403InsufficientScope_NamingTheScopeTheToolRequires()
+    public async Task AToolCallWithTooLittleScope_GetsA403InsufficientScope_NamingTheScopesItRequiresAndTheCallerHas()
     {
         await using var app = await StartAppAsync();
         var address = app.Urls.Single();
@@ -96,7 +96,7 @@ public sealed class OAuthSignInDiscoveryTests
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal(
-            $"Bearer error=\"insufficient_scope\", scope=\"mcp:write\", resource_metadata=\"{address}{MetadataPath}\", error_description=\"Insufficient scope. Required: Write, Granted: Read\"",
+            $"Bearer error=\"insufficient_scope\", scope=\"mcp:read mcp:write\", resource_metadata=\"{address}{MetadataPath}\", error_description=\"Insufficient scope. Required: Write, Granted: Read\"",
             response.Headers.WwwAuthenticate.ToString());
     }
 

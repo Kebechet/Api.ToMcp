@@ -36,8 +36,9 @@ internal sealed class McpToolScopes
     }
 
     /// <summary>
-    /// The OAuth scope named for each flag of <paramref name="scope"/>, in the flags' order, and in
-    /// <paramref name="unnamedScope"/> the flags no name is configured for.
+    /// The OAuth scope named for each flag of <paramref name="scope"/>, in the flags' order and each once, as an app with
+    /// a single OAuth scope names it for several flags; and in <paramref name="unnamedScope"/> the flags no name is
+    /// configured for.
     /// </summary>
     public IReadOnlyList<string> GetScopeNames(McpScope scope, out McpScope unnamedScope)
     {
@@ -47,13 +48,13 @@ internal sealed class McpToolScopes
         foreach (var flag in GetFlags(scope))
         {
             var hasName = _scopeNames.TryGetValue(flag, out var name) && !string.IsNullOrEmpty(name);
-            if (hasName)
-            {
-                names.Add(name!);
-            }
-            else
+            if (!hasName)
             {
                 unnamedScope |= flag;
+            }
+            else if (!names.Contains(name!, StringComparer.Ordinal))
+            {
+                names.Add(name!);
             }
         }
 

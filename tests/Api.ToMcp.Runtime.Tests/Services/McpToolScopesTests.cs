@@ -59,6 +59,22 @@ public class McpToolScopesTests
     }
 
     [Fact]
+    public void GetScopeNames_NamesAScopeNamedForSeveralFlags_Once()
+    {
+        var toolScopes = CreateToolScopes(names =>
+        {
+            names[McpScope.Read] = "api";
+            names[McpScope.Write] = "admin";
+            names[McpScope.Delete] = "api";
+        });
+
+        var scopeNames = toolScopes.GetScopeNames(McpScope.All, out var unnamedScope);
+
+        Assert.Equal(["api", "admin"], scopeNames);
+        Assert.Equal(McpScope.None, unnamedScope);
+    }
+
+    [Fact]
     public void GetScopeNames_NamesNothing_ForNoScope()
     {
         var toolScopes = CreateToolScopes(names => names[McpScope.Read] = "mcp:read");
