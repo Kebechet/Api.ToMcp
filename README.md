@@ -476,12 +476,25 @@ The request is addressed as the MCP request was:
 
 | | |
 |---|---|
-| Scheme, host and path base | The MCP request's, as your app saw them after its forwarded-headers middleware, so the app routes, filters and redirects the tool's request as it did the MCP request |
+| Scheme, host and path base | The MCP request's, as your app saw them after its forwarded-headers middleware, so the app routes, filters and redirects the tool's request as it did the MCP request. The part of the path base that `Map` or `UsePathBase` took from the MCP request's path is put back in front of the path, so the request takes the same branch; one from `X-Forwarded-Prefix` or the IIS application stays its path base |
 | Connection | The MCP request's: the client's address and port, the server's, and the client certificate |
 | Method, path, query string and body | The tool's; see [Where each argument is sent](#where-each-argument-is-sent) |
 | Headers | `Authorization`, copied from the MCP request, and `X-MCP-Internal-Call: true`; see [What the tool's request carries](#what-the-tools-request-carries) |
 
-It gets its own `HttpContext`, `RequestServices` scope and `TraceIdentifier`, and starts in an execution context of its own, as a request the server receives does, under the tool call's `Activity`. What it does not get is what the server and ASP.NET Core's hosting do around the pipeline: hosting does not log it, count it in its metrics or give it a span of its own, and no Kestrel connection middleware or server-wide limit, TLS handshake or IIS module applies to it. A body limit an action sets with `[RequestSizeLimit]` does apply, as Kestrel applies it.
+It gets its own `HttpContext`, `RequestServices` scope and `TraceIdentifier`, and starts in an execution context of its own, as a request the server receives does, under the tool call's `Activity`. What it does not get is what the server and ASP.NET Core's hosting do around the pipeline: hosting does not log it, count it in its metrics or give it a span of its own, and no Kestrel connection middleware or server-wide limit, TLS handshake or IIS module applies to it.
+
+What Kestrel decides about a request it serves holds for the tool's request too:
+
+- An exception your API lets escape before the response starts is answered with a bare `500`, or with the status a `BadHttpRequestException` carries, such as the `413` of a body over an action's `[RequestSizeLimit]`.
+- What the app wrote to `Response.BodyWriter` is sent when it ends, flushed or not.
+- Reading or writing the body synchronously throws, unless the server's `AllowSynchronousIO` option or the request's `IHttpBodyControlFeature` allows it.
+- The response headers are read-only once the response has started.
+
+A redirect is followed as `HttpClient` follows one, up to 50 times: a `303` turns the request into a `GET` without a body, as a `300`, `301` or `302` does a `POST`, and a `307` or `308` keeps the method and the body. It is followed only when it leads back into the app: to the scheme, host and port of the tool's request, under any path base a proxy or the server gave the MCP request. The next request then keeps `Authorization`, which `HttpClient` drops on every redirect. Any other redirect comes back as it is, as an error result such as `HTTP 302: Found`, and nothing is sent to its `Location`.
+
+The call fails as an `HttpClient` call does when the `Timeout` of the invoker's `HttpClient` runs out, 100 seconds unless you configure it (see [Custom HTTP Invocation](#custom-http-invocation)). Canceling the call ends it at once, even when your action does not watch `HttpContext.RequestAborted`; the request is aborted, and finishes and is cleaned up in the background.
+
+The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Partition by user, or turn the option off, if that matters. Over HTTP, the request came from the server itself.
 
 To send the request over HTTP instead, to the address from [Base URL Resolution](#base-url-resolution), turn the option off:
 
@@ -548,11 +561,11 @@ public interface IMcpHttpInvoker
 
 You rarely need to implement this yourself, but you can substitute it — for example to stub calls in tests — by registering your own implementation after `AddMcpTools`.
 
-The invoker's `HttpClient`, which it uses only over HTTP, is the named client `IMcpHttpInvoker`. Configure it by that name, as in `services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(...)`. Calling `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()` instead registers the invoker again, as one created with its constructor, which always calls over HTTP.
+The invoker's `HttpClient` is the named client `IMcpHttpInvoker`. Configure it by that name, as in `services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(...)`. In process, only its `Timeout` applies: nothing is sent through it, so its message handlers, such as one added with `AddHttpMessageHandler` to set an API key, and its `DefaultRequestHeaders` do not run. Turn `AreApiCallsInProcess` off to keep them. Calling `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()` instead registers the invoker again, as one created with its constructor, which always calls over HTTP.
 
 ### Error handling
 
-The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. An exception your API lets escape before its response starts comes back as a bare `500`, as the server would send it, and the app logs the exception. A call that gets no status still surfaces as an exception, which the MCP server likewise reports as `isError: true`: in process, a request your API aborts, or one whose response fails after it started; over HTTP, a network error or timeout.
+The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. An exception your API lets escape before its response starts comes back as Kestrel would answer it, with a bare `500` or the status of a `BadHttpRequestException`, and the app logs the exception. In process, a redirect that does not lead back into the app comes back as it is, such as `HTTP 302: Found`. A call that gets no status still surfaces as an exception, which the MCP server likewise reports as `isError: true`: in process, a request your API aborts, one whose response fails after it started, or one that outlasts the client's `Timeout`; over HTTP, a network error or timeout.
 
 ## Correlating Tool Calls with API Logs
 
