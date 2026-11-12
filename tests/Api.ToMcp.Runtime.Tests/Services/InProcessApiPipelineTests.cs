@@ -19,6 +19,8 @@ namespace Api.ToMcp.Runtime.Tests.Services;
 public class InProcessApiPipelineTests
 {
     private const string ItemsUrl = "https://api.example.com/api/items";
+    private const string TargetPath = "/api/target";
+    private const string TargetUrl = "https://api.example.com/api/target";
 
     [Fact]
     public void IsCaptured_IsFalse_UntilTheAppsPipelineIsBuilt()
@@ -257,6 +259,145 @@ public class InProcessApiPipelineTests
 
         Assert.Equal("/sub", pathBase);
         Assert.Equal("/sub/mcp", entry?.Path);
+    }
+
+    [Theory]
+    [InlineData("GET", StatusCodes.Status302Found, "GET||")]
+    [InlineData("POST", StatusCodes.Status300MultipleChoices, "GET||")]
+    [InlineData("POST", StatusCodes.Status301MovedPermanently, "GET||")]
+    [InlineData("POST", StatusCodes.Status302Found, "GET||")]
+    [InlineData("PUT", StatusCodes.Status302Found, "PUT|{\"a\":1}|application/json; charset=utf-8")]
+    [InlineData("POST", StatusCodes.Status303SeeOther, "GET||")]
+    [InlineData("DELETE", StatusCodes.Status303SeeOther, "GET||")]
+    [InlineData("POST", StatusCodes.Status307TemporaryRedirect, "POST|{\"a\":1}|application/json; charset=utf-8")]
+    [InlineData("PUT", StatusCodes.Status308PermanentRedirect, "PUT|{\"a\":1}|application/json; charset=utf-8")]
+    public async Task SendAsync_FollowsARedirect_WithTheMethodAndBodyHttpClientHandlerSends(string method, int statusCode, string expected)
+    {
+        var pipeline = BuildRedirectingApp(statusCode, TargetPath);
+        using var request = new HttpRequestMessage(new HttpMethod(method), ItemsUrl);
+        if (method != HttpMethods.Get)
+        {
+            request.Content = new StringContent("{\"a\":1}", Encoding.UTF8, "application/json");
+        }
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+        Assert.Equal(TargetUrl, response.RequestMessage?.RequestUri?.ToString());
+    }
+
+    [Theory]
+    [InlineData("/api/target")]
+    [InlineData("target")]
+    [InlineData(TargetUrl)]
+    [InlineData("https://API.EXAMPLE.COM:443/api/target")]
+    public async Task SendAsync_FollowsARedirect_ToTheSameOrigin(string location)
+    {
+        var pipeline = BuildRedirectingApp(StatusCodes.Status302Found, location);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("GET||", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("https://elsewhere.example.com/api/target")]
+    [InlineData("//elsewhere.example.com/api/target")]
+    [InlineData("http://api.example.com/api/target")]
+    [InlineData("https://api.example.com:8443/api/target")]
+    public async Task SendAsync_ReturnsARedirect_ToAnotherOrigin_AsItIs(string location)
+    {
+        var served = new List<string>();
+        var pipeline = BuildRedirectingApp(StatusCodes.Status302Found, location, served);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal(location, response.Headers.Location?.OriginalString);
+        Assert.Equal(["/api/items"], served);
+    }
+
+    [Theory]
+    [InlineData(StatusCodes.Status201Created)]
+    [InlineData(StatusCodes.Status304NotModified)]
+    public async Task SendAsync_DoesNotFollowTheLocation_OfAResponseThatIsNoRedirect(int statusCode)
+    {
+        var served = new List<string>();
+        var pipeline = BuildRedirectingApp(statusCode, TargetPath, served);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Post, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(statusCode, (int)response.StatusCode);
+        Assert.Equal(["/api/items"], served);
+    }
+
+    [Fact]
+    public async Task SendAsync_KeepsTheRequestsHeaders_AuthorizationIncluded_OnARedirectIntoTheApp()
+    {
+        string? seen = null;
+        var pipeline = Build(app => app.Run(context =>
+        {
+            if (context.Request.Path != TargetPath)
+            {
+                context.Response.StatusCode = StatusCodes.Status302Found;
+                context.Response.Headers.Location = TargetPath;
+                return Task.CompletedTask;
+            }
+
+            seen = $"{context.Request.Headers.Authorization}|{context.Request.Headers["X-Custom"]}";
+            return Task.CompletedTask;
+        }));
+        using var request = new HttpRequestMessage(HttpMethod.Get, ItemsUrl);
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer token-1");
+        request.Headers.Add("X-Custom", "custom-1");
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        Assert.Equal("Bearer token-1|custom-1", seen);
+    }
+
+    [Theory]
+    [InlineData("/v1/api/target", "GET|/v1|/api/target")]
+    [InlineData("/api/target", "302")]
+    public async Task SendAsync_FollowsARedirect_OnlyUnderThePathBaseAProxyGaveTheCaller(string location, string expected)
+    {
+        var pipeline = Build(app => app.Run(context =>
+        {
+            if (context.Request.Path != TargetPath)
+            {
+                context.Response.StatusCode = StatusCodes.Status302Found;
+                context.Response.Headers.Location = location;
+                return Task.CompletedTask;
+            }
+
+            return context.Response.WriteAsync($"{context.Request.Method}|{context.Request.PathBase}|{context.Request.Path}");
+        }));
+        var caller = CreateCaller(entryPath: "/mcp", pathBase: "/v1", path: "/mcp");
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/v1/api/items"), caller, CancellationToken.None);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(expected, response.StatusCode == HttpStatusCode.Found ? "302" : body);
+    }
+
+    [Fact]
+    public async Task SendAsync_StopsFollowingRedirects_AtHttpClientHandlersLimit()
+    {
+        using var handler = new HttpClientHandler();
+        var served = 0;
+        var pipeline = Build(app => app.Run(context =>
+        {
+            served++;
+            context.Response.StatusCode = StatusCodes.Status302Found;
+            context.Response.Headers.Location = "/api/items";
+            return Task.CompletedTask;
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal(handler.MaxAutomaticRedirections + 1, served);
     }
 
     [Fact]
@@ -539,6 +680,27 @@ public class InProcessApiPipelineTests
 
         trail.Add(name);
         return next(context);
+    }
+
+    /// <summary>
+    /// An app that redirects every request but one to the target, and answers that one with its method, body and content
+    /// type.
+    /// </summary>
+    private static InProcessApiPipeline BuildRedirectingApp(int statusCode, string location, List<string>? served = null)
+    {
+        return Build(app => app.Run(async context =>
+        {
+            served?.Add(context.Request.Path.Value!);
+            if (context.Request.Path != TargetPath)
+            {
+                context.Response.StatusCode = statusCode;
+                context.Response.Headers.Location = location;
+                return;
+            }
+
+            var body = await new StreamReader(context.Request.Body).ReadToEndAsync();
+            await context.Response.WriteAsync($"{context.Request.Method}|{body}|{context.Request.ContentType}");
+        }));
     }
 
     /// <summary>

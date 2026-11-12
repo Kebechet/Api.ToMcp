@@ -21,6 +21,11 @@ namespace Api.ToMcp.Runtime.Services;
 /// </remarks>
 internal sealed class InProcessApiPipeline
 {
+    /// <summary>
+    /// The default of <see cref="HttpClientHandler.MaxAutomaticRedirections"/>.
+    /// </summary>
+    private const int MaxAutomaticRedirections = 50;
+
     private readonly IHttpContextFactory _httpContextFactory;
     private readonly ILogger<InProcessApiPipeline> _logger;
     private RequestDelegate? _application;
@@ -43,7 +48,8 @@ internal sealed class InProcessApiPipeline
 
     /// <summary>
     /// Serves the request and returns the response the app wrote, as an <see cref="HttpClient"/> would have received it
-    /// from the server.
+    /// from the server. A redirect is followed as <see cref="HttpClientHandler"/> follows one when it points to an address
+    /// the app serves itself; any other is returned as it is.
     /// </summary>
     /// <param name="request">
     /// The request, whose absolute URI is the address a client would call: the scheme and host the app sees, then the MCP
@@ -58,42 +64,31 @@ internal sealed class InProcessApiPipeline
     public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken cancellationToken)
     {
         var application = _application ?? throw new InvalidOperationException("The host has not built the app's request pipeline yet.");
-        var startTimestamp = Stopwatch.GetTimestamp();
+        var forwardedPathBase = GetForwardedPathBase(caller);
 
-        using var exchange = await InProcessExchange.CreateAsync(request, caller, GetForwardedPathBase(caller), cancellationToken);
-        var callerActivity = Activity.Current;
-
-        Task<Exception?> serving;
-
-        // A request the server receives starts in an execution context of its own. Flowing the caller's would also flow
-        // the IHttpContextAccessor's holder of the MCP request's context, which the context factory clears when it sets
-        // the request's own, so the MCP request would lose its context.
-        using (ExecutionContext.SuppressFlow())
+        var response = await ServeAsync(application, request, caller, forwardedPathBase, cancellationToken);
+        for (var redirections = 0; redirections < MaxAutomaticRedirections; redirections++)
         {
-            serving = Task.Run(() => ServeAsync(application, exchange, callerActivity));
+            var target = GetRedirectTarget(response, request.RequestUri!, forwardedPathBase);
+            if (target is null)
+            {
+                return response;
+            }
+
+            // HttpClientHandler drops Authorization on every redirect, as it may lead to another server. Here it leads only
+            // back into the app that served the request, so the hop keeps it, as the same user's next request.
+            if (IsRedirectedAsGet((int)response.StatusCode, request.Method))
+            {
+                request.Method = HttpMethod.Get;
+                request.Content = null;
+            }
+
+            request.RequestUri = target;
+            response.Dispose();
+            response = await ServeAsync(application, request, caller, forwardedPathBase, cancellationToken);
         }
 
-        var unhandledException = await serving;
-
-        cancellationToken.ThrowIfCancellationRequested();
-        if (exchange.Lifetime.IsAborted)
-        {
-            throw new HttpRequestException("The app aborted the tool's in-process API request.");
-        }
-
-        if (unhandledException is not null && !exchange.Response.IsAnsweredWithUnhandledException)
-        {
-            throw new HttpRequestException("The app threw after the response of the tool's in-process API request started.", unhandledException);
-        }
-
-        _logger.LogInformation(
-            "Served the tool's API request {Method} {Url} in process with {StatusCode} in {ElapsedMilliseconds} ms.",
-            request.Method.Method,
-            request.RequestUri,
-            exchange.Response.Feature.StatusCode,
-            Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
-
-        return exchange.CreateResponseMessage(request);
+        return response;
     }
 
     /// <summary>
@@ -129,10 +124,106 @@ internal sealed class InProcessApiPipeline
     }
 
     /// <summary>
+    /// Where a redirect sends the request, when <see cref="HttpClientHandler"/> would follow it and the app serves that
+    /// address itself: at the request's scheme, host and port, under the path base the server or a proxy gave the MCP
+    /// request. Any other redirect is left to the caller, so a <c>Location</c> the app built from a <c>Host</c> header
+    /// sends nothing anywhere.
+    /// </summary>
+    private static Uri? GetRedirectTarget(HttpResponseMessage response, Uri requestUri, PathString forwardedPathBase)
+    {
+        var location = response.Headers.Location;
+        if (!IsRedirect((int)response.StatusCode) || location is null)
+        {
+            return null;
+        }
+
+        var target = location.IsAbsoluteUri ? location : new Uri(requestUri, location);
+        var isSameOrigin = Uri.Compare(target, requestUri, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0;
+        if (!isSameOrigin)
+        {
+            return null;
+        }
+
+        var isUnderForwardedPathBase = PathString.FromUriComponent(target).StartsWithSegments(forwardedPathBase, StringComparison.OrdinalIgnoreCase);
+        return isUnderForwardedPathBase ? target : null;
+    }
+
+    private static bool IsRedirect(int statusCode)
+    {
+        return statusCode is StatusCodes.Status300MultipleChoices
+            or StatusCodes.Status301MovedPermanently
+            or StatusCodes.Status302Found
+            or StatusCodes.Status303SeeOther
+            or StatusCodes.Status307TemporaryRedirect
+            or StatusCodes.Status308PermanentRedirect;
+    }
+
+    /// <summary>
+    /// Whether <see cref="HttpClientHandler"/> sends the redirected request as a GET without a body: after a 303 any
+    /// request but a GET or HEAD, and after a 300, 301 or 302 a POST. A 307 or 308 keeps the method and the body.
+    /// </summary>
+    private static bool IsRedirectedAsGet(int statusCode, HttpMethod method)
+    {
+        return statusCode switch
+        {
+            StatusCodes.Status303SeeOther => method != HttpMethod.Get && method != HttpMethod.Head,
+            StatusCodes.Status300MultipleChoices or StatusCodes.Status301MovedPermanently or StatusCodes.Status302Found => method == HttpMethod.Post,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Serves one request, without following a redirect.
+    /// </summary>
+    private async Task<HttpResponseMessage> ServeAsync(
+        RequestDelegate application,
+        HttpRequestMessage request,
+        HttpContext? caller,
+        PathString forwardedPathBase,
+        CancellationToken cancellationToken)
+    {
+        var startTimestamp = Stopwatch.GetTimestamp();
+        using var exchange = await InProcessExchange.CreateAsync(request, caller, forwardedPathBase, cancellationToken);
+        var callerActivity = Activity.Current;
+
+        Task<Exception?> serving;
+
+        // A request the server receives starts in an execution context of its own. Flowing the caller's would also flow
+        // the IHttpContextAccessor's holder of the MCP request's context, which the context factory clears when it sets
+        // the request's own, so the MCP request would lose its context.
+        using (ExecutionContext.SuppressFlow())
+        {
+            serving = Task.Run(() => RunAsync(application, exchange, callerActivity));
+        }
+
+        var unhandledException = await serving;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (exchange.Lifetime.IsAborted)
+        {
+            throw new HttpRequestException("The app aborted the tool's in-process API request.");
+        }
+
+        if (unhandledException is not null && !exchange.Response.IsAnsweredWithUnhandledException)
+        {
+            throw new HttpRequestException("The app threw after the response of the tool's in-process API request started.", unhandledException);
+        }
+
+        _logger.LogInformation(
+            "Served the tool's API request {Method} {Url} in process with {StatusCode} in {ElapsedMilliseconds} ms.",
+            request.Method.Method,
+            request.RequestUri,
+            exchange.Response.Feature.StatusCode,
+            Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
+
+        return exchange.CreateResponseMessage(request);
+    }
+
+    /// <summary>
     /// Runs the request through the pipeline as the server's hosting runs one it receives, and returns the exception the
     /// app let escape, if any.
     /// </summary>
-    private async Task<Exception?> ServeAsync(RequestDelegate application, InProcessExchange exchange, Activity? callerActivity)
+    private async Task<Exception?> RunAsync(RequestDelegate application, InProcessExchange exchange, Activity? callerActivity)
     {
         Activity.Current = callerActivity;
 
