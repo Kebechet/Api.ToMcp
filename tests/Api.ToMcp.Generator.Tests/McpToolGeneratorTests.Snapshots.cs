@@ -9,7 +9,7 @@ namespace Api.ToMcp.Generator.Tests;
 /// file in <c>Snapshots</c> is 2.0.0's output for the same source, plus the tool annotations that 2.1.0 and the title
 /// that 2.2.0 add to <c>[McpServerTool]</c>, the query value equal to the action's default that 2.2.0 leaves out, the
 /// <c>[McpRequiredScope]</c> that OAuth sign-in discovery reads (https://github.com/Kebechet/Api.ToMcp/issues/64), and
-/// the error result for an empty required route value (https://github.com/Kebechet/Api.ToMcp/issues/50).
+/// the check of each route value (https://github.com/Kebechet/Api.ToMcp/issues/50).
 /// </summary>
 public partial class McpToolGeneratorTests
 {
