@@ -27,7 +27,7 @@ Example project demonstrating Api.ToMcp usage.
 **TodoEndpoints** - Endpoints `Program.cs` maps with `app.MapGroup("/api").MapTodoEndpoints()`, an extension method that maps them in a group of its own, so their routes take both prefixes
 - `GET /api/todos` - List the to-do items (a method group, described by its XML docs; `Ok<List<Todo>>` gives the output schema)
 - `GET /api/todos/{id}` - Get an item (`Results<Ok<Todo>, NotFound>` gives the output schema `Todo`)
-- `POST /api/todos` - Add an item (a lambda, named by `.WithName("CreateTodo")` and described by `.WithDescription(...)`; its request is the body)
+- `POST /api/todos` - Add an item (a lambda, named by `.WithName("CreateTodo")` and described by `.WithDescription(...)`; its request is the body, of an `internal` type, so its tool is an internal class)
 - `DELETE /api/todos/{id}` - Delete an item (excluded via `[McpIgnore]` on the lambda)
 
 ### Hand-written tool
