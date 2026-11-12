@@ -30,6 +30,14 @@ public static class McpRequestValueFormatter
     /// </summary>
     private const string RecordCloneMethodName = "<Clone>$";
 
+    private const char PathSeparator = '/';
+
+    /// <summary>
+    /// The path segments that URI normalization removes (RFC 3986, section 5.2.4), <c>..</c> with the segment before it.
+    /// </summary>
+    private const string CurrentSegment = ".";
+    private const string ParentSegment = "..";
+
     private static readonly string ParsableInterfaceName = $"{typeof(IParsable<>).Namespace}.{nameof(IParsable<int>)}";
 
     /// <summary>
@@ -67,6 +75,26 @@ public static class McpRequestValueFormatter
     private static readonly ConcurrentDictionary<Type, bool> HasModelBinderByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
     private static readonly ConcurrentDictionary<Type, IReadOnlyDictionary<string, ParameterInfo>> ConstructorParametersByType = new();
+
+    /// <summary>
+    /// Whether a route value, as a tool writes it into the URL, sends the request to another path: empty where the route
+    /// needs a value, which leaves its segment out, or a <c>.</c> or <c>..</c> segment, which <c>System.Uri</c> removes
+    /// before the request is sent, and Kestrel when it receives one. Escaping the dots does not help: <c>System.Uri</c>
+    /// decodes <c>%2E</c> before it removes them. The path then reaches another action of the same HTTP method, one the
+    /// app keeps out of MCP included. A catch-all
+    /// value spans several segments, each of which counts; any other value has its slashes escaped, so it is one.
+    /// </summary>
+    /// <param name="routeValue">The value as it goes into the URL, escaped.</param>
+    /// <param name="isRequired">Whether the route needs the value, so an empty one changes the path too.</param>
+    public static bool ChangesThePath(string routeValue, bool isRequired)
+    {
+        if (routeValue.Length == 0)
+        {
+            return isRequired;
+        }
+
+        return routeValue.Split(PathSeparator).Any(x => x is CurrentSegment or ParentSegment);
+    }
 
     /// <summary>
     /// Formats a single route or query value with the invariant culture and ISO 8601 dates.

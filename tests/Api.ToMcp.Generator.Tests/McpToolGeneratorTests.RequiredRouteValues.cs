@@ -61,36 +61,47 @@ public partial class McpToolGeneratorTests
     }
 
     [Fact]
-    public void Generator_RefusesAnEmptyRequiredRouteValue_BeforeTheToolCallsTheApi()
+    public void Generator_RefusesARequiredRouteValueThatChangesThePath_BeforeTheToolCallsTheApi()
     {
         var tool = GenerateCompilingSimpleTypeTool("[HttpDelete(\"{id}\")] public Task<string> Find(Guid? id) => Task.FromResult(string.Empty);");
 
         var lines = tool.Split('\n').Select(x => x.Trim()).ToList();
         var routeVariable = lines.FindIndex(x => x.StartsWith("var routeid = ", StringComparison.Ordinal));
-        Assert.Equal("if (routeid.Length == 0)", lines[routeVariable + 1]);
+        Assert.Equal($"if ({Formatter}.ChangesThePath(routeid, isRequired: true))", lines[routeVariable + 1]);
         Assert.Equal(
-            "return new CallToolResult { IsError = true, Content = { new TextContentBlock { Text = \"The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.\" } } };",
+            "return new CallToolResult { IsError = true, Content = { new TextContentBlock { Text = \"The argument 'id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.\" } } };",
             lines[routeVariable + 2]);
         Assert.True(routeVariable + 2 < lines.FindIndex(x => x.Contains("invoker.DeleteAsync(")), "The tool checks the route value only after it calls the API.");
     }
 
     [Fact]
-    public void Generator_NamesThePropertyThatFillsARequiredRouteValue_WhenItIsEmpty()
+    public void Generator_NamesThePropertyThatFillsARequiredRouteValue_WhenItChangesThePath()
     {
         var tool = GenerateCompilingSimpleTypeTool("[HttpGet(\"{id}\")] public Task<string> Find(AttributedQuery? q) => Task.FromResult(string.Empty);");
 
-        Assert.Contains("if (routeq_Id.Length == 0)", tool);
-        Assert.Contains("Text = \"The argument 'q.Id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.\"", tool);
+        Assert.Contains($"if ({Formatter}.ChangesThePath(routeq_Id, isRequired: true))", tool);
+        Assert.Contains("Text = \"The argument 'q.Id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.\"", tool);
     }
 
     [Theory]
-    [InlineData("[HttpGet(\"{id?}\")]", "int? id")]
-    [InlineData("[HttpGet(\"{id=5}\")]", "int? id")]
-    [InlineData("[HttpGet(\"{*path}\")]", "string? path")]
-    [InlineData("[HttpGet]", "int? count")]
-    public void Generator_LetsAnOptionalRouteValueACatchAllAndAQueryValue_BeEmpty(string httpAttribute, string parameters)
+    [InlineData("[HttpGet(\"{id?}\")]", "int? id", "routeid", "which cannot be '.' or '..'.")]
+    [InlineData("[HttpGet(\"{id=5}\")]", "int? id", "routeid", "which cannot be '.' or '..'.")]
+    [InlineData("[HttpGet(\"{name}.{ext?}\")]", "string name, string? ext = null", "routeext", "which cannot be '.' or '..'.")]
+    [InlineData("[HttpGet(\"{*path}\")]", "string? path", "routepath", "which cannot have a '.' or '..' segment.")]
+    [InlineData("[HttpGet(\"{**path}\")]", "string? path", "routepath", "which cannot have a '.' or '..' segment.")]
+    public void Generator_LetsAnOptionalRouteValueBeEmpty_ButNotChangeThePath(string httpAttribute, string parameters, string routeVariable, string expectedRefusal)
     {
+        // A dot value is no segment at all: System.Uri removes it, and with .. the segment before it, from the URL.
         var tool = GenerateCompilingSimpleTypeTool($"{httpAttribute} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"if ({Formatter}.ChangesThePath({routeVariable}, isRequired: false))", tool);
+        Assert.Contains(expectedRefusal + "\" } } };", tool);
+    }
+
+    [Fact]
+    public void Generator_ChecksNoQueryValue()
+    {
+        var tool = GenerateCompilingSimpleTypeTool("[HttpGet] public Task<string> Find(int? count, string? name) => Task.FromResult(string.Empty);");
 
         Assert.DoesNotContain("IsError", tool);
     }
@@ -106,8 +117,8 @@ public partial class McpToolGeneratorTests
         var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_DeleteItemsByIdTool");
 
         Assert.Contains(" System.Guid? id,", tool);
-        Assert.Contains("if (routeid.Length == 0)", tool);
-        Assert.Contains("Text = \"The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.\"", tool);
+        Assert.Contains($"if ({Formatter}.ChangesThePath(routeid, isRequired: true))", tool);
+        Assert.Contains("Text = \"The argument 'id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.\"", tool);
     }
 
     [Fact]
@@ -118,6 +129,6 @@ public partial class McpToolGeneratorTests
         var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetItemsByIdTool");
 
         Assert.Contains(" int? id = null,", tool);
-        Assert.DoesNotContain("IsError", tool);
+        Assert.Contains($"if ({Formatter}.ChangesThePath(routeid, isRequired: false))", tool);
     }
 }

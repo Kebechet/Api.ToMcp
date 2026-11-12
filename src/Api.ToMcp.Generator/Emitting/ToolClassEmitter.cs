@@ -87,7 +87,7 @@ namespace Api.ToMcp.Generator.Emitting
                 .Where(p => p.Source != ParameterSourceModel.Services)
                 .ToList();
             var routeValues = ResolveRouteValues(action, parameters);
-            var routeParameters = new HashSet<ParameterInfoModel>(routeValues.RequiredArguments.Values.Select(x => x.Parameter));
+            var routeParameters = new HashSet<ParameterInfoModel>(routeValues.Arguments.Values.Where(x => x.IsRequired).Select(x => x.Parameter));
 
             // The MCP server injects the request's CancellationToken into any tool method that
             // declares one (bound by type, so it is not surfaced as a tool input parameter).
@@ -160,13 +160,12 @@ namespace Api.ToMcp.Generator.Emitting
                 var keptSlashes = part.IsCatchAll ? ".Replace(\"%2F\", \"/\")" : "";
                 sb.AppendLine($"            var {routeVariable} = {names.SystemNamespace}.Uri.EscapeDataString({RequestValueFormatter}.Format({source.Expression})){keptSlashes};");
 
-                // A required argument can still be sent as null or an empty string, which would request another URL.
-                if (routeValues.RequiredArguments.TryGetValue(part.Text, out var argument))
-                {
-                    var message = $"The argument '{argument.Name}' needs a value: it fills the route value {{{part.Text}}} of the API's URL, which cannot be empty.";
-                    sb.AppendLine($"            if ({routeVariable}.Length == 0)");
-                    sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
-                }
+                // Whatever the schema says, a client can send a value that sends the request to another path, one another
+                // action of the same HTTP method may serve.
+                var argument = routeValues.Arguments[part.Text];
+                var message = FormatRouteValueRefusal(part, argument.Name, argument.IsRequired);
+                sb.AppendLine($"            if ({RequestValueFormatter}.ChangesThePath({routeVariable}, isRequired: {FormatBool(argument.IsRequired)}))");
+                sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
             }
 
             sb.AppendLine($"            var {names.Route} = {FormatRouteString(routeValues.Parts, routeVariables)};");
@@ -324,17 +323,36 @@ namespace Api.ToMcp.Generator.Emitting
 
             // A URL without a value the template requires matches another route, possibly another action's of the same
             // HTTP method: DELETE api/items/ instead of DELETE api/items/{id}.
-            var requiredArguments = placeholderArguments
-                .Where(x => template.Parts.Any(part => part.IsParameter && !part.IsOptional && string.Equals(part.Text, x.Key, StringComparison.OrdinalIgnoreCase)))
-                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+            var arguments = placeholderArguments.ToDictionary(
+                x => x.Key,
+                x => (x.Value.Parameter, x.Value.Name, IsRequired: template.Parts.Any(part =>
+                    part.IsParameter && !part.IsOptional && string.Equals(part.Text, x.Key, StringComparison.OrdinalIgnoreCase))),
+                StringComparer.OrdinalIgnoreCase);
 
             return new RouteValues(
                 template,
                 parts,
                 placeholderSources,
                 routeProperties,
-                requiredArguments,
+                arguments,
                 parts.FirstOrDefault(x => x.IsParameter && !placeholderSources.ContainsKey(x.Text))?.Text);
+        }
+
+        /// <summary>
+        /// The error a tool returns instead of a URL whose path a route value would change, as
+        /// <c>McpRequestValueFormatter.ChangesThePath</c> tells.
+        /// </summary>
+        private static string FormatRouteValueRefusal(RouteTemplatePart part, string argumentName, bool isRequired)
+        {
+            var refusedValues = (isRequired, part.IsCatchAll) switch
+            {
+                (true, false) => "be empty, '.' or '..'",
+                (true, true) => "be empty or have a '.' or '..' segment",
+                (false, false) => "be '.' or '..'",
+                (false, true) => "have a '.' or '..' segment"
+            };
+
+            return $"The argument '{argumentName}' fills the route value {{{part.Text}}} of the API's URL, which cannot {refusedValues}.";
         }
 
         /// <summary>
@@ -758,14 +776,14 @@ namespace Api.ToMcp.Generator.Emitting
                 IReadOnlyList<RouteTemplatePart> parts,
                 Dictionary<string, (string Expression, string VariableName)> sources,
                 HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties,
-                Dictionary<string, (ParameterInfoModel Parameter, string Name)> requiredArguments,
+                Dictionary<string, (ParameterInfoModel Parameter, string Name, bool IsRequired)> arguments,
                 string? unfilledName)
             {
                 Template = template;
                 Parts = parts;
                 Sources = sources;
                 RouteProperties = routeProperties;
-                RequiredArguments = requiredArguments;
+                Arguments = arguments;
                 UnfilledName = unfilledName;
             }
 
@@ -781,10 +799,10 @@ namespace Api.ToMcp.Generator.Emitting
             public HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> RouteProperties { get; }
 
             /// <summary>
-            /// What fills each route value the template requires, by the value's name: the parameter, which the tool
-            /// declares without a default, and the argument's name, <c>id</c> or for a property <c>q.Id</c>.
+            /// What fills each route value, by the value's name: the parameter, the argument's name, <c>id</c> or for a
+            /// property <c>q.Id</c>, and whether the URL needs the value, so the tool declares the parameter without a default.
             /// </summary>
-            public Dictionary<string, (ParameterInfoModel Parameter, string Name)> RequiredArguments { get; }
+            public Dictionary<string, (ParameterInfoModel Parameter, string Name, bool IsRequired)> Arguments { get; }
 
             public string? UnfilledName { get; }
         }

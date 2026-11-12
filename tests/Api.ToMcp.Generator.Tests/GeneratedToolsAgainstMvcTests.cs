@@ -213,6 +213,20 @@ namespace TestApi
 
         [HttpGet(""d/{id}/x"")]
         public object Find(int? id) => new { id };
+
+        // With .. the URL reaches DeleteAll, as System.Uri removes a dot segment with the one before it.
+        [HttpDelete(""named/{name}"")]
+        public object DeleteNamed(string name) => new { deleted = name };
+
+        [HttpGet(""files/{**path}"")]
+        public object GetFile(string? path) => new { path };
+
+        [HttpGet(""labels/{label?}"")]
+        public object GetLabel(string? label) => new { label };
+
+        [HttpGet(""secret"")]
+        [Api.ToMcp.Abstractions.McpIgnore]
+        public object Secret() => new { secret = true };
     }
 
     [Route(""plain"")]
@@ -478,6 +492,11 @@ namespace TestApi
     [InlineData("ItemsController_GetTool", @"{""id"":""" + OrderGuid + @"""}", @"{""id"":""" + OrderGuid + @"""}")]
     [InlineData("ItemsController_DeleteTool", @"{""id"":""" + OrderGuid + @"""}", @"{""deleted"":""" + OrderGuid + @"""}")]
     [InlineData("ItemsController_FindTool", @"{""id"":7}", @"{""id"":7}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""a.b""}", @"{""deleted"":""a.b""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""...""}", @"{""deleted"":""...""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""..a/b..""}", @"{""path"":""..a/b..""}")]
+    [InlineData("ItemsController_GetFileTool", @"{}", @"{""path"":null}")]
+    [InlineData("ItemsController_GetLabelTool", @"{}", @"{""label"":null}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
@@ -518,8 +537,19 @@ namespace TestApi
     [InlineData("ItemsController_GetTool", @"{""id"":null}")]
     [InlineData("ItemsController_FindTool", @"{""id"":null}")]
     [InlineData("EchoController_GetFileNameTool", @"{""name"":""""}")]
-    public async Task Tool_RefusesACallThatSendsNullOrEmptyForARequiredRouteValue_WithoutCallingTheApi(string toolClassName, string arguments)
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":"".""}")]
+    [InlineData("ItemsController_DeleteNamedTool", @"{""name"":""..""}")]
+    [InlineData("EchoController_GetFileNameTool", @"{""name"":"".""}")]
+    [InlineData("EchoController_GetOptionalFileNameTool", @"{""name"":""report"",""ext"":"".""}")]
+    [InlineData("ItemsController_GetLabelTool", @"{""label"":""..""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""../secret""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""a/./b""}")]
+    [InlineData("ItemsController_GetFileTool", @"{""path"":""..""}")]
+    public async Task Tool_RefusesARouteValueThatChangesThePath_WithoutCallingTheApi(string toolClassName, string arguments)
     {
+        // DELETE api/items/named/.. is DELETE api/items/, DeleteAll's URL, and files/../secret reaches Secret, both kept
+        // out of MCP.
         var requestCount = _host.RequestCount;
 
         var result = await _host.CallToolAsync(toolClassName, arguments);
@@ -534,7 +564,7 @@ namespace TestApi
         var result = await _host.CallToolAsync("ItemsController_DeleteTool", @"{""id"":null}");
 
         Assert.True(result.IsError);
-        Assert.Equal("The argument 'id' needs a value: it fills the route value {id} of the API's URL, which cannot be empty.", GetText(result));
+        Assert.Equal("The argument 'id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.", GetText(result));
     }
 
     [Theory]
