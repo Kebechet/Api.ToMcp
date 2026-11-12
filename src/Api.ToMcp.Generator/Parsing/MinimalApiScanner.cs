@@ -31,7 +31,8 @@ namespace Api.ToMcp.Generator.Parsing
         public string HttpMethod { get; init; } = "";
 
         /// <summary>
-        /// Every HTTP method the endpoint is mapped for, which decides whether a Minimal API infers a body.
+        /// Every HTTP method the endpoint is mapped for, as the call writes it, which decides whether a Minimal API infers a
+        /// body: it compares them with <c>GET</c>, <c>DELETE</c> and the others case and all.
         /// </summary>
         public IReadOnlyList<string> HttpMethods { get; init; } = Array.Empty<string>();
 
@@ -100,7 +101,12 @@ namespace Api.ToMcp.Generator.Parsing
             var (httpMethods, httpMethodsProblem) = mapMethod.Name == MinimalApiNames.MapMethods
                 ? ReadHttpMethods(RouteGroupResolver.GetArgument(operation, MinimalApiNames.HttpMethodsParameter))
                 : (new List<string> { HttpMethodByMapMethod[mapMethod.Name]! }, null);
-            var toolHttpMethods = httpMethods.Where(ActionMethodAnalyzer.IsToolHttpMethod).Distinct(StringComparer.Ordinal).ToList();
+            // Routing matches a request's method to these ignoring case, so the tool sends the method upper-cased.
+            var toolHttpMethods = httpMethods
+                .Select(x => x.ToUpperInvariant())
+                .Where(ActionMethodAnalyzer.IsToolHttpMethod)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
             if (httpMethodsProblem is null && toolHttpMethods.Count == 0)
             {
                 return null;
@@ -177,7 +183,7 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The HTTP methods <c>MapMethods</c> is given as an array or a collection written in the call, of constants or of
-        /// <c>HttpMethods</c>' fields, upper-cased as routing compares them; a problem for anything else.
+        /// <c>HttpMethods</c>' fields, as written; a problem for anything else.
         /// </summary>
         private static (List<string> HttpMethods, string? Problem) ReadHttpMethods(IOperation? value)
         {
@@ -198,7 +204,7 @@ namespace Api.ToMcp.Generator.Parsing
                     return (new List<string>(), problem);
                 }
 
-                httpMethods.Add(httpMethod.ToUpperInvariant());
+                httpMethods.Add(httpMethod);
             }
 
             return (httpMethods, null);
@@ -215,7 +221,7 @@ namespace Api.ToMcp.Generator.Parsing
             // HttpMethods.Get and the others are static readonly fields, each holding its name in capitals.
             var field = semanticModel.GetSymbolInfo(element).Symbol as IFieldSymbol;
             return field is not null && field.IsStatic && field.ContainingType.ToDisplayString() == MinimalApiNames.HttpMethods
-                ? field.Name
+                ? field.Name.ToUpperInvariant()
                 : null;
         }
 

@@ -626,6 +626,23 @@ namespace TestApi
         AssertCompiles(source, MinimalApisConfig);
     }
 
+    [Fact]
+    public void MapMethods_WithLowerCaseHttpMethods_InfersABody_AsAspNetCoreDoes()
+    {
+        // ASP.NET Core compares the methods with "GET" and the others case and all to decide that it infers no body, so
+        // an endpoint mapped for "get" still reads Order from the body.
+        var source = MinimalApi(@"
+            app.MapMethods(""/y"", new[] { ""post"", ""get"" }, (Order order) => 1).WithName(""Y"");
+            app.MapMethods(""/z"", new[] { ""POST"", ""GET"" }, (Order order) => 1).WithName(""Z"");");
+
+        var generated = RunGenerator(source, MinimalApisConfig);
+
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(order);", GetToolClass(generated, "Endpoints_YTool"));
+        Assert.Contains("await invoker.PostAsync(route, bodyJson, cancellationToken)", GetToolClass(generated, "Endpoints_YTool"));
+        Assert.Contains("await invoker.PostAsync(route, null, cancellationToken)", GetToolClass(generated, "Endpoints_ZTool"));
+        AssertCompiles(source, MinimalApisConfig);
+    }
+
     [Theory]
     [InlineData(@"(int id, string? name, OrderStatus status = OrderStatus.Open) => 1", "GET", @"var route = $""/orders/{routeid}"";|AddQueryValue(queryParts, ""name"", name);|AddQueryValue(queryParts, ""status"", status == global::TestApi.OrderStatus.Open ? null : status);")]
     [InlineData(@"([FromQuery(Name = ""q"")] string query, [FromRoute] int id) => 1", "GET", @"AddQueryValue(queryParts, ""q"", query);|var route = $""/orders/{routeid}"";")]

@@ -207,6 +207,7 @@ namespace Api.ToMcp.Generator.Parsing
                 SourceLocation = SourceLocationModel.From(endpoint.Location),
                 IsMinimalApiEndpoint = true,
                 OtherHttpMethods = endpoint.HttpMethods
+                    .Select(x => x.ToUpperInvariant())
                     .Where(x => IsToolHttpMethod(x) && x != endpoint.HttpMethod)
                     .Distinct(StringComparer.Ordinal)
                     .ToImmutableArray()
