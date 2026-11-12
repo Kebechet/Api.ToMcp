@@ -44,6 +44,24 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
+        /// Whether a Minimal API reads a value of <paramref name="type"/> from one string, as a route or query value. It
+        /// asks only <c>ParameterBindingMethodCache</c>, which finds a <c>TryParse</c>, reads enums and creates a
+        /// <c>Uri</c>, and never a type converter.
+        /// </summary>
+        public static bool IsParsable(ITypeSymbol type)
+        {
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+            {
+                type = ((INamedTypeSymbol)type).TypeArguments[0];
+            }
+
+            return type.TypeKind == TypeKind.Enum ||
+                type.SpecialType == SpecialType.System_String ||
+                type.WithNullableAnnotation(NullableAnnotation.None).ToDisplayString() == Uri ||
+                HasTryParse(type);
+        }
+
+        /// <summary>
         /// Whether <c>TypeDescriptor</c> gives the type a converter that reads a string: the one the first
         /// <c>[TypeConverter]</c> names in the order it merges attributes in, the type's, its base classes' and then its
         /// public interfaces', else a built-in one. An interface's converter thus applies only when no class names one,

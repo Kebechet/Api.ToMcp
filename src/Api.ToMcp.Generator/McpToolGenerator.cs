@@ -21,10 +21,7 @@ namespace Api.ToMcp.Generator
         private const string GeneratedSourceSuffix = ".g.cs";
         private const string RegistrationSourceName = "McpToolsRegistration";
 
-        /// <summary>
-        /// Separates the controller from the action in an include or exclude entry such as <c>Products.GetById</c>.
-        /// </summary>
-        private const char EntryActionSeparator = '.';
+        private const char EntryActionSeparator = ConventionNames.EntryActionSeparator;
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
@@ -45,11 +42,23 @@ namespace Api.ToMcp.Generator
                 .Select((info, _) => info!)
                 .WithTrackingName(TrackingNames.Controllers);
 
-            // Step 3: Decide which tools to generate and which diagnostics to report, from the models alone. After an edit
-            // that changes no controller and not the config, Roslyn reuses this step's output and the sources made from it.
-            var plan = controllerProvider.Collect()
+            // Step 2b: Find the Minimal API endpoints the config could select, each Map* call as the actions of the class
+            // that declares its handler. An endpoint's route can depend on the calls of the method it is in, in any file,
+            // so this step reads the whole compilation, after every edit; it looks up the Map* calls in an index of each
+            // file's invocations, which an edit builds again only for the file it changed, and analyzes only the endpoints
+            // the config could select.
+            var endpointProvider = context.CompilationProvider
                 .Combine(configProvider)
-                .Select((source, _) => CreatePlan(source.Left, source.Right))
+                .Select((source, ct) => MinimalApiScanner.GetEndpoints(source.Left, source.Right, ct))
+                .WithTrackingName(TrackingNames.Endpoints);
+
+            // Step 3: Decide which tools to generate and which diagnostics to report, from the models alone. After an edit
+            // that changes no controller, no endpoint and not the config, Roslyn reuses this step's output and the sources
+            // made from it.
+            var plan = controllerProvider.Collect()
+                .Combine(endpointProvider)
+                .Combine(configProvider)
+                .Select((source, _) => CreatePlan(source.Left.Left, source.Left.Right, source.Right))
                 .WithTrackingName(TrackingNames.Plan);
 
             // Step 4: Generate source, one output per tool, so that an edit generates only the tools it changes again.
@@ -83,12 +92,20 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// The tools to generate for the controllers' actions the config selects, and the diagnostics to report.
+        /// The tools to generate for the controllers' actions and the Minimal API endpoints the config selects, and the
+        /// diagnostics to report. The endpoints of each class become the actions of one controller-like model, so a
+        /// config entry names them as it names a controller's actions.
         /// </summary>
-        private static GenerationPlanModel CreatePlan(ImmutableArray<ControllerInfoModel> controllers, GeneratorConfigModel config)
+        private static GenerationPlanModel CreatePlan(
+            ImmutableArray<ControllerInfoModel> scannedControllers,
+            EndpointsModel endpoints,
+            GeneratorConfigModel config)
         {
+            var endpointClasses = GroupEndpointsByClass(endpoints.Classes).ToImmutableArray();
+            var controllers = scannedControllers.AddRange(endpointClasses);
+            var controllerEntryNames = GetEntryNames(scannedControllers);
             var diagnostics = new List<DiagnosticInfoModel>();
-            var selectedActions = SelectActions(controllers, config);
+            var selectedActions = SelectActions(controllers, config, controllerEntryNames);
             var entryNames = GetEntryNames(controllers);
             var unbuildableRouteDiagnostics = new List<DiagnosticInfoModel>();
             var toolActions = SkipActionsWithoutARoute(unbuildableRouteDiagnostics, selectedActions);
@@ -106,13 +123,16 @@ namespace Api.ToMcp.Generator
             }
             else if (toolActions.IsEmpty)
             {
-                ReportNoToolsGenerated(diagnostics, controllers, config, entryNames, selectedActions);
+                ReportNoToolsGenerated(diagnostics, controllers, config, entryNames, selectedActions, controllerEntryNames);
             }
 
             // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
             ReportUnmatchedEntries(diagnostics, controllers, config, entryNames);
+            ReportIncludeEntriesNamingControllerAndEndpoints(diagnostics, config, controllerEntryNames, endpointClasses);
             diagnostics.AddRange(unbuildableRouteDiagnostics);
             ReportDuplicateToolNames(diagnostics, toolActions, config);
+            ReportEndpointsWithSeveralHttpMethods(diagnostics, toolActions);
+            ReportEndpointsLeftOut(diagnostics, controllers, config, controllerEntryNames, endpoints.LeftOutCount);
 
             var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(toolActions);
             var tools = toolActions.Select((action, i) => new ToolSourceModel
@@ -159,8 +179,41 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// Leaves out each action whose route a tool cannot build, and warns about it at the action (MCP009): its tool would
-        /// not compile or would call an endpoint MVC does not serve it at.
+        /// Warns at each Minimal API endpoint that gets a tool for one of the several HTTP methods <c>MapMethods</c> maps it
+        /// for (MCP011): the others have none.
+        /// </summary>
+        private static void ReportEndpointsWithSeveralHttpMethods(List<DiagnosticInfoModel> diagnostics, ImmutableArray<ActionInfoModel> actions)
+        {
+            foreach (var action in actions.Where(x => !x.OtherHttpMethods.IsEmpty))
+            {
+                diagnostics.Add(DiagnosticInfoModel.InSource(
+                    DiagnosticDescriptors.EndpointHasSeveralHttpMethods,
+                    new[] { action.SourceLocation },
+                    action.ControllerName,
+                    action.Name,
+                    action.HttpMethod,
+                    string.Join(", ", action.OtherHttpMethods)));
+            }
+        }
+
+        /// <summary>
+        /// The Minimal API endpoints of each class that declares handlers, as one controller-like model, whichever calls
+        /// and files map them.
+        /// </summary>
+        private static IEnumerable<ControllerInfoModel> GroupEndpointsByClass(EquatableArray<ControllerInfoModel> endpointCalls)
+        {
+            return endpointCalls
+                .GroupBy(x => (x.Namespace, x.Name))
+                .Select(x => x.First() with
+                {
+                    Actions = x.SelectMany(call => call.Actions).ToImmutableArray(),
+                    ActionNames = x.SelectMany(call => call.ActionNames).Distinct(StringComparer.Ordinal).ToImmutableArray()
+                });
+        }
+
+        /// <summary>
+        /// Leaves out each action whose route a tool cannot build, and warns about it at the action (MCP009), or at the
+        /// Minimal API endpoint (MCP010): its tool would not compile or would call an endpoint the app does not serve it at.
         /// </summary>
         private static ImmutableArray<ActionInfoModel> SkipActionsWithoutARoute(
             List<DiagnosticInfoModel> diagnostics,
@@ -177,7 +230,7 @@ namespace Api.ToMcp.Generator
                 }
 
                 diagnostics.Add(DiagnosticInfoModel.InSource(
-                    DiagnosticDescriptors.UnbuildableRoute,
+                    action.IsMinimalApiEndpoint ? DiagnosticDescriptors.UnbuildableEndpoint : DiagnosticDescriptors.UnbuildableRoute,
                     new[] { action.SourceLocation },
                     action.ControllerName,
                     action.Name,
@@ -189,7 +242,8 @@ namespace Api.ToMcp.Generator
 
         private static ImmutableArray<ActionInfoModel> SelectActions(
             ImmutableArray<ControllerInfoModel> controllers,
-            GeneratorConfigModel config)
+            GeneratorConfigModel config,
+            HashSet<string> controllerEntryNames)
         {
             var result = ImmutableArray.CreateBuilder<ActionInfoModel>();
 
@@ -197,7 +251,7 @@ namespace Api.ToMcp.Generator
             {
                 foreach (var action in controller.Actions)
                 {
-                    if (ShouldInclude(controller, action, config))
+                    if (ShouldInclude(controller, action, config, controllerEntryNames))
                     {
                         result.Add(action);
                     }
@@ -210,7 +264,8 @@ namespace Api.ToMcp.Generator
         private static bool ShouldInclude(
             ControllerInfoModel controller,
             ActionInfoModel action,
-            GeneratorConfigModel config)
+            GeneratorConfigModel config,
+            HashSet<string> controllerEntryNames)
         {
             if (!IsSelectable(controller, action))
                 return false;
@@ -225,14 +280,115 @@ namespace Api.ToMcp.Generator
             switch (config.Mode)
             {
                 case SelectionModeModel.SelectedOnly:
-                    return names.Any(config.Include.Contains);
+                    return IsIncluded(controller, action, config, controllerEntryNames);
 
                 case SelectionModeModel.AllExceptExcluded:
+                    // Without the opt-in, the mode selects a Minimal API endpoint only as an include entry names it, so
+                    // updating the package exposes no endpoint the project did not choose.
+                    if (action.IsMinimalApiEndpoint && config.MinimalApis != true)
+                        return IsIncluded(controller, action, config, controllerEntryNames) && !names.Any(config.Exclude.Contains);
+
                     return !names.Any(config.Exclude.Contains);
 
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Whether the project chose to give the action a tool, which only then counts for MCP006: an action of a
+        /// controller always, a Minimal API endpoint when generator.json opts in to them, an include entry names it or
+        /// <c>[McpExpose]</c> marks it. Until a project does, its endpoints change nothing it is warned about.
+        /// </summary>
+        private static bool IsOptedIn(ControllerInfoModel controller, ActionInfoModel action, GeneratorConfigModel config, HashSet<string> controllerEntryNames)
+        {
+            return !action.IsMinimalApiEndpoint ||
+                config.MinimalApis == true ||
+                action.HasMcpExposeAttribute ||
+                controller.HasMcpExposeAttribute ||
+                IsIncluded(controller, action, config, controllerEntryNames);
+        }
+
+        /// <summary>
+        /// Whether an include entry names the action. An entry that names a controller or one of its actions names no
+        /// Minimal API endpoint, though a class of the same name declares its handler: such an entry meant the controller
+        /// before endpoints became tools, and must not expose them.
+        /// </summary>
+        private static bool IsIncluded(ControllerInfoModel controller, ActionInfoModel action, GeneratorConfigModel config, HashSet<string> controllerEntryNames)
+        {
+            return GetEntryNames(controller, action).Any(x =>
+                config.Include.Contains(x) && !(action.IsMinimalApiEndpoint && controllerEntryNames.Contains(x)));
+        }
+
+        /// <summary>
+        /// Tells at each include entry that names a controller, or one of its actions, and also a class that declares
+        /// Minimal API endpoints, that it selects only the controller's (MCP013). An info: the entry selects what it did
+        /// before endpoints became tools.
+        /// </summary>
+        private static void ReportIncludeEntriesNamingControllerAndEndpoints(
+            List<DiagnosticInfoModel> diagnostics,
+            GeneratorConfigModel config,
+            HashSet<string> controllerEntryNames,
+            ImmutableArray<ControllerInfoModel> endpointClasses)
+        {
+            for (var i = 0; i < config.Include.Length; i++)
+            {
+                var entry = config.Include[i];
+                if (entry == null || !controllerEntryNames.Contains(entry))
+                    continue;
+
+                var endpointClass = endpointClasses.FirstOrDefault(x => GetEntryNames(x).Concat(x.ActionNames.SelectMany(action => GetEntryNames(x, action))).Contains(entry));
+                if (endpointClass == null)
+                    continue;
+
+                var example = endpointClass.ActionNames
+                    .SelectMany(action => GetEntryNames(endpointClass, action))
+                    .FirstOrDefault(x => x.IndexOf(EntryActionSeparator) >= 0 && !controllerEntryNames.Contains(x));
+                var advice = example == null
+                    ? "mark its endpoints [McpExpose] to select them as well"
+                    : $"to select an endpoint as well, name it by an entry no controller has, such as '{example}', or mark it [McpExpose]";
+
+                diagnostics.Add(DiagnosticInfoModel.InFile(
+                    DiagnosticDescriptors.IncludeEntryNamesControllerAndEndpoints,
+                    config.FilePath,
+                    i < config.IncludeSpans.Length ? config.IncludeSpans[i] : default,
+                    entry,
+                    endpointClass.Name,
+                    advice));
+            }
+        }
+
+        /// <summary>
+        /// Tells a project in AllExceptExcluded mode whose generator.json does not say whether to select Minimal API
+        /// endpoints how many of them the mode leaves out (MCP012). An info, as nothing is wrong: the project has to opt in.
+        /// </summary>
+        /// <param name="unanalyzedCount">The endpoints the generator did not analyze, as nothing could select them.</param>
+        private static void ReportEndpointsLeftOut(
+            List<DiagnosticInfoModel> diagnostics,
+            ImmutableArray<ControllerInfoModel> controllers,
+            GeneratorConfigModel config,
+            HashSet<string> controllerEntryNames,
+            int unanalyzedCount)
+        {
+            if (config.Mode != SelectionModeModel.AllExceptExcluded || config.MinimalApis is not null)
+                return;
+
+            var leftOutCount = controllers
+                .SelectMany(controller => controller.Actions.Where(action =>
+                    action.IsMinimalApiEndpoint &&
+                    IsSelectable(controller, action) &&
+                    !IsOptedIn(controller, action, config, controllerEntryNames) &&
+                    !GetEntryNames(controller, action).Any(config.Exclude.Contains)))
+                .Count() + unanalyzedCount;
+            if (leftOutCount == 0)
+                return;
+
+            diagnostics.Add(DiagnosticInfoModel.InFile(
+                DiagnosticDescriptors.EndpointsLeftOut,
+                config.FilePath,
+                default,
+                leftOutCount,
+                leftOutCount == 1 ? "endpoint" : "endpoints"));
         }
 
         /// <summary>
@@ -308,17 +464,19 @@ namespace Api.ToMcp.Generator
             ImmutableArray<ControllerInfoModel> controllers,
             GeneratorConfigModel config,
             HashSet<string> entryNames,
-            ImmutableArray<ActionInfoModel> selectedActions)
+            ImmutableArray<ActionInfoModel> selectedActions,
+            HashSet<string> controllerEntryNames)
         {
             // The example is an action that becomes a tool if the project has one.
             var example = controllers
                 .SelectMany(controller => controller.Actions
-                    .Where(action => IsSelectable(controller, action))
+                    .Where(action => IsSelectable(controller, action) && IsOptedIn(controller, action, config, controllerEntryNames))
                     .Select(action => new
                     {
                         Controller = controller.Name,
                         Action = $"{controller.Name}.{action.Name}",
-                        HasRoute = ToolClassEmitter.GetUnbuildableRouteReason(action) is null
+                        HasRoute = ToolClassEmitter.GetUnbuildableRouteReason(action) is null,
+                        action.IsMinimalApiEndpoint
                     }))
                 .OrderBy(x => x.HasRoute ? 0 : 1)
                 .FirstOrDefault();
@@ -326,33 +484,37 @@ namespace Api.ToMcp.Generator
             if (example == null)
                 return;
 
+            var examples = example.IsMinimalApiEndpoint
+                ? $"classes such as '{example.Controller}' or endpoints such as '{example.Action}'"
+                : $"controllers such as '{example.Controller}' or actions such as '{example.Action}'";
+
             var selection = selectedActions.IsEmpty
                 ? $"{config.Mode} mode selects none of the project's HTTP actions"
-                : $"{config.Mode} mode selects only HTTP actions whose route the generator cannot build";
+                : selectedActions.All(x => x.IsMinimalApiEndpoint)
+                    ? $"{config.Mode} mode selects only Minimal API endpoints the generator cannot give a tool"
+                    : $"{config.Mode} mode selects only HTTP actions whose route the generator cannot build";
 
             diagnostics.Add(DiagnosticInfoModel.InFile(
                 DiagnosticDescriptors.NoToolsGenerated,
                 config.FilePath,
                 default,
                 selection,
-                GetNoToolsAdvice(config, controllers, entryNames, selectedActions, example.Controller, example.Action)));
+                GetNoToolsAdvice(config, controllers, entryNames, selectedActions, examples)));
         }
 
         /// <summary>
         /// What made the config select nothing and how to fix it, naming one of the project's own actions as the example.
         /// </summary>
+        /// <param name="examples">The entries to suggest, such as "controllers such as 'X' or actions such as 'X.Y'".</param>
         private static string GetNoToolsAdvice(
             GeneratorConfigModel config,
             ImmutableArray<ControllerInfoModel> controllers,
             HashSet<string> entryNames,
             ImmutableArray<ActionInfoModel> selectedActions,
-            string exampleController,
-            string exampleAction)
+            string examples)
         {
-            var examples = $"controllers such as '{exampleController}' or actions such as '{exampleAction}'";
-
             if (!selectedActions.IsEmpty && (config.FilePath == null || config.Mode != SelectionModeModel.SelectedOnly || config.Include.IsEmpty))
-                return GetUnbuildableRoutesAdvice(config, examples);
+                return GetUnbuildableRoutesAdvice(config, examples, selectedActions);
 
             if (config.FilePath == null)
                 return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create Mcp/generator.json and list {examples} in its include";
@@ -381,7 +543,9 @@ namespace Api.ToMcp.Generator
                 reasons.Add($"{QuoteAll(unmatched)} {(unmatched.Count == 1 ? "names" : "name")} no controller or action of the project, as {DiagnosticDescriptors.UnmatchedConfigEntry.Id} reports");
 
             if (selectingUnbuildable.Count > 0)
-                reasons.Add($"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route the generator cannot build, as {DiagnosticDescriptors.UnbuildableRoute.Id} reports");
+                reasons.Add(selectedActions.All(x => x.IsMinimalApiEndpoint)
+                    ? $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only endpoints the generator cannot give a tool, as {DiagnosticDescriptors.UnbuildableEndpoint.Id} reports"
+                    : $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route the generator cannot build, as {GetUnbuildableIds(selectedActions)} {(selectedActions.All(x => !x.IsMinimalApiEndpoint) ? "reports" : "report")}");
 
             var why = reasons.Count == 0 ? "" : $": {string.Join(", and ", reasons)}";
             var selected = selectedActions.IsEmpty ? "an action" : "an action that becomes a tool";
@@ -389,20 +553,41 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// The advice when the config selects actions, by its mode or by [McpExpose], but MCP009 leaves each without a tool:
-        /// MCP009 says why at each, so this only points there and at what else to select.
+        /// The advice when the config selects actions, by its mode or by [McpExpose], but MCP009 or, for Minimal API
+        /// endpoints, MCP010 leaves each without a tool: they say why at each, so this only points there and at what else
+        /// to select.
         /// </summary>
-        private static string GetUnbuildableRoutesAdvice(GeneratorConfigModel config, string examples)
+        private static string GetUnbuildableRoutesAdvice(GeneratorConfigModel config, string examples, ImmutableArray<ActionInfoModel> selectedActions)
         {
-            var pointer = $"{DiagnosticDescriptors.UnbuildableRoute.Id} says at each of them why";
+            var ids = GetUnbuildableIds(selectedActions);
+            var pointer = selectedActions.All(x => !x.IsMinimalApiEndpoint) || selectedActions.All(x => x.IsMinimalApiEndpoint)
+                ? $"{ids} says at each of them why"
+                : $"{ids} say at each of them why";
 
             if (config.FilePath == null)
                 return $"{pointer}. Create Mcp/generator.json and list {examples} in its include";
+
+            if (selectedActions.All(x => x.IsMinimalApiEndpoint))
+                return $"{pointer} and what to change, or select other endpoints or actions: in generator.json, or with [McpExpose]";
 
             if (config.Mode == SelectionModeModel.AllExceptExcluded)
                 return $"{pointer}. Remove entries from the exclude list in generator.json, or mark actions with [McpExpose]";
 
             return $"{pointer}. Add {examples} to the include list in generator.json, or mark other actions with [McpExpose]";
+        }
+
+        /// <summary>
+        /// The warnings that leave the actions without a tool: MCP009 for an action of a controller, MCP010 for a Minimal
+        /// API endpoint.
+        /// </summary>
+        private static string GetUnbuildableIds(ImmutableArray<ActionInfoModel> actions)
+        {
+            var hasEndpoints = actions.Any(x => x.IsMinimalApiEndpoint);
+            var hasControllerActions = actions.Any(x => !x.IsMinimalApiEndpoint);
+
+            return hasEndpoints && hasControllerActions
+                ? $"{DiagnosticDescriptors.UnbuildableRoute.Id} and {DiagnosticDescriptors.UnbuildableEndpoint.Id}"
+                : hasEndpoints ? DiagnosticDescriptors.UnbuildableEndpoint.Id : DiagnosticDescriptors.UnbuildableRoute.Id;
         }
 
         /// <summary>

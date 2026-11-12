@@ -41,7 +41,10 @@ namespace Api.ToMcp.Generator.Emitting
         private static string Emit(ActionInfoModel action, NamingConfigModel naming, bool structuredOutput, string className)
         {
             var toolName = FormatToolName(action, naming);
-            var description = action.CustomDescription ?? action.XmlDocSummary ?? $"Invokes {action.ControllerName}.{action.Name}";
+            var fallbackDescription = action.IsMinimalApiEndpoint
+                ? $"Invokes {action.HttpMethod} {action.RouteTemplate}"
+                : $"Invokes {action.ControllerName}.{action.Name}";
+            var description = action.CustomDescription ?? action.EndpointDescription ?? action.XmlDocSummary ?? fallbackDescription;
 
             var sb = new StringBuilder();
 
@@ -59,7 +62,9 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("namespace Api.ToMcp.Generated");
             sb.AppendLine("{");
             sb.AppendLine("    [McpServerToolType]");
-            sb.AppendLine($"    public static class {className}");
+            sb.AppendLine(action.HasNonPublicParameterTypes
+                ? $"    internal static class {className}"
+                : $"    public static class {className}");
             sb.AppendLine("    {");
 
             EmitToolMethod(sb, action, toolName, description, hasOutputSchema: structuredOutput && action.OutputSchemaType != null);

@@ -62,6 +62,7 @@ namespace Api.ToMcp.Generator.Parsing
                         RemoveControllerSuffix = dto.Naming?.RemoveControllerSuffix ?? true
                     },
                     StructuredOutput = dto.StructuredOutput ?? true,
+                    MinimalApis = dto.MinimalApis,
                     Error = mode == null
                         ? new ConfigErrorModel
                         {
@@ -226,6 +227,7 @@ namespace Api.ToMcp.Generator.Parsing
             public List<string>? Exclude { get; set; }
             public NamingDto? Naming { get; set; }
             public bool? StructuredOutput { get; set; }
+            public bool? MinimalApis { get; set; }
         }
 
         private sealed class NamingDto

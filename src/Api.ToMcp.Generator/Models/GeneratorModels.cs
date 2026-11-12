@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 
 namespace Api.ToMcp.Generator.Models
@@ -29,6 +30,14 @@ namespace Api.ToMcp.Generator.Models
 
         public NamingConfigModel Naming { get; init; } = new NamingConfigModel();
         public bool StructuredOutput { get; init; } = true;
+
+        /// <summary>
+        /// Whether <see cref="SelectionModeModel.AllExceptExcluded"/> mode selects Minimal API endpoints as it selects
+        /// actions, or null when the file does not say, which means it does not. Off by default, so updating the package
+        /// exposes no endpoint the project did not choose; an include entry or <c>[McpExpose]</c> selects one whatever it
+        /// says.
+        /// </summary>
+        public bool? MinimalApis { get; init; }
 
         /// <summary>
         /// The generator.json this config was read from, or null for the default config of a project without one.
@@ -118,6 +127,13 @@ namespace Api.ToMcp.Generator.Models
         public string? RouteProblem { get; init; }
 
         public EquatableArray<ParameterInfoModel> Parameters { get; init; } = EquatableArray<ParameterInfoModel>.Empty;
+
+        /// <summary>
+        /// Whether a parameter's type is not public, which only a Minimal API handler can take: its tool is then an
+        /// internal class, as a public tool method could not name the type.
+        /// </summary>
+        public bool HasNonPublicParameterTypes { get; init; }
+
         public ReturnTypeInfoModel ReturnType { get; init; } = new ReturnTypeInfoModel();
         public bool HasMcpExposeAttribute { get; init; }
         public bool HasMcpIgnoreAttribute { get; init; }
@@ -155,11 +171,60 @@ namespace Api.ToMcp.Generator.Models
 
         /// <summary>
         /// Where the action is declared in source, which an inherited action shares with every controller that inherits
-        /// it; for an action declared in a referenced assembly, the controller's name.
+        /// it; for an action declared in a referenced assembly, the controller's name. For a Minimal API endpoint, the
+        /// <c>Map*</c> call that maps it.
         /// </summary>
         public SourceLocationModel? SourceLocation { get; init; }
 
-        public string ToolClassName => $"{ControllerName}_{Name}Tool";
+        /// <summary>
+        /// Whether the action is a Minimal API endpoint, mapped by a call such as <c>app.MapGet(...)</c>, rather than an
+        /// action of a controller. <see cref="ControllerName"/> is then the class that declares its handler.
+        /// </summary>
+        public bool IsMinimalApiEndpoint { get; init; }
+
+        /// <summary>
+        /// The description a Minimal API endpoint's own metadata gives it: <c>.WithDescription</c> or
+        /// <c>[EndpointDescription]</c>, else <c>.WithSummary</c> or <c>[EndpointSummary]</c>, else <c>[Description]</c> on
+        /// its handler; null for a controller action.
+        /// </summary>
+        public string? EndpointDescription { get; init; }
+
+        /// <summary>
+        /// The other HTTP methods a tool sends that a Minimal API endpoint is mapped for, which its tool, calling it with
+        /// <see cref="HttpMethod"/>, never uses.
+        /// </summary>
+        public EquatableArray<string> OtherHttpMethods { get; init; } = EquatableArray<string>.Empty;
+
+        /// <summary>
+        /// A Minimal API endpoint's name is any string, from <c>.WithName</c>, so the characters a C# identifier cannot
+        /// hold become underscores.
+        /// </summary>
+        public string ToolClassName => $"{ToIdentifierPart(ControllerName)}_{ToIdentifierPart(Name)}Tool";
+
+        private static string ToIdentifierPart(string name)
+        {
+            var characters = name.ToCharArray();
+            for (var i = 0; i < characters.Length; i++)
+            {
+                if (!SyntaxFacts.IsIdentifierPartCharacter(characters[i]))
+                {
+                    characters[i] = '_';
+                }
+            }
+
+            return new string(characters);
+        }
+    }
+
+    /// <summary>
+    /// The Minimal API endpoints the config could select, the <c>Map*</c> calls of each class that declares handlers as one
+    /// controller-like model each, and how many endpoints the generator did not analyze, as nothing in the config or the
+    /// code selects them.
+    /// </summary>
+    internal sealed record EndpointsModel
+    {
+        public EquatableArray<ControllerInfoModel> Classes { get; init; } = EquatableArray<ControllerInfoModel>.Empty;
+        public int LeftOutCount { get; init; }
     }
 
     /// <summary>

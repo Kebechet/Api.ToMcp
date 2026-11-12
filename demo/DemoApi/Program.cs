@@ -1,5 +1,6 @@
 using System.Reflection;
 using Api.ToMcp.Runtime;
+using DemoApi.Endpoints;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +19,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseMcpLoopPrevention();
 app.MapControllers();
+app.MapGroup("/api").MapTodoEndpoints();
 app.MapMcpEndpoint("mcp");
 
 app.Run();

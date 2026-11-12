@@ -818,7 +818,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// The whole expression a name refers to a member by, with the instance before it, <c>this.Template</c> say, and the
         /// parentheses and null-forgiving operators around it.
         /// </summary>
-        private static ExpressionSyntax GetReferenceExpression(IdentifierNameSyntax name)
+        internal static ExpressionSyntax GetReferenceExpression(IdentifierNameSyntax name)
         {
             ExpressionSyntax expression = name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name ? memberAccess : name;
             while (expression.Parent is ParenthesizedExpressionSyntax ||
@@ -835,7 +835,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// included, an element of a tuple that a deconstruction assigns, a <c>ref</c> or <c>out</c> argument, a
         /// <c>ref</c> taken of it, or the operand of <c>++</c> or <c>--</c>.
         /// </summary>
-        private static bool IsWritten(ExpressionSyntax expression)
+        internal static bool IsWritten(ExpressionSyntax expression)
         {
             switch (expression.Parent)
             {

@@ -8,4 +8,9 @@ internal static class ConventionNames
 {
     public const string ConfigFileName = "generator.json";
     public const string ControllerSuffix = "Controller";
+
+    /// <summary>
+    /// Separates the controller from the action in an include or exclude entry such as <c>Products.GetById</c>.
+    /// </summary>
+    public const char EntryActionSeparator = '.';
 }
