@@ -436,7 +436,9 @@ namespace Api.ToMcp.Generator
 
             var selection = selectedActions.IsEmpty
                 ? $"{config.Mode} mode selects none of the project's HTTP actions"
-                : $"{config.Mode} mode selects only HTTP actions whose route the generator cannot build";
+                : selectedActions.All(x => x.IsMinimalApiEndpoint)
+                    ? $"{config.Mode} mode selects only Minimal API endpoints the generator cannot give a tool"
+                    : $"{config.Mode} mode selects only HTTP actions whose route the generator cannot build";
 
             diagnostics.Add(DiagnosticInfoModel.InFile(
                 DiagnosticDescriptors.NoToolsGenerated,
@@ -458,7 +460,7 @@ namespace Api.ToMcp.Generator
             string examples)
         {
             if (!selectedActions.IsEmpty && (config.FilePath == null || config.Mode != SelectionModeModel.SelectedOnly || config.Include.IsEmpty))
-                return GetUnbuildableRoutesAdvice(config, examples);
+                return GetUnbuildableRoutesAdvice(config, examples, selectedActions);
 
             if (config.FilePath == null)
                 return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create Mcp/generator.json and list {examples} in its include";
@@ -487,7 +489,9 @@ namespace Api.ToMcp.Generator
                 reasons.Add($"{QuoteAll(unmatched)} {(unmatched.Count == 1 ? "names" : "name")} no controller or action of the project, as {DiagnosticDescriptors.UnmatchedConfigEntry.Id} reports");
 
             if (selectingUnbuildable.Count > 0)
-                reasons.Add($"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route the generator cannot build, as {DiagnosticDescriptors.UnbuildableRoute.Id} reports");
+                reasons.Add(selectedActions.All(x => x.IsMinimalApiEndpoint)
+                    ? $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only endpoints the generator cannot give a tool, as {DiagnosticDescriptors.UnbuildableEndpoint.Id} reports"
+                    : $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route the generator cannot build, as {GetUnbuildableIds(selectedActions)} {(selectedActions.All(x => !x.IsMinimalApiEndpoint) ? "reports" : "report")}");
 
             var why = reasons.Count == 0 ? "" : $": {string.Join(", and ", reasons)}";
             var selected = selectedActions.IsEmpty ? "an action" : "an action that becomes a tool";
@@ -495,20 +499,41 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// The advice when the config selects actions, by its mode or by [McpExpose], but MCP009 leaves each without a tool:
-        /// MCP009 says why at each, so this only points there and at what else to select.
+        /// The advice when the config selects actions, by its mode or by [McpExpose], but MCP009 or, for Minimal API
+        /// endpoints, MCP010 leaves each without a tool: they say why at each, so this only points there and at what else
+        /// to select.
         /// </summary>
-        private static string GetUnbuildableRoutesAdvice(GeneratorConfigModel config, string examples)
+        private static string GetUnbuildableRoutesAdvice(GeneratorConfigModel config, string examples, ImmutableArray<ActionInfoModel> selectedActions)
         {
-            var pointer = $"{DiagnosticDescriptors.UnbuildableRoute.Id} says at each of them why";
+            var ids = GetUnbuildableIds(selectedActions);
+            var pointer = selectedActions.All(x => !x.IsMinimalApiEndpoint) || selectedActions.All(x => x.IsMinimalApiEndpoint)
+                ? $"{ids} says at each of them why"
+                : $"{ids} say at each of them why";
 
             if (config.FilePath == null)
                 return $"{pointer}. Create Mcp/generator.json and list {examples} in its include";
+
+            if (selectedActions.All(x => x.IsMinimalApiEndpoint))
+                return $"{pointer} and what to change, or select other endpoints or actions: in generator.json, or with [McpExpose]";
 
             if (config.Mode == SelectionModeModel.AllExceptExcluded)
                 return $"{pointer}. Remove entries from the exclude list in generator.json, or mark actions with [McpExpose]";
 
             return $"{pointer}. Add {examples} to the include list in generator.json, or mark other actions with [McpExpose]";
+        }
+
+        /// <summary>
+        /// The warnings that leave the actions without a tool: MCP009 for an action of a controller, MCP010 for a Minimal
+        /// API endpoint.
+        /// </summary>
+        private static string GetUnbuildableIds(ImmutableArray<ActionInfoModel> actions)
+        {
+            var hasEndpoints = actions.Any(x => x.IsMinimalApiEndpoint);
+            var hasControllerActions = actions.Any(x => !x.IsMinimalApiEndpoint);
+
+            return hasEndpoints && hasControllerActions
+                ? $"{DiagnosticDescriptors.UnbuildableRoute.Id} and {DiagnosticDescriptors.UnbuildableEndpoint.Id}"
+                : hasEndpoints ? DiagnosticDescriptors.UnbuildableEndpoint.Id : DiagnosticDescriptors.UnbuildableRoute.Id;
         }
 
         /// <summary>

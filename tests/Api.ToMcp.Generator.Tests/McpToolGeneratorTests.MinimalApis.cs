@@ -532,6 +532,18 @@ namespace TestApi
     }
 
     [Fact]
+    public void NoTools_WhenEverySelectedEndpointGetsMcp010_PointsAtMcp010()
+    {
+        var source = MinimalApi(@"var route = ""/x""; app.MapGet(route, () => 1);");
+
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == "MCP006");
+
+        Assert.Equal(
+            "No MCP tools are generated: AllExceptExcluded mode selects only Minimal API endpoints the generator cannot give a tool. MCP010 says at each of them why and what to change, or select other endpoints or actions: in generator.json, or with [McpExpose].",
+            warning.GetMessage());
+    }
+
+    [Fact]
     public void Endpoint_IsDescribed_ByItsMetadata_ThenItsXmlDocs()
     {
         const string source = MinimalApiUsings + @"
