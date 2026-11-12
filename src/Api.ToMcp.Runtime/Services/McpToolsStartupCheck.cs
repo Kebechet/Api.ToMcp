@@ -1,3 +1,4 @@
+using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Options;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -10,8 +11,9 @@ namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
 /// Builds every registered tool when the host starts and reports the assemblies whose XML documentation file was
-/// missing or unreadable while their schemas were built, and a transport setting under which the tools cannot reach
-/// the MCP request. The SDK otherwise builds the tools on the first MCP request, which would postpone both a tool that
+/// missing or unreadable while their schemas were built, a transport setting under which the tools cannot reach the MCP
+/// request, and OAuth sign-in discovery that lists no authorization server or names no OAuth scope for a scope the tools
+/// require. The SDK otherwise builds the tools on the first MCP request, which would postpone both a tool that
 /// cannot be created and these warnings to that request. Hosted services start before the server listens, so the
 /// warnings land in the startup log.
 /// </summary>
@@ -31,6 +33,8 @@ internal sealed class McpToolsStartupCheck : IHostedService
     private readonly XmlDocPropertyDescriber _propertyDescriber;
     private readonly McpOutputSchemaBuilder _outputSchemaBuilder;
     private readonly HttpServerTransportOptions _transportOptions;
+    private readonly McpScopeOptions _scopeOptions;
+    private readonly McpToolScopes _toolScopes;
     private readonly ILogger<McpToolsStartupCheck> _logger;
 
     public McpToolsStartupCheck(
@@ -38,12 +42,16 @@ internal sealed class McpToolsStartupCheck : IHostedService
         XmlDocPropertyDescriber propertyDescriber,
         McpOutputSchemaBuilder outputSchemaBuilder,
         IOptions<HttpServerTransportOptions> transportOptions,
+        IOptions<McpScopeOptions> scopeOptions,
+        McpToolScopes toolScopes,
         ILogger<McpToolsStartupCheck> logger)
     {
         _serviceProvider = serviceProvider;
         _propertyDescriber = propertyDescriber;
         _outputSchemaBuilder = outputSchemaBuilder;
         _transportOptions = transportOptions.Value;
+        _scopeOptions = scopeOptions.Value;
+        _toolScopes = toolScopes;
         _logger = logger;
     }
 
@@ -58,6 +66,8 @@ internal sealed class McpToolsStartupCheck : IHostedService
                 "HttpServerTransportOptions.PerSessionExecutionContext is true and SessionMode is {SessionMode}, so a stateful session runs every tool call in the context of its initialize request, whose HttpContext is gone by then. The generated tools then forward no Authorization header to the API, and scope validation, when configured, refuses every call. Set PerSessionExecutionContext to false.",
                 _transportOptions.SessionMode);
         }
+
+        WarnAboutSignInDiscovery();
 
         if (_outputSchemaBuilder.HasBuiltAnyValueSchema)
         {
@@ -99,6 +109,32 @@ internal sealed class McpToolsStartupCheck : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
+    }
+
+    private void WarnAboutSignInDiscovery()
+    {
+        var resourceMetadata = _scopeOptions.ResourceMetadata;
+        if (resourceMetadata is null)
+        {
+            return;
+        }
+
+        if (resourceMetadata.AuthorizationServers.Count == 0)
+        {
+            _logger.LogWarning(
+                "McpScopeOptions.ResourceMetadata lists no authorization server, so an MCP client that reads it cannot find where to sign the user in. Add the issuer of your access tokens to ResourceMetadata.AuthorizationServers.");
+        }
+
+        // The names fill scopes_supported only when the app lists no scopes itself, and name scopes in challenges only
+        // when scope validation is on.
+        var areNamesUsed = resourceMetadata.ScopesSupported.Count == 0 || _scopeOptions.ClaimToScopeMapper is not null;
+        _toolScopes.GetScopeNames(_toolScopes.AllRequiredScopes, out var unnamedScope);
+        if (areNamesUsed && unnamedScope != McpScope.None)
+        {
+            _logger.LogWarning(
+                "Generated tools require the scope {Scope}, for which McpScopeOptions.ScopeNames names no OAuth scope, so scopes_supported leaves it out and a tool call that scope validation refuses for it gets an error result instead of a scope challenge. Add an entry for each flag, as in ScopeNames[McpScope.Read] = \"mcp:read\".",
+                unnamedScope);
+        }
     }
 
     /// <summary>

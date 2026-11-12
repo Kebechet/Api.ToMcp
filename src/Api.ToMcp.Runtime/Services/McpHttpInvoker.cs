@@ -145,25 +145,13 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
                 "HttpServerTransportOptions.PerSessionExecutionContext = true; set that option to false.");
         }
 
-        if (httpContext.User?.Identity?.IsAuthenticated != true)
+        var scopeCheck = McpScopeCheck.Check(httpContext.User, requiredScope, _scopeOptions.ClaimName, _scopeOptions.ClaimToScopeMapper);
+        if (scopeCheck.Refusal is not null)
         {
-            throw RefuseScope("User is not authenticated. Scope validation requires authentication.");
+            throw RefuseScope(scopeCheck.Refusal);
         }
 
-        var claimValue = httpContext.User.FindFirst(_scopeOptions.ClaimName)?.Value;
-        if (string.IsNullOrEmpty(claimValue))
-        {
-            throw RefuseScope($"Claim '{_scopeOptions.ClaimName}' not found. Required scope: {requiredScope}");
-        }
-
-        var grantedScope = _scopeOptions.ClaimToScopeMapper(claimValue);
-
-        if ((grantedScope & requiredScope) != requiredScope)
-        {
-            throw RefuseScope($"Insufficient scope. Required: {requiredScope}, Granted: {grantedScope}");
-        }
-
-        _logger.LogDebug("Scope validation passed. Required: {Required}, Granted: {Granted}", requiredScope, grantedScope);
+        _logger.LogDebug("Scope validation passed. Required: {Required}, Granted: {Granted}", requiredScope, scopeCheck.GrantedScope);
 
         return Task.CompletedTask;
     }

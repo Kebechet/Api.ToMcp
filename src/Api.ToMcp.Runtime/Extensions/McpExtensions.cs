@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Builder;
@@ -9,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
@@ -58,6 +60,11 @@ public static class McpExtensions
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
         services.TryAddSingleton<McpOutputSchemaBuilder>();
+        services.TryAddSingleton<McpToolScopes>();
+        services.TryAddSingleton<McpScopeChallenge>();
+        services.TryAddTransient<McpAuthenticationHandler>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<AuthenticationOptions>, McpAuthenticationSetup>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<McpAuthenticationOptions>, McpAuthenticationSetup>());
         services.AddHostedService<McpToolsStartupCheck>();
 
         // Configure scope options (default is no scope checking)
@@ -99,24 +106,42 @@ public static class McpExtensions
 
     /// <summary>
     /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
-    /// a tool sent.
+    /// a tool sent. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it requires a signed-in caller and answers
+    /// one who is not with a <c>401</c> challenge that points to the protected resource metadata, and it answers a tool
+    /// call that scope validation refuses with a scope challenge.
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
-    /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint.</param>
+    /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint. With
+    /// <see cref="McpScopeOptions.ResourceMetadata"/> set, a client can then list the tools before it signs in, and is
+    /// asked to sign in when it calls a tool that scope validation refuses.</param>
     public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = DefaultMcpPattern, bool allowAnonymous = false)
     {
         var endpoint = endpoints.MapMcp(pattern);
+        var isSignInDiscoverable = endpoints.ServiceProvider.GetRequiredService<IOptions<McpScopeOptions>>().Value.ResourceMetadata is not null;
+        var scopeChallenge = isSignInDiscoverable ? endpoints.ServiceProvider.GetRequiredService<McpScopeChallenge>() : null;
         endpoint.Add(builder =>
         {
-            if (builder.RequestDelegate is { } requestDelegate)
+            if (builder.RequestDelegate is null)
             {
-                builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
+                return;
             }
+
+            var requestDelegate = scopeChallenge is not null
+                ? scopeChallenge.ChallengeRefusedToolCalls(builder.RequestDelegate)
+                : builder.RequestDelegate;
+            builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
         });
         if (allowAnonymous)
         {
             endpoint.AllowAnonymous();
+        }
+        else if (isSignInDiscoverable)
+        {
+            // Through the SDK's scheme, which authenticates through the scheme its ForwardAuthenticate names ("Bearer"
+            // unless configured) and challenges with the metadata's address. The app's default policy still applies; its
+            // fallback policy no longer reaches the endpoint, as it covers only endpoints without authorization metadata.
+            endpoint.RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = McpAuthenticationDefaults.AuthenticationScheme });
         }
         return endpoints;
     }
