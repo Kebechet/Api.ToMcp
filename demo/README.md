@@ -22,6 +22,14 @@ Example project demonstrating Api.ToMcp usage.
 **CategoriesController** - Inherited actions
 - `GET /api/categories` - Get all categories. The controller declares no action: it inherits `GetAll` from the abstract `ListControllerBase<T>`, and its tool is typed with `Category` for `T`. The base class gets no tool, as MVC serves nothing under it.
 
+### Minimal API endpoints
+
+**TodoEndpoints** - Endpoints `Program.cs` maps with `app.MapGroup("/api").MapTodoEndpoints()`, an extension method that maps them in a group of its own, so their routes take both prefixes
+- `GET /api/todos` - List the to-do items (a method group, described by its XML docs; `Ok<List<Todo>>` gives the output schema)
+- `GET /api/todos/{id}` - Get an item (`Results<Ok<Todo>, NotFound>` gives the output schema `Todo`)
+- `POST /api/todos` - Add an item (a lambda, named by `.WithName("CreateTodo")` and described by `.WithDescription(...)`; its request is the body)
+- `DELETE /api/todos/{id}` - Delete an item (excluded via `[McpIgnore]` on the lambda)
+
 ### Hand-written tool
 
 `Mcp/ServerTools.cs` is an MCP-only tool with no endpoint behind it. `AddMcpTools` registers it alongside the generated tools because the class carries `[McpServerToolType]`; its `IHostEnvironment` parameter is injected, not exposed as an argument.
@@ -53,6 +61,9 @@ Based on `Mcp/generator.json` configuration, these tools are generated:
 | `Products_GetById` | ProductsController.GetById |
 | `Products_GetCheapest` | ProductsController.GetCheapest |
 | `Categories_GetAll` | CategoriesController.GetAll, inherited from `ListControllerBase<Category>` |
+| `TodoEndpoints_GetAll` | `GET /api/todos`, handled by TodoEndpoints.GetAll |
+| `TodoEndpoints_GetById` | `GET /api/todos/{id}`, handled by TodoEndpoints.GetById |
+| `TodoEndpoints_CreateTodo` | `POST /api/todos`, a lambda in TodoEndpoints named by `.WithName("CreateTodo")` |
 | `Server_GetEnvironment` | hand-written in `Mcp/ServerTools.cs` |
 
 ## Generator Configuration
@@ -67,7 +78,8 @@ The `Mcp/generator.json` uses `SelectedOnly` mode with explicit includes:
     "ProductsController.GetAll",
     "ProductsController.GetById",
     "ProductsController.GetCheapest",
-    "CategoriesController"
+    "CategoriesController",
+    "TodoEndpoints"
   ]
 }
 ```
@@ -76,7 +88,8 @@ This demonstrates:
 - Including an entire controller (`WeatherController`)
 - Including specific actions (`ProductsController.GetAll`, `ProductsController.GetById`, `ProductsController.GetCheapest`)
 - Including a controller whose actions are inherited, by its own name (`CategoriesController`), not its base class's
-- The `[McpIgnore]` attribute on `Delete` action as additional protection
+- Including every Minimal API endpoint whose handler a class declares (`TodoEndpoints`), as a controller's actions are included
+- The `[McpIgnore]` attribute on the `Delete` action, and on the lambda that deletes a to-do item, as additional protection
 
 ## Testing with MCP Client
 

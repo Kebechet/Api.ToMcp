@@ -6,7 +6,8 @@
     "ProductsController.GetAll",
     "ProductsController.GetById",
     "ProductsController.GetCheapest",
-    "CategoriesController"
+    "CategoriesController",
+    "TodoEndpoints"
   ],
   "exclude": [],
   "naming": {
