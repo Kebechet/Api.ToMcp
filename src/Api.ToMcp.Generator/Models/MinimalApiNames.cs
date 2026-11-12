@@ -92,19 +92,27 @@ internal static class MinimalApiNames
     public const string CollectionsNamespacePrefix = "System.Collections.";
     public const string JsonNamespacePrefix = "System.Text.Json.";
 
+    public const string ListInterface = "System.Collections.Generic.IList<T>";
+    public const string CollectionInterface = "System.Collections.Generic.ICollection<T>";
+    public const string ReadOnlyListInterface = "System.Collections.Generic.IReadOnlyList<T>";
+    public const string ReadOnlyCollectionInterface = "System.Collections.Generic.IReadOnlyCollection<T>";
+    public const string DictionaryInterface = "System.Collections.Generic.IDictionary<TKey, TValue>";
+    public const string ReadOnlyDictionaryInterface = "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>";
+    public const string SetInterface = "System.Collections.Generic.ISet<T>";
+
     /// <summary>
     /// The generic collection interfaces <c>System.Text.Json</c> reads a body into, which the container does not resolve
     /// as services. It resolves <c>IEnumerable&lt;T&gt;</c> for any <c>T</c>, so that one is a service.
     /// </summary>
     public static readonly string[] BodyCollectionInterfaces =
     {
-        "System.Collections.Generic.IList<T>",
-        "System.Collections.Generic.ICollection<T>",
-        "System.Collections.Generic.IReadOnlyList<T>",
-        "System.Collections.Generic.IReadOnlyCollection<T>",
-        "System.Collections.Generic.IDictionary<TKey, TValue>",
-        "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>",
-        "System.Collections.Generic.ISet<T>"
+        ListInterface,
+        CollectionInterface,
+        ReadOnlyListInterface,
+        ReadOnlyCollectionInterface,
+        DictionaryInterface,
+        ReadOnlyDictionaryInterface,
+        SetInterface
     };
 
     public const string HttpResultsNamespace = "Microsoft.AspNetCore.Http.HttpResults";
@@ -125,20 +133,31 @@ internal static class MinimalApiNames
     public const string AcceptedAtRoute = "AcceptedAtRoute";
     public const string NoContent = "NoContent";
 
+    public const string BadRequest = "BadRequest";
+    public const string NotFound = "NotFound";
+    public const string Conflict = "Conflict";
+    public const string UnprocessableEntity = "UnprocessableEntity";
+    public const string ValidationProblem = "ValidationProblem";
+    public const string ProblemHttpResult = "ProblemHttpResult";
+    public const string UnauthorizedHttpResult = "UnauthorizedHttpResult";
+    public const string ForbidHttpResult = "ForbidHttpResult";
+    public const string ChallengeHttpResult = "ChallengeHttpResult";
+    public const string InternalServerError = "InternalServerError";
+
     /// <summary>
     /// The typed results of an error, which a tool reports as one and which so never need a body.
     /// </summary>
     public static readonly string[] ErrorResults =
     {
-        "BadRequest",
-        "NotFound",
-        "Conflict",
-        "UnprocessableEntity",
-        "ValidationProblem",
-        "ProblemHttpResult",
-        "UnauthorizedHttpResult",
-        "ForbidHttpResult",
-        "ChallengeHttpResult",
-        "InternalServerError"
+        BadRequest,
+        NotFound,
+        Conflict,
+        UnprocessableEntity,
+        ValidationProblem,
+        ProblemHttpResult,
+        UnauthorizedHttpResult,
+        ForbidHttpResult,
+        ChallengeHttpResult,
+        InternalServerError
     };
 }
