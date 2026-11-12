@@ -18,6 +18,7 @@ namespace Api.ToMcp.Generator.Emitting
 
         private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
         private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
+        private const string RequiredScopeAttribute = "global::Api.ToMcp.Runtime.McpRequiredScope";
         private const string NullLiteral = "null";
         private const string RouteVariablePrefix = "route";
         private const string PathSeparator = "/";
@@ -110,6 +111,7 @@ namespace Api.ToMcp.Generator.Emitting
             {
                 sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, {annotations})]");
             }
+            sb.AppendLine($"        [{RequiredScopeAttribute}({GetScopeExpression(action.RequiredScope, names.McpScope)})]");
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
             // A tool with an output schema returns the parsed body on success, for the SDK to turn into structured content.
             sb.Append(hasOutputSchema

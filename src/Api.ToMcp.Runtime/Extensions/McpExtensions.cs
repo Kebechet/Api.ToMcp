@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Builder;
@@ -9,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
@@ -58,6 +61,13 @@ public static class McpExtensions
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
         services.TryAddSingleton<McpOutputSchemaBuilder>();
+        services.TryAddSingleton<McpToolScopes>();
+        services.TryAddSingleton<McpScopeChallenge>();
+        // McpAuthenticationHandler is not registered: it needs UrlEncoder, which only AddAuthentication registers, and a
+        // host that validates its services on build, as in Development, would fail for an app without authentication.
+        // AuthenticationHandlerProvider creates a scheme's handler with ActivatorUtilities when it is not registered.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<AuthenticationOptions>, McpAuthenticationSetup>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<McpAuthenticationOptions>, McpAuthenticationSetup>());
         services.AddHostedService<McpToolsStartupCheck>();
 
         // Configure scope options (default is no scope checking)
@@ -99,26 +109,66 @@ public static class McpExtensions
 
     /// <summary>
     /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
-    /// a tool sent.
+    /// a tool sent. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
+    /// scheme, requires a signed-in caller who meets the app's default and fallback policies, answers a caller who is not
+    /// signed in with a <c>401</c> challenge that points to the protected resource metadata, and answers a tool call that
+    /// scope validation refuses with a scope challenge.
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pattern">The URL pattern for the MCP endpoint.</param>
-    /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint.</param>
+    /// <param name="allowAnonymous">If true, allows anonymous access to the MCP endpoint. With
+    /// <see cref="McpScopeOptions.ResourceMetadata"/> set, a client can then list the tools before it signs in, and is
+    /// asked to sign in when it calls a tool that scope validation refuses.</param>
     public static IEndpointRouteBuilder MapMcpEndpoint(this IEndpointRouteBuilder endpoints, string pattern = DefaultMcpPattern, bool allowAnonymous = false)
     {
         var endpoint = endpoints.MapMcp(pattern);
+        var isSignInDiscoverable = endpoints.ServiceProvider.GetRequiredService<IOptions<McpScopeOptions>>().Value.ResourceMetadata is not null;
+        var scopeChallenge = isSignInDiscoverable ? endpoints.ServiceProvider.GetRequiredService<McpScopeChallenge>() : null;
         endpoint.Add(builder =>
         {
-            if (builder.RequestDelegate is { } requestDelegate)
+            if (builder.RequestDelegate is null)
             {
-                builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
+                return;
             }
+
+            var requestDelegate = scopeChallenge is not null
+                ? scopeChallenge.ChallengeRefusedToolCalls(builder.RequestDelegate)
+                : builder.RequestDelegate;
+            builder.RequestDelegate = McpLoopPreventionMiddleware.RefuseInternalCalls(requestDelegate);
         });
+        if (isSignInDiscoverable)
+        {
+            endpoint.RequireAuthorization(allowAnonymous
+                ? McpEndpointAuthorization.CreateAnonymousPolicy()
+                : McpEndpointAuthorization.CreateSignedInPolicy(endpoints.ServiceProvider.GetRequiredService<IHttpContextAccessor>()));
+            if (allowAnonymous)
+            {
+                WarnAboutAnonymousStatefulSessions(endpoints.ServiceProvider);
+            }
+        }
+
         if (allowAnonymous)
         {
             endpoint.AllowAnonymous();
         }
         return endpoints;
+    }
+
+    /// <summary>
+    /// A stateful session belongs to the user who started it, and the SDK refuses a request of another user in it, so a
+    /// client that starts one without a token and signs in when a tool call asks for it cannot go on in that session.
+    /// </summary>
+    private static void WarnAboutAnonymousStatefulSessions(IServiceProvider services)
+    {
+        var sessionMode = services.GetRequiredService<IOptions<HttpServerTransportOptions>>().Value.SessionMode;
+        if (sessionMode == HttpServerSessionMode.Stateless)
+        {
+            return;
+        }
+
+        services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(McpExtensions).FullName!).LogWarning(
+            "MapMcpEndpoint allows anonymous callers with OAuth sign-in discovery on, and SessionMode is {SessionMode}. The SDK ties a stateful session to the user who started it, so a client that starts one without a token and signs in when a tool call asks for it is refused with 403 in that session. Use HttpServerSessionMode.Stateless, or require sign-in on the endpoint.",
+            sessionMode);
     }
 
     /// <summary>

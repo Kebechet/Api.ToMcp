@@ -110,3 +110,43 @@ devtunnel host -p 56720 --allow-anonymous
 ```
 
 This gives you a public URL like `https://xxxxx.devtunnels.ms` that you can use as the MCP endpoint in web clients.
+
+## Trying OAuth Sign-In Discovery
+
+The demo can run with sign-in, so you can see what an MCP client that signs a user in gets: the `401` challenge, the protected resource metadata and the scope challenges. It is off by default, and the demo then runs without authentication, as above. See [OAuth Sign-In](../README.md#oauth-sign-in-claudeai-chatgpt-mcp-inspector) in the main README for what each part does.
+
+⚠️ This is a local stand-in, not an OAuth server. The demo validates JWT bearer tokens signed with a key it makes when it starts, and a development-only endpoint, `POST /dev/token`, hands out such tokens with whatever scopes you ask for. Nobody signs in, and a client that follows the metadata to the demo's address finds no authorization server there. Use it to look at the challenges with curl or a script, not to connect Claude.ai or ChatGPT.
+
+Turn it on with `DemoAuth:Enabled`:
+
+```bash
+DemoAuth__Enabled=true dotnet run --project demo/DemoApi --urls http://127.0.0.1:5303
+```
+
+It sets up, in `DemoAuth.cs`:
+
+- JWT bearer authentication for tokens whose issuer is the demo's address and whose audience is its MCP endpoint, `http://127.0.0.1:5303/mcp`;
+- `ScopeNames` `mcp:read`, `mcp:write` and `mcp:delete`, and a `ClaimToScopeMapper` that reads the token's `scope` claim;
+- `ResourceMetadata`, whose authorization server is the demo's own address;
+- in Development only, `POST /dev/token?scope=...`, which returns a token valid for an hour.
+
+Then call the endpoint as a client would:
+
+```bash
+# 401 with WWW-Authenticate: Bearer resource_metadata="http://127.0.0.1:5303/.well-known/oauth-protected-resource/mcp"
+curl -i -X POST http://127.0.0.1:5303/mcp -H "Accept: application/json, text/event-stream" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# The metadata: resource, authorization_servers and scopes_supported
+curl http://127.0.0.1:5303/.well-known/oauth-protected-resource/mcp
+
+# A read-only token
+TOKEN=$(curl -s -X POST "http://127.0.0.1:5303/dev/token?scope=mcp:read" | sed 's/.*"access_token":"\([^"]*\)".*/\1/')
+
+# A write tool with that token: 403 with error="insufficient_scope", scope="mcp:read mcp:write"
+curl -i -X POST http://127.0.0.1:5303/mcp -H "Accept: application/json, text/event-stream" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"Weather_Create","arguments":{"request":{"city":"Brno","date":"2026-11-12T00:00:00","temperatureC":21}}}}'
+```
+
+A token from `/dev/token?scope=mcp:read%20mcp:write` calls `Weather_Create`. Add `DemoAuth__AllowAnonymous=true` to list the tools without a token; a tool call without one then gets the `401` sign-in challenge with the scope it needs.
