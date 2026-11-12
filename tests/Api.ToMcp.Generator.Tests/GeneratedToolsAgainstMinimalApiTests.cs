@@ -287,7 +287,7 @@ namespace TestApi
                 [CSharpSyntaxTree.ParseText(source)],
                 references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-            var generatorConfig = new InMemoryAdditionalText("Mcp/generator.json", @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""exclude"": [] }");
+            var generatorConfig = new InMemoryAdditionalText("Mcp/generator.json", @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""exclude"": [], ""minimalApis"": true }");
 
             CSharpGeneratorDriver
                 .Create(new McpToolGenerator())

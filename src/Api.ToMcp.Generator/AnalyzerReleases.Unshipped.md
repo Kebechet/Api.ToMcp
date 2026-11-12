@@ -8,6 +8,7 @@ MCP008 | Api.ToMcp.Generator | Warning | Config entry matches nothing
 MCP009 | Api.ToMcp.Generator | Warning | Tool route cannot be built
 MCP010 | Api.ToMcp.Generator | Warning | Endpoint cannot become a tool
 MCP011 | Api.ToMcp.Generator | Warning | Endpoint mapped for several HTTP methods
+MCP012 | Api.ToMcp.Generator | Info | Minimal API endpoints not selected
 
 ### Removed Rules
 

@@ -15,6 +15,13 @@ public partial class McpToolGeneratorTests
 {
     private const string UnbuildableEndpointId = "MCP010";
     private const string SeveralHttpMethodsId = "MCP011";
+    private const string EndpointsLeftOutId = "MCP012";
+
+    /// <summary>
+    /// AllExceptExcluded mode with the opt-in that makes it select Minimal API endpoints too.
+    /// </summary>
+    private const string MinimalApisConfig =
+        @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""exclude"": [], ""minimalApis"": true }";
 
     private const string MinimalApiUsings = @"#nullable enable
 using System;
@@ -59,14 +66,14 @@ namespace TestApi
         var verb = httpMethod.Substring(0, 1) + httpMethod.Substring(1).ToLowerInvariant();
         var toolClassName = $"Endpoints_{verb}ApiOrdersByIdTool";
 
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, toolClassName);
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, toolClassName);
 
         Assert.Contains($"[McpServerTool(Name = \"Endpoints_{verb}ApiOrdersById\"", tool);
         Assert.Contains("var route = $\"/api/orders/{routeid}\";", tool);
         Assert.Contains(invokerCall, tool);
         Assert.Contains($"BeforeInvokeAsync({scope}, cancellationToken)", tool);
         Assert.Contains($"[Description(\"Invokes {httpMethod} /api/orders/{{id}}\")]", tool);
-        Assert.Contains($"typeof({toolClassName})", RunGenerator(source, AllExceptExcludedConfig));
+        Assert.Contains($"typeof({toolClassName})", RunGenerator(source, MinimalApisConfig));
     }
 
     [Fact]
@@ -74,7 +81,7 @@ namespace TestApi
     {
         var source = MinimalApi(@"EndpointRouteBuilderExtensions.MapGet(app, ""/ping"", () => ""pong"");");
 
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_GetPingTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetPingTool");
 
         Assert.Contains("var route = $\"/ping\";", tool);
     }
@@ -87,7 +94,7 @@ namespace TestApi
     {
         var source = MinimalApiClass(members);
 
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_GetApiOrdersTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetApiOrdersTool");
 
         Assert.Contains("var route = $\"/api/orders\";", tool);
     }
@@ -101,11 +108,11 @@ namespace TestApi
             orders.MapGet(""/{id:int}"", (int id) => id);
             api.MapGroup(""/products"").MapGet("""", () => 1);");
 
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Equal("var route = $\"/api/orders/{routeid}\";", GetRouteLine(generated, "Endpoints_GetApiOrdersByIdTool"));
         Assert.Equal("var route = $\"/api/products\";", GetRouteLine(generated, "Endpoints_GetApiProductsTool"));
-        AssertCompiles(source, AllExceptExcludedConfig);
+        AssertCompiles(source, MinimalApisConfig);
     }
 
     [Fact]
@@ -141,7 +148,7 @@ namespace TestApi
 }
 ";
         var compilation = CreateCompilation(caller, endpoints);
-        var runResult = CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation).GetRunResult();
+        var runResult = CreateDriver(MinimalApisConfig).RunGenerators(compilation).GetRunResult();
         var generated = string.Join("\n", runResult.Results.SelectMany(x => x.GeneratedSources).Select(x => x.SourceText.ToString()));
 
         Assert.Equal("var route = $\"/v1/orders/{routeid}\";", GetRouteLine(generated, "OrderEndpoints_GetV1OrdersByIdTool"));
@@ -191,11 +198,11 @@ namespace TestApi
     }
 }
 ";
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Equal("var route = $\"/api/orders/{routeid}\";", GetRouteLine(generated, "OrderModule_GetOrderTool"));
         Assert.Equal("var route = $\"/api/items\";", GetRouteLine(generated, "ItemModule_GetItemsTool"));
-        Assert.Empty(GetGeneratorDiagnostics(source, AllExceptExcludedConfig));
+        Assert.Empty(GetGeneratorDiagnostics(source, MinimalApisConfig));
     }
 
     [Fact]
@@ -203,7 +210,7 @@ namespace TestApi
     {
         var source = MinimalApi(@"app.UseRouting(); app.UseEndpoints(endpoints => { endpoints.MapGet(""/legacy"", () => 1); });");
 
-        Assert.Equal("var route = $\"/legacy\";", GetRouteLine(RunGenerator(source, AllExceptExcludedConfig), "Endpoints_GetLegacyTool"));
+        Assert.Equal("var route = $\"/legacy\";", GetRouteLine(RunGenerator(source, MinimalApisConfig), "Endpoints_GetLegacyTool"));
     }
 
     [Theory]
@@ -219,15 +226,15 @@ namespace TestApi
     {
         var source = MinimalApiClass(members);
 
-        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableEndpointId);
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == UnbuildableEndpointId);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Equal(DiagnosticSeverity.Warning, warning.Severity);
         Assert.EndsWith($": {reason}", warning.GetMessage());
         Assert.StartsWith("No MCP tool is generated for endpoint 'Endpoints.", warning.GetMessage());
         Assert.StartsWith("Map", GetLocatedText(warning.Location, source));
         Assert.DoesNotContain("[McpServerTool(", generated);
-        AssertCompiles(source, AllExceptExcludedConfig);
+        AssertCompiles(source, MinimalApisConfig);
     }
 
     [Fact]
@@ -235,7 +242,7 @@ namespace TestApi
     {
         var source = MinimalApi(@"app.MapGet(""/orders/{id}"", (HttpContext context) => context.Request.RouteValues[""id""]);");
 
-        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableEndpointId);
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == UnbuildableEndpointId);
 
         Assert.Equal(
             "No MCP tool is generated for endpoint 'Endpoints.GetOrdersById': no parameter or property fills the route value '{id}' of GET /orders/{id}",
@@ -252,7 +259,7 @@ namespace TestApi
             app.MapGet(route, () => 2).WithName(""NotListed"");");
         const string config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""Endpoints.Listed""] }";
 
-        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableEndpointId);
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == UnbuildableEndpointId);
 
         Assert.StartsWith("No MCP tool is generated for endpoint 'Endpoints.NotListed'", warning.GetMessage());
         Assert.DoesNotContain(GetGeneratorDiagnostics(source, config), x => x.Id == UnbuildableEndpointId);
@@ -285,14 +292,14 @@ namespace TestApi
     }
 }
 ";
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Equal("var route = $\"/lambda/{routeid}\";", GetRouteLine(generated, "Endpoints_GetLambdaByIdTool"));
         Assert.Equal("var route = $\"/local/{routeid}\";", GetRouteLine(generated, "Endpoints_GetLocalTool"));
         // A method group names the tool after its method and the class that declares it.
         Assert.Equal("var route = $\"/static/{routeid}\";", GetRouteLine(generated, "OrderHandlers_GetStaticTool"));
         Assert.Equal("var route = $\"/instance/{routeid}\";", GetRouteLine(generated, "OrderHandlers_GetInstanceTool"));
-        AssertCompiles(source, AllExceptExcludedConfig);
+        AssertCompiles(source, MinimalApisConfig);
     }
 
     [Fact]
@@ -300,7 +307,7 @@ namespace TestApi
     {
         var source = MinimalApi(@"app.MapGet(""/ping"", async context => await context.Response.WriteAsync(""pong""));");
 
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_GetPingTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetPingTool");
 
         Assert.Contains("IMcpHttpInvoker invoker,\n            System.Threading.CancellationToken cancellationToken = default", tool.Replace("\r", ""));
         Assert.DoesNotContain("UseStructuredContent", tool);
@@ -321,7 +328,7 @@ namespace TestApi
 
         private static int GetA() => 1;");
 
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Contains("[McpServerTool(Name = \"Endpoints_ListOrders\", Title = \"List orders\",", generated);
         Assert.Contains("[McpServerTool(Name = \"Endpoints_FindOrder\", Title = \"Find order\",", generated);
@@ -330,7 +337,7 @@ namespace TestApi
         // A name is any string; the tool's class name keeps only what C# allows.
         Assert.Contains("[McpServerTool(Name = \"Endpoints_orders.get-all\",", generated);
         Assert.Contains("public static class Endpoints_orders_get_allTool", generated);
-        AssertCompiles(source, AllExceptExcludedConfig);
+        AssertCompiles(source, MinimalApisConfig);
     }
 
     [Fact]
@@ -339,7 +346,7 @@ namespace TestApi
         var source = MinimalApi(@"
             app.MapGet(""/a"", () => 1).WithName(""ListOrders"");
             app.MapGet(""/b"", [McpExpose(ToolName = ""find_order"", Title = ""Find an order"", Description = ""Finds it."")] () => 1).WithDescription(""Ignored."");");
-        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""naming"": { ""toolNameFormat"": ""{Action}_via_{Controller}"" } }";
+        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""minimalApis"": true, ""naming"": { ""toolNameFormat"": ""{Action}_via_{Controller}"" } }";
 
         var generated = RunGenerator(source, config);
 
@@ -364,6 +371,98 @@ namespace TestApi
 
         Assert.Equal(hasListOrders, generated.Contains("class Endpoints_ListOrdersTool"));
         Assert.Equal(hasGetItems, generated.Contains("class Endpoints_GetApiItemsTool"));
+    }
+
+    [Fact]
+    public void AllExceptExcluded_WithoutTheOptIn_SelectsNoEndpoint_AndWarnsAboutNone()
+    {
+        // An app that updates the package must not find endpoints exposed that were never tools, such as an admin reset.
+        var source = MinimalApi(@"
+            app.MapPost(""/admin/reset"", () => 1);
+            var route = ""/x"";
+            app.MapGet(route, () => 2);") + ControllerNextToEndpoints;
+
+        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var diagnostics = GetGeneratorDiagnostics(source, AllExceptExcludedConfig);
+
+        Assert.Contains("class ProductsController_GetAllTool", generated);
+        Assert.DoesNotContain("class Endpoints_", generated);
+        var info = Assert.Single(diagnostics);
+        Assert.Equal(EndpointsLeftOutId, info.Id);
+        Assert.Equal(DiagnosticSeverity.Info, info.Severity);
+        Assert.Equal(
+            "AllExceptExcluded mode selects none of the project's 2 Minimal API endpoints, as generator.json does not set \"minimalApis\": set it to true to select them, or to false to keep them out without this message",
+            info.GetMessage());
+    }
+
+    [Fact]
+    public void AllExceptExcluded_WithTheOptIn_SelectsEveryEndpoint_AndWarnsAboutThoseItCannotFollow()
+    {
+        var source = MinimalApi(@"
+            app.MapPost(""/admin/reset"", () => 1);
+            var route = ""/x"";
+            app.MapGet(route, () => 2);") + ControllerNextToEndpoints;
+
+        var generated = RunGenerator(source, MinimalApisConfig);
+        var diagnostics = GetGeneratorDiagnostics(source, MinimalApisConfig);
+
+        Assert.Contains("class ProductsController_GetAllTool", generated);
+        Assert.Contains("class Endpoints_PostAdminResetTool", generated);
+        Assert.Equal(UnbuildableEndpointId, Assert.Single(diagnostics).Id);
+    }
+
+    [Fact]
+    public void AllExceptExcluded_WithMinimalApisFalse_SelectsNoEndpoint_AndSaysNothing()
+    {
+        // No MCP006 either: the project has endpoints, but none it chose to give a tool.
+        var source = MinimalApi(@"app.MapPost(""/admin/reset"", () => 1);");
+        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""minimalApis"": false }";
+
+        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, config));
+        Assert.Empty(GetGeneratorDiagnostics(source, config));
+    }
+
+    [Theory]
+    [InlineData("AllExceptExcluded")]
+    [InlineData("SelectedOnly")]
+    public void Endpoint_IsSelected_ByAnIncludeEntryOrMcpExpose_WithoutTheOptIn(string mode)
+    {
+        var source = MinimalApi(@"
+            app.MapGet(""/listed"", () => 1).WithName(""Listed"");
+            app.MapGet(""/exposed"", [McpExpose] () => 1).WithName(""Exposed"");
+            app.MapGet(""/plain"", () => 1).WithName(""Plain"");
+            var route = ""/x"";
+            app.MapGet(route, () => 1).WithName(""Unbuildable"");") + ControllerNextToEndpoints;
+        var config = $@"{{ ""schemaVersion"": 1, ""mode"": ""{mode}"", ""include"": [""Endpoints.Listed"", ""Endpoints.Unbuildable""] }}";
+
+        var generated = RunGenerator(source, config);
+        var diagnostics = GetGeneratorDiagnostics(source, config);
+
+        Assert.Contains("class Endpoints_ListedTool", generated);
+        Assert.Contains("class Endpoints_ExposedTool", generated);
+        Assert.DoesNotContain("class Endpoints_PlainTool", generated);
+        // An endpoint the project chose still gets the warning when it cannot become a tool.
+        var warning = Assert.Single(diagnostics, x => x.Id == UnbuildableEndpointId);
+        Assert.StartsWith("No MCP tool is generated for endpoint 'Endpoints.Unbuildable'", warning.GetMessage());
+    }
+
+    [Fact]
+    public void Endpoint_ThatAnIncludeAndAnExcludeEntryBothName_IsLeftOut_InAllExceptExcludedMode()
+    {
+        var source = MinimalApi(@"app.MapGet(""/listed"", () => 1).WithName(""Listed"");");
+        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""include"": [""Endpoints""], ""exclude"": [""Endpoints.Listed""] }";
+
+        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, config));
+    }
+
+    [Fact]
+    public void ProjectOfEndpoints_ThatSelectsNone_GetsNoWarning_UntilItOptsIn()
+    {
+        // Before endpoints became tools, such a project got no MCP006; an update must not start failing its build.
+        var source = MinimalApi(@"app.MapGet(""/api/orders"", () => 1);");
+
+        Assert.Empty(GetGeneratorDiagnostics(source, @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [] }"));
+        Assert.Empty(GetGeneratorDiagnostics(source, generatorJson: null));
     }
 
     [Fact]
@@ -406,7 +505,7 @@ namespace TestApi
         Assert.Contains("class AdminHandlers_GetTool", generated);
         Assert.DoesNotContain("class Endpoints_GetPlainTool", generated);
         Assert.DoesNotContain("class Endpoints_IgnoredTool", generated);
-        Assert.DoesNotContain("class Endpoints_IgnoredTool", RunGenerator(source, AllExceptExcludedConfig));
+        Assert.DoesNotContain("class Endpoints_IgnoredTool", RunGenerator(source, MinimalApisConfig));
     }
 
     [Fact]
@@ -424,7 +523,7 @@ namespace TestApi
     public void NoTools_FromAProjectOfEndpoints_SuggestsItsClassesAndEndpoints()
     {
         var source = MinimalApi(@"app.MapGet(""/api/orders"", () => 1).WithName(""ListOrders"");");
-        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [] }";
+        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [], ""minimalApis"": true }";
 
         var warning = Assert.Single(GetGeneratorDiagnostics(source, config), x => x.Id == "MCP006");
 
@@ -456,7 +555,7 @@ namespace TestApi
     }
 }
 ";
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Contains("[Description(\"Description.\")]", GetToolClass(generated, "Endpoints_ATool"));
         Assert.Contains("[Description(\"Attribute description.\")]", GetToolClass(generated, "Endpoints_BTool"));
@@ -491,7 +590,7 @@ namespace TestApi
     }
 }
 ";
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
 
         Assert.Equal("await invoker.BeforeInvokeAsync(McpScope.Read, cancellationToken);", GetScopeCheck(generated, "Endpoints_SearchTool"));
         Assert.Contains("ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false", GetToolAttributeLine(generated, "Endpoints_SearchTool"));
@@ -511,8 +610,8 @@ namespace TestApi
             app.MapMethods(""/several"", [""GET"", ""POST"", ""DELETE""], () => 1).WithName(""Several"");
             app.MapMethods(""/head"", new List<string> { ""HEAD"" }, () => 1).WithName(""Head"");");
 
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
-        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig));
+        var generated = RunGenerator(source, MinimalApisConfig);
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig));
 
         Assert.Contains("await invoker.PatchAsync(route, null, cancellationToken)", GetToolClass(generated, "Endpoints_OneTool"));
         Assert.Contains("await invoker.GetAsync(route, cancellationToken)", GetToolClass(generated, "Endpoints_HeadGetTool"));
@@ -523,7 +622,7 @@ namespace TestApi
         Assert.Equal(DiagnosticSeverity.Warning, warning.Severity);
         Assert.Equal("The MCP tool of endpoint 'Endpoints.Several' calls it with GET only, though it is mapped for POST, DELETE as well", warning.GetMessage());
         Assert.Equal("MapMethods", GetLocatedText(warning.Location, source));
-        AssertCompiles(source, AllExceptExcludedConfig);
+        AssertCompiles(source, MinimalApisConfig);
     }
 
     [Theory]
@@ -556,7 +655,7 @@ namespace Microsoft.EntityFrameworkCore
     public class DbContext : DbContextBase { }
 }
 ";
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_ToolTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_ToolTool");
 
         foreach (var line in expectedLines.Split('|'))
         {
@@ -583,7 +682,7 @@ namespace TestApi
     public interface IOrderRepository { }
 }
 ";
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_ToolTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_ToolTool");
 
         Assert.Contains("IMcpHttpInvoker invoker,\n            [Description(\"Parameter: id\")] int id,\n            System.Threading.CancellationToken cancellationToken = default", tool.Replace("\r", ""));
         Assert.DoesNotContain("bodyJson", tool);
@@ -620,10 +719,10 @@ namespace TestApi
     public record Lookup(int Id, string? Note);
 }
 ";
-        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableEndpointId);
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == UnbuildableEndpointId);
 
         Assert.EndsWith($": {reason}", warning.GetMessage());
-        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, AllExceptExcludedConfig));
+        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, MinimalApisConfig));
     }
 
     [Fact]
@@ -631,7 +730,7 @@ namespace TestApi
     {
         var source = MinimalApi(@"app.MapGet(""/orders"", ([FromBody] Order filter) => 1);");
 
-        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableEndpointId);
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == UnbuildableEndpointId);
 
         Assert.EndsWith(": it reads 'filter' from the body, which a tool sends only with POST, PUT and PATCH", warning.GetMessage());
     }
@@ -668,7 +767,7 @@ namespace TestApi
     }
 }
 ";
-        var generated = RunGenerator(source, AllExceptExcludedConfig);
+        var generated = RunGenerator(source, MinimalApisConfig);
         var record = GetToolClass(generated, "Endpoints_RecordTool");
         var filter = GetToolClass(generated, "Endpoints_ClassTool");
 
@@ -681,7 +780,7 @@ namespace TestApi
         Assert.Contains("[Description(\"City to search in.\")] string? City = null,", filter);
         Assert.Contains("AddQueryValue(queryParts, \"City\", City);", filter);
         Assert.DoesNotContain("Ignored", filter);
-        AssertCompiles(source, AllExceptExcludedConfig);
+        AssertCompiles(source, MinimalApisConfig);
     }
 
     [Theory]
@@ -699,7 +798,7 @@ namespace TestApi
     {
         var source = MinimalApi($@"app.MapGet(""/orders"", {handler}).WithName(""Get"");");
 
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_GetTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetTool");
 
         Assert.Contains($"UseStructuredContent = true, OutputSchemaType = typeof({outputType}),", tool);
         Assert.Contains($"McpGeneratedTool(IsOutputNullable = {isOutputNullable})", tool);
@@ -717,7 +816,7 @@ namespace TestApi
     {
         var source = MinimalApi($@"app.MapGet(""/orders"", {handler}).WithName(""Get"");");
 
-        var tool = GenerateCompilingToolClass(source, AllExceptExcludedConfig, "Endpoints_GetTool");
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_GetTool");
 
         Assert.DoesNotContain("UseStructuredContent", tool);
         Assert.Contains("public static async Task<CallToolResult> InvokeAsync(", tool);
@@ -728,7 +827,7 @@ namespace TestApi
     {
         var source = MinimalApi(@"app.MapGet(""/api/mcp-status"", [McpExpose] () => 1);");
 
-        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, AllExceptExcludedConfig));
+        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, MinimalApisConfig));
     }
 
     [Fact]
@@ -760,7 +859,7 @@ namespace TestApi
 }
 ";
         var compilation = CreateCompilationOfFiles((callerFile, caller), (endpointsFile, endpoints));
-        var driver = CreateTrackingDriver(AllExceptExcludedConfig).RunGenerators(compilation);
+        var driver = CreateTrackingDriver(MinimalApisConfig).RunGenerators(compilation);
         Assert.Contains("$\"/v1/orders/{routeid}\"", GetGeneratedSources(driver)["OrderEndpoints_GetOrderTool.g.cs"]);
 
         driver = driver.RunGenerators(ReplaceText(compilation, callerFile, "\"/v1\"", "\"/v2\""));
@@ -768,6 +867,19 @@ namespace TestApi
         Assert.Contains("$\"/v2/orders/{routeid}\"", GetGeneratedSources(driver)["OrderEndpoints_GetOrderTool.g.cs"]);
         AssertSourceOutputReasons(driver, TrackingNames.ToolSources, IncrementalStepRunReason.Modified);
     }
+
+    private const string ControllerNextToEndpoints = @"
+namespace TestApi
+{
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet]
+        public int GetAll() => 1;
+    }
+}
+";
 
     /// <summary>
     /// A class <c>Endpoints</c> whose <c>Map(WebApplication app)</c> runs the statements.

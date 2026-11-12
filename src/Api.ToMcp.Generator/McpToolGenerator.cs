@@ -133,6 +133,7 @@ namespace Api.ToMcp.Generator
             diagnostics.AddRange(unbuildableRouteDiagnostics);
             ReportDuplicateToolNames(diagnostics, toolActions, config);
             ReportEndpointsWithSeveralHttpMethods(diagnostics, toolActions);
+            ReportEndpointsLeftOut(diagnostics, controllers, config);
 
             var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(toolActions);
             var tools = toolActions.Select((action, i) => new ToolSourceModel
@@ -281,11 +282,60 @@ namespace Api.ToMcp.Generator
                     return names.Any(config.Include.Contains);
 
                 case SelectionModeModel.AllExceptExcluded:
+                    // Without the opt-in, the mode selects a Minimal API endpoint only as an include entry names it, so
+                    // updating the package exposes no endpoint the project did not choose.
+                    if (action.IsMinimalApiEndpoint && config.MinimalApis != true)
+                        return names.Any(config.Include.Contains) && !names.Any(config.Exclude.Contains);
+
                     return !names.Any(config.Exclude.Contains);
 
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Whether the project chose to give the action a tool, which only then counts for MCP006: an action of a
+        /// controller always, a Minimal API endpoint when generator.json opts in to them, an include entry names it or
+        /// <c>[McpExpose]</c> marks it. Until a project does, its endpoints change nothing it is warned about.
+        /// </summary>
+        private static bool IsOptedIn(ControllerInfoModel controller, ActionInfoModel action, GeneratorConfigModel config)
+        {
+            return !action.IsMinimalApiEndpoint ||
+                config.MinimalApis == true ||
+                action.HasMcpExposeAttribute ||
+                controller.HasMcpExposeAttribute ||
+                GetEntryNames(controller, action).Any(config.Include.Contains);
+        }
+
+        /// <summary>
+        /// Tells a project in AllExceptExcluded mode whose generator.json does not say whether to select Minimal API
+        /// endpoints how many of them the mode leaves out (MCP012). An info, as nothing is wrong: the project has to opt in.
+        /// </summary>
+        private static void ReportEndpointsLeftOut(
+            List<DiagnosticInfoModel> diagnostics,
+            ImmutableArray<ControllerInfoModel> controllers,
+            GeneratorConfigModel config)
+        {
+            if (config.Mode != SelectionModeModel.AllExceptExcluded || config.MinimalApis is not null)
+                return;
+
+            var leftOutCount = controllers
+                .SelectMany(controller => controller.Actions.Where(action =>
+                    action.IsMinimalApiEndpoint &&
+                    IsSelectable(controller, action) &&
+                    !IsOptedIn(controller, action, config) &&
+                    !GetEntryNames(controller, action).Any(config.Exclude.Contains)))
+                .Count();
+            if (leftOutCount == 0)
+                return;
+
+            diagnostics.Add(DiagnosticInfoModel.InFile(
+                DiagnosticDescriptors.EndpointsLeftOut,
+                config.FilePath,
+                default,
+                leftOutCount,
+                leftOutCount == 1 ? "endpoint" : "endpoints"));
         }
 
         /// <summary>
@@ -366,7 +416,7 @@ namespace Api.ToMcp.Generator
             // The example is an action that becomes a tool if the project has one.
             var example = controllers
                 .SelectMany(controller => controller.Actions
-                    .Where(action => IsSelectable(controller, action))
+                    .Where(action => IsSelectable(controller, action) && IsOptedIn(controller, action, config))
                     .Select(action => new
                     {
                         Controller = controller.Name,

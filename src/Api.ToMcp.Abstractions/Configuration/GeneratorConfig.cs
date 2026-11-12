@@ -14,6 +14,13 @@ public sealed class GeneratorConfig
     /// cannot see.
     /// </summary>
     public bool StructuredOutput { get; set; } = true;
+
+    /// <summary>
+    /// Whether <see cref="SelectionMode.AllExceptExcluded"/> mode selects Minimal API endpoints as it selects controller
+    /// actions. Off by default, so updating the package exposes no endpoint a project did not choose. An include entry
+    /// naming an endpoint or its class, and <c>[McpExpose]</c>, select an endpoint whatever this says.
+    /// </summary>
+    public bool MinimalApis { get; set; }
 }
 
 public enum SelectionMode

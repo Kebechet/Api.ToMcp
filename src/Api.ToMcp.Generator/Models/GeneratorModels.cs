@@ -32,6 +32,14 @@ namespace Api.ToMcp.Generator.Models
         public bool StructuredOutput { get; init; } = true;
 
         /// <summary>
+        /// Whether <see cref="SelectionModeModel.AllExceptExcluded"/> mode selects Minimal API endpoints as it selects
+        /// actions, or null when the file does not say, which means it does not. Off by default, so updating the package
+        /// exposes no endpoint the project did not choose; an include entry or <c>[McpExpose]</c> selects one whatever it
+        /// says.
+        /// </summary>
+        public bool? MinimalApis { get; init; }
+
+        /// <summary>
         /// The generator.json this config was read from, or null for the default config of a project without one.
         /// </summary>
         public string? FilePath { get; init; }

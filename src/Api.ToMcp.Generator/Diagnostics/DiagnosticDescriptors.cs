@@ -119,5 +119,19 @@ namespace Api.ToMcp.Generator.Diagnostics
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true,
             description: "Map each HTTP method with a call of its own, such as MapGet and MapPost, to give each of them a tool.");
+
+        /// <summary>
+        /// AllExceptExcluded mode selects Minimal API endpoints only when generator.json opts in, so that updating the
+        /// package exposes none a project did not choose. An info, which says the opt-in exists where the project has
+        /// endpoints and its config does not say whether it wants them.
+        /// </summary>
+        public static readonly DiagnosticDescriptor EndpointsLeftOut = new DiagnosticDescriptor(
+            id: "MCP012",
+            title: "Minimal API endpoints not selected",
+            messageFormat: "AllExceptExcluded mode selects none of the project's {0} Minimal API {1}, as generator.json does not set \"minimalApis\": set it to true to select them, or to false to keep them out without this message",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Info,
+            isEnabledByDefault: true,
+            description: "An include entry naming an endpoint or its class, and [McpExpose] on its handler or class, select an endpoint whatever \"minimalApis\" says.");
     }
 }

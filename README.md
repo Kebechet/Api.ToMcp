@@ -175,6 +175,8 @@ public class OrdersController : CrudController<Order> { }       // Orders_GetAll
 
 The generator finds the endpoints your code maps with Minimal APIs and gives each one a tool, the same kind of tool an action gets: selected by `generator.json`, `[McpExpose]` and `[McpIgnore]`, named by `toolNameFormat`, scoped by its HTTP method, and called through your app's own pipeline. It reads the code at build time, so it takes what it can tell there and warns about the rest with [`MCP010`](#troubleshooting).
 
+> **`AllExceptExcluded` mode selects Minimal API endpoints only with `"minimalApis": true` in `generator.json`.** An app often maps endpoints that were never meant for an AI next to its controllers, such as a webhook or `MapPost("/admin/reset", ...)`, so updating the package exposes none of them by itself. Without the switch, choose endpoints one by one: an `include` entry or `[McpExpose]` selects an endpoint in either mode. See [Minimal API Endpoints](#minimal-api-endpoints-1) under Configuration.
+
 ```csharp
 var app = builder.Build();
 
@@ -190,7 +192,7 @@ api.MapTodoEndpoints();                                            // the endpoi
 - **Routes.** The route pattern, and the prefix of each `MapGroup` the endpoint is mapped in, are constant strings: literals, `const` fields, and strings joined from them with `+` or interpolation. The generator follows the route builder back to the `WebApplication`: through `MapGroup` calls, ASP.NET Core's conventions that return the builder they are called on, such as `WithTags` or `RequireAuthorization`, local variables assigned only where they are declared, and the parameters of your own methods, to every call of the method in the project. That includes extension methods such as `api.MapTodoEndpoints()`, and a method called through an interface it implements or a base method it overrides, as an app does that lists classes mapping endpoints and calls each through its interface. A method called from several places maps its endpoints at the route of each, and each of those gets a tool. The callback of `app.UseEndpoints(endpoints => ...)` maps at the root.
 - **Handlers.** A lambda, a local function, or a static or instance method.
 - **Names.** `{Controller}` in `toolNameFormat` is the class that declares the handler: `Program` for a lambda in top-level statements, `OrderHandlers` for `OrderHandlers.GetById`. `{Action}` is the endpoint's name: the one `.WithName(...)` gives it, else `[EndpointName]` on the handler, else the name of the handler's method or local function, else one made of the HTTP method and the route, with `By` before each route value: `GET /api/orders/{id}` is `GetApiOrdersById`. `[McpExpose(ToolName = ...)]` on the handler replaces the whole tool name, and the title follows the name, as for an action.
-- **Selection.** A `generator.json` entry names an endpoint as it names an action, by its class and name: `"Program"` selects every endpoint whose handler `Program` declares, and `"Program.CreateOrder"` or `"OrderHandlers.GetById"` one of them. `[McpExpose]` and `[McpIgnore]` go on the lambda (`app.MapGet("/x", [McpIgnore] () => ...)`), the method or local function, or the class that declares it, and work as on an action and its controller, `Scope` and the hints included.
+- **Selection.** A `generator.json` entry names an endpoint as it names an action, by its class and name: `"Program"` selects every endpoint whose handler `Program` declares, and `"Program.CreateOrder"` or `"OrderHandlers.GetById"` one of them. An `include` entry selects an endpoint in either mode; `AllExceptExcluded` mode selects the endpoints no `exclude` entry names only with `"minimalApis": true`. `[McpExpose]` and `[McpIgnore]` go on the lambda (`app.MapGet("/x", [McpIgnore] () => ...)`), the method or local function, or the class that declares it, and work as on an action and its controller, `Scope` and the hints included.
 - **Descriptions.** `[McpExpose(Description = ...)]`, else `.WithDescription(...)`, else `[EndpointDescription]`, else `.WithSummary(...)`, else `[EndpointSummary]`, else `[Description]` on the handler, else the method's XML `<summary>`, else `Invokes GET /api/orders/{id}`. An argument is described by `[Description]` on its parameter, else the method's XML `<param>`.
 - **Output schema.** The handler's return type, without `Task<T>` or `ValueTask<T>`, as for an action, and `[ProducesResponseType]` on the handler. A typed result names its body: `Ok<T>`, `Created<T>`, `CreatedAtRoute<T>`, `Accepted<T>` and `AcceptedAtRoute<T>` give `T`, so `Results<Ok<Order>, NotFound>` gives `Order`. Errors, such as `NotFound` or `BadRequest<T>`, do not count, and a success without a body, such as `NoContent`, lets the schema allow null. A `string`, which is sent as text, an anonymous type, which C# cannot name, `IResult`, and a typed result whose status the handler picks, such as `JsonHttpResult<T>`, give none.
 
@@ -217,7 +219,7 @@ An endpoint gets no tool, and build warning [`MCP010`](#troubleshooting), when t
 | Mode | Description |
 |------|-------------|
 | `SelectedOnly` | Only endpoints in the `include` list are exposed (allowlist) |
-| `AllExceptExcluded` | All endpoints except those in `exclude` are exposed (blocklist) |
+| `AllExceptExcluded` | All endpoints except those in `exclude` are exposed (blocklist). Minimal API endpoints are among them only with `"minimalApis": true`; without it, only those an `include` entry names (see [Minimal API Endpoints](#minimal-api-endpoints-1)) |
 
 ### Naming Options
 
@@ -232,6 +234,8 @@ An endpoint gets no tool, and build warning [`MCP010`](#troubleshooting), when t
 - `"ProductsController.GetById"` - Include/exclude specific action
 - `"OrderHandlers"` - Include/exclude every Minimal API endpoint whose handler the class declares, `Program` for lambdas in top-level statements
 - `"OrderHandlers.GetById"` - Include/exclude one endpoint, by its name: from `.WithName(...)`, its handler method, or its HTTP method and route (`Program.GetApiOrdersById`)
+
+An `include` entry naming a Minimal API endpoint or its class selects it in `AllExceptExcluded` mode too, unless an `exclude` entry names it as well.
 
 Entries are case-sensitive, and the `Controller` suffix may be left out (`"Products.GetById"`). A config that selects none of the project's actions makes the build warn with `MCP006`, and one the generator cannot use as written, such as malformed JSON or an unknown `mode`, with `MCP001`; see [Troubleshooting](#troubleshooting). The file may contain comments, but not trailing commas.
 
@@ -253,6 +257,23 @@ On Linux and other case-sensitive file systems the path is matched exactly, so a
 | Option | Description |
 |--------|-------------|
 | `structuredOutput` | `true` (the default) gives every tool whose action returns JSON of a known type an output schema and structured content; `false` turns both off. See [Output Schema and Structured Content](#output-schema-and-structured-content). |
+
+### Minimal API Endpoints
+
+| Option | Description |
+|--------|-------------|
+| `minimalApis` | `true` makes `AllExceptExcluded` mode select every Minimal API endpoint no `exclude` entry names, as it selects actions. Left out or `false`, the default, it selects only the endpoints an `include` entry names, so updating the package exposes no endpoint you did not choose. In either mode, an `include` entry naming an endpoint or its class, and `[McpExpose]` on its handler or class, select it whatever `minimalApis` says. See [Minimal API Endpoints](#minimal-api-endpoints). |
+
+```json
+{
+  "schemaVersion": 1,
+  "mode": "AllExceptExcluded",
+  "exclude": ["Program.PostAdminReset"],
+  "minimalApis": true
+}
+```
+
+Until a project opts in, by the switch, an `include` entry or `[McpExpose]`, its endpoints add no warning either: no `MCP010` and no `MCP006`. In `AllExceptExcluded` mode without `minimalApis` in the file, the generator lists how many endpoints it leaves out in info message `MCP012`, which an IDE shows among its messages; `"minimalApis": false` keeps them out without it. The starter `generator.json` the build creates is in `SelectedOnly` mode, where the switch selects nothing, so it does not set it.
 
 ## Attributes
 
@@ -802,6 +823,7 @@ A scope rejection comes back like a failed API call, as an error result whose te
 - Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
 - An `include` entry that names no controller or action, through a typo or a base controller's name, selects nothing. The build warns with `MCP008`; see [Troubleshooting](#troubleshooting).
 - An action whose route the generator cannot build, such as one with a route value no parameter fills, gets no tool. The build warns with `MCP009`; see [Troubleshooting](#troubleshooting).
+- A Minimal API endpoint gets a tool in `AllExceptExcluded` mode only with `"minimalApis": true`, or when an `include` entry names it or `[McpExpose]` marks it; info message `MCP012` lists those left out. See [Minimal API Endpoints](#minimal-api-endpoints-1).
 - A Minimal API endpoint whose route the generator cannot tell, or whose request it cannot send, gets no tool. The build warns with `MCP010`; see [Minimal API Endpoints](#minimal-api-endpoints).
 - `AdditionalFiles` and include names: see [Troubleshooting](#troubleshooting).
 
@@ -826,6 +848,7 @@ The build reports these warnings:
 | `MCP009` | Generator | An action gets no tool, as the generator cannot build its route: a route value no parameter fills, or a routing attribute whose code it cannot read |
 | `MCP010` | Generator | A Minimal API endpoint gets no tool, as the generator cannot tell its route or cannot send what it reads |
 | `MCP011` | Generator | A Minimal API endpoint that `MapMethods` maps for several HTTP methods a tool sends gets a tool for the first of them only |
+| `MCP012` | Generator (info) | `AllExceptExcluded` mode leaves the project's Minimal API endpoints out, as `generator.json` does not set `minimalApis` |
 | `MCP100` | Build | The build created a starter config, which generates no tools until its `include` is filled |
 | `MCP101` | Build | The config was found at a path that differs from `ApiToMcpConfigPath` only in letter case |
 
@@ -870,6 +893,9 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - `the generator cannot tell which of '...' and '...' it reads from the body`: mark the services `[FromServices]`, or the body `[FromBody]`. See [Where each argument of an endpoint is sent](#where-each-argument-of-an-endpoint-is-sent).
 - `no parameter or property fills the route value '{id}'`: as for `MCP009`, give the handler a parameter of that name.
 - To keep the endpoint from MCP without the warning, mark its handler `[McpIgnore]` or exclude it in `generator.json`, or suppress the warning like any other.
+
+**Info `MCP012: AllExceptExcluded mode selects none of the project's N Minimal API endpoints`.**
+- `AllExceptExcluded` mode selects Minimal API endpoints only when `generator.json` opts in, so that updating the package exposes no endpoint you did not choose. Set `"minimalApis": true` to give every endpoint no `exclude` entry names a tool, or name the endpoints you want in `include`. `"minimalApis": false` keeps them out without the message. See [Minimal API Endpoints](#minimal-api-endpoints-1).
 
 **Build warning `MCP011: The MCP tool of endpoint '...' calls it with GET only`.**
 - `MapMethods` maps the endpoint for several HTTP methods a tool sends, and its tool calls it with the first of them, so the others have no tool. Map each method with a call of its own, such as `MapGet` and `MapPost`, to give each one a tool, or suppress the warning.
