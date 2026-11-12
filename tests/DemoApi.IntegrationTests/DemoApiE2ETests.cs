@@ -255,6 +255,27 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Contains("404", ((TextContentBlock)failed.Content[0]).Text);
     }
 
+    [Fact]
+    public async Task McpProtocol_ToolsCall_SendsTheApiRequestOverHttp_WhenInProcessCallsAreOff()
+    {
+        var requests = new List<string>();
+        await using var client = await ConnectMcpClientAsync(configureServices: services =>
+        {
+            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false);
+            services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
+            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+                new RecordingHandler(((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler(), requests));
+        });
+
+        var result = await client.CallToolAsync(
+            "Products_GetById",
+            new Dictionary<string, object?> { ["id"] = LaptopId.ToString() });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Contains(LaptopId.ToString(), Assert.Single(requests));
+    }
+
     [Theory]
     [InlineData(null, "User is not authenticated. Scope validation requires authentication.")]
     [InlineData("write", "Insufficient scope. Required: Read, Granted: Write")]
@@ -582,16 +603,13 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 
     private async Task<McpClient> ConnectMcpClientAsync(string? protocolVersion = null, Action<IServiceCollection>? configureServices = null, string? grantedScopes = null)
     {
-        // Route the invoker's internal self-call back into the in-memory server (otherwise it
-        // uses a real HttpClient that can't reach the TestServer, and every call "fails").
+        // A generated tool serves its API request in process, through the pipeline the test server runs. The invoker's HTTP
+        // client refuses every request, so a call that reaches the API did not go over HTTP.
         var factory = _factory.WithWebHostBuilder(builder =>
         {
-            builder.UseSetting("McpTools:BaseUrl", "http://localhost");
             builder.ConfigureTestServices(services =>
             {
-                services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()
-                    .ConfigurePrimaryHttpMessageHandler(sp =>
-                        ((TestServer)sp.GetRequiredService<IServer>()).CreateHandler());
+                services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
                 services.AddTransient<IStartupFilter, TestUserStartupFilter>();
                 configureServices?.Invoke(services);
             });
@@ -678,6 +696,38 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
                 });
                 next(app);
             };
+        }
+    }
+
+    private sealed class RefusingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException($"The tool sent {request.RequestUri} over HTTP.");
+        }
+    }
+
+    /// <summary>
+    /// Records the URI of every request it passes on.
+    /// </summary>
+    private sealed class RecordingHandler : DelegatingHandler
+    {
+        private readonly List<string> _requests;
+
+        public RecordingHandler(HttpMessageHandler innerHandler, List<string> requests)
+            : base(innerHandler)
+        {
+            _requests = requests;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (_requests)
+            {
+                _requests.Add(request.RequestUri!.ToString());
+            }
+
+            return base.SendAsync(request, cancellationToken);
         }
     }
 

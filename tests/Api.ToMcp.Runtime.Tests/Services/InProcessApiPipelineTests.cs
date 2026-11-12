@@ -1,0 +1,1006 @@
+using System.Diagnostics;
+using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
+using Api.ToMcp.Runtime.Services;
+using Api.ToMcp.Tests.Shared;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Xunit;
+
+namespace Api.ToMcp.Runtime.Tests.Services;
+
+public class InProcessApiPipelineTests
+{
+    private const string ItemsUrl = "https://api.example.com/api/items";
+    private const string TargetPath = "/api/target";
+    private const string TargetUrl = "https://api.example.com/api/target";
+    private const string SynchronousRead = "read";
+    private const string SynchronousWrite = "write";
+    private const string SynchronousFlush = "flush";
+
+    [Fact]
+    public void IsCaptured_IsFalse_UntilTheAppsPipelineIsBuilt()
+    {
+        var services = CreateServices();
+        var pipeline = CreatePipeline(services);
+        var builder = new PipelineCapturingApplicationBuilderFactory(new ApplicationBuilderFactory(services), pipeline)
+            .CreateBuilder(new FeatureCollection());
+        builder.Run(context => Task.CompletedTask);
+
+        Assert.False(pipeline.IsCaptured);
+        builder.Build();
+        Assert.True(pipeline.IsCaptured);
+    }
+
+    [Fact]
+    public async Task SendAsync_RunsTheRequest_ThroughEveryMiddlewareTheAppAdded()
+    {
+        var pipeline = Build(app =>
+        {
+            app.Use((context, next) => Trail(context, "first", next));
+            app.Use((context, next) => Trail(context, "second", next));
+            app.Run(context => context.Response.WriteAsync(string.Join(",", (List<string>)context.Items["trail"]!)));
+        });
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("first,second", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_HandsTheAppTheRequest_AsTheMessageDescribesIt()
+    {
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            var body = await new StreamReader(context.Request.Body).ReadToEndAsync();
+            await context.Response.WriteAsJsonAsync(new Dictionary<string, object?>
+            {
+                ["method"] = context.Request.Method,
+                ["scheme"] = context.Request.Scheme,
+                ["host"] = context.Request.Host.Value,
+                ["pathBase"] = context.Request.PathBase.Value,
+                ["path"] = context.Request.Path.Value,
+                ["query"] = context.Request.QueryString.Value,
+                ["protocol"] = context.Request.Protocol,
+                ["authorization"] = context.Request.Headers.Authorization.ToString(),
+                ["custom"] = context.Request.Headers["X-Custom"].ToString(),
+                ["contentType"] = context.Request.ContentType,
+                ["contentLength"] = context.Request.ContentLength,
+                ["body"] = body
+            });
+        }));
+        using var request = new HttpRequestMessage(HttpMethod.Post, ItemsUrl + "?x=1&y=two")
+        {
+            Content = new StringContent("{\"a\":1}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer token-1");
+        request.Headers.Add("X-Custom", "custom-1");
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        var seen = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("POST", seen.GetProperty("method").GetString());
+        Assert.Equal("https", seen.GetProperty("scheme").GetString());
+        Assert.Equal("api.example.com", seen.GetProperty("host").GetString());
+        Assert.Equal("", seen.GetProperty("pathBase").GetString());
+        Assert.Equal("/api/items", seen.GetProperty("path").GetString());
+        Assert.Equal("?x=1&y=two", seen.GetProperty("query").GetString());
+        Assert.Equal("HTTP/1.1", seen.GetProperty("protocol").GetString());
+        Assert.Equal("Bearer token-1", seen.GetProperty("authorization").GetString());
+        Assert.Equal("custom-1", seen.GetProperty("custom").GetString());
+        Assert.Equal("application/json; charset=utf-8", seen.GetProperty("contentType").GetString());
+        Assert.Equal(7, seen.GetProperty("contentLength").GetInt64());
+        Assert.Equal("{\"a\":1}", seen.GetProperty("body").GetString());
+    }
+
+    [Fact]
+    public async Task SendAsync_ReportsNoBody_ForARequestWithoutContent()
+    {
+        var pipeline = Build(app => app.Run(context =>
+            context.Response.WriteAsync($"{context.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody}|{context.Request.ContentLength}")));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("False|", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(6, "413")]
+    [InlineData(7, "{\"a\":1}")]
+    public async Task SendAsync_HoldsTheBody_ToTheLimitTheAppSets_AsAServerDoes(long limit, string expected)
+    {
+        // [RequestSizeLimit] sets the limit; Kestrel throws a BadHttpRequestException with 413 when a body over it is read.
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            context.Features.Get<IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = limit;
+            try
+            {
+                await context.Response.WriteAsync(await new StreamReader(context.Request.Body).ReadToEndAsync());
+            }
+            catch (BadHttpRequestException exception)
+            {
+                await context.Response.WriteAsync(exception.StatusCode.ToString());
+            }
+        }));
+        using var request = new HttpRequestMessage(HttpMethod.Post, ItemsUrl) { Content = new StringContent("{\"a\":1}") };
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_LetsTheAppChangeTheBodyLimit_OnlyBeforeItReadsTheBody()
+    {
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            var limit = context.Features.Get<IHttpMaxRequestBodySizeFeature>()!;
+            var isReadOnlyBefore = limit.IsReadOnly;
+            await context.Request.Body.ReadAsync(new byte[1]);
+            await context.Response.WriteAsync($"{isReadOnlyBefore}|{limit.IsReadOnly}");
+        }));
+        using var request = new HttpRequestMessage(HttpMethod.Post, ItemsUrl) { Content = new StringContent("{\"a\":1}") };
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        Assert.Equal("False|True", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_GivesTheRequest_TheCallersConnectionAndClientCertificate()
+    {
+        using var certificate = CreateCertificate();
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync(
+            $"{context.Connection.RemoteIpAddress}:{context.Connection.RemotePort}|" +
+            $"{context.Connection.LocalIpAddress}:{context.Connection.LocalPort}|" +
+            $"{context.Connection.ClientCertificate?.Thumbprint}")));
+        var caller = new DefaultHttpContext();
+        caller.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.7");
+        caller.Connection.RemotePort = 50123;
+        caller.Connection.LocalIpAddress = IPAddress.Parse("10.0.0.1");
+        caller.Connection.LocalPort = 8080;
+        caller.Connection.ClientCertificate = certificate;
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller, CancellationToken.None);
+
+        Assert.Equal($"203.0.113.7:50123|10.0.0.1:8080|{certificate.Thumbprint}", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_GivesTheRequest_TheCallersPathBase_AndTheRouteAsItsPath()
+    {
+        // A path base the app took from X-Forwarded-Prefix is not in the path, so it cannot be handed over in the path: the
+        // app would route /v1/api/items. A UsePathBase middleware passes a path that does not start with it unchanged.
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync($"{context.Request.PathBase}|{context.Request.Path}")));
+        var caller = new DefaultHttpContext();
+        caller.Request.PathBase = "/v1";
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/v1/api/items"), caller, CancellationToken.None);
+
+        Assert.Equal("/v1|/api/items", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_GivesTheRequest_TheCallersPathBase_WhenItsAddressIsOutsideIt()
+    {
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync($"{context.Request.PathBase}|{context.Request.Path}")));
+        var caller = new DefaultHttpContext();
+        caller.Request.PathBase = "/v1";
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller, CancellationToken.None);
+
+        Assert.Equal("/v1|/api/items", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("/mcp", "/v1", "/v1/api/items", "/v1|/api/items")]
+    [InlineData("/sub/mcp", "/sub", "/sub/api/items", "|/sub/api/items")]
+    [InlineData("/sub/mcp", "/v1/sub", "/v1/sub/api/items", "/v1|/sub/api/items")]
+    [InlineData("/old/mcp", "/v1", "/v1/api/items", "/v1|/api/items")]
+    [InlineData("/old/mcp", "/tenant", "/tenant/api/items", "/tenant|/api/items")]
+    [InlineData("/legacy", "/v1", "/v1/api/items", "/v1|/api/items")]
+    [InlineData("/v1/xyz", "/v1", "/v1/api/items", "/v1|/api/items")]
+    public async Task SendAsync_StartsTheRequest_WithThePartOfTheCallersPathBase_ThatDidNotComeFromItsPath(
+        string callerEntryPath,
+        string callerPathBase,
+        string path,
+        string expected)
+    {
+        // Map and UsePathBase move a part of the path into the path base, so the tool's request must carry that part in its
+        // path for them to take it again. What came from elsewhere, X-Forwarded-Prefix or a path a middleware rewrote,
+        // starts the request as its path base.
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync($"{context.Request.PathBase}|{context.Request.Path}")));
+        var caller = CreateCaller(callerEntryPath, callerPathBase, "/mcp");
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com" + path), caller, CancellationToken.None);
+
+        Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_RunsTheRequest_InTheMapBranchTheCallerCameThrough()
+    {
+        var pipeline = Build(app =>
+        {
+            app.Map("/sub", branch => branch.Run(context => context.Response.WriteAsync($"branch {context.Request.PathBase}|{context.Request.Path}")));
+            app.Run(context => context.Response.WriteAsync("root"));
+        });
+        var caller = CreateCaller(entryPath: "/sub/mcp", pathBase: "/sub", path: "/mcp");
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/sub/api/items"), caller, CancellationToken.None);
+
+        Assert.Equal("branch /sub|/api/items", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task ThePipeline_RecordsEachRequest_AsItEnteredIt()
+    {
+        PipelineEntryFeature? entry = null;
+        var pathBase = PathString.Empty;
+        var services = CreateServices();
+        var builder = new PipelineCapturingApplicationBuilderFactory(new ApplicationBuilderFactory(services), CreatePipeline(services))
+            .CreateBuilder(new FeatureCollection());
+        builder.UsePathBase("/sub");
+        builder.Run(context =>
+        {
+            context.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = false;
+            entry = context.Features.Get<PipelineEntryFeature>();
+            pathBase = context.Request.PathBase;
+            return Task.CompletedTask;
+        });
+        var application = builder.Build();
+        var mcpRequest = new DefaultHttpContext();
+        mcpRequest.Request.Path = "/sub/mcp";
+        mcpRequest.Features.Set<IHttpBodyControlFeature>(new BodyControlFeature { AllowSynchronousIO = true });
+
+        await application(mcpRequest);
+
+        Assert.Equal("/sub", pathBase);
+        Assert.Equal("/sub/mcp", entry?.Path);
+        Assert.True(entry?.AllowSynchronousIO);
+    }
+
+    [Theory]
+    [InlineData("GET", StatusCodes.Status302Found, "GET||")]
+    [InlineData("POST", StatusCodes.Status300MultipleChoices, "GET||")]
+    [InlineData("POST", StatusCodes.Status301MovedPermanently, "GET||")]
+    [InlineData("POST", StatusCodes.Status302Found, "GET||")]
+    [InlineData("PUT", StatusCodes.Status302Found, "PUT|{\"a\":1}|application/json; charset=utf-8")]
+    [InlineData("POST", StatusCodes.Status303SeeOther, "GET||")]
+    [InlineData("DELETE", StatusCodes.Status303SeeOther, "GET||")]
+    [InlineData("POST", StatusCodes.Status307TemporaryRedirect, "POST|{\"a\":1}|application/json; charset=utf-8")]
+    [InlineData("PUT", StatusCodes.Status308PermanentRedirect, "PUT|{\"a\":1}|application/json; charset=utf-8")]
+    public async Task SendAsync_FollowsARedirect_WithTheMethodAndBodyHttpClientHandlerSends(string method, int statusCode, string expected)
+    {
+        var pipeline = BuildRedirectingApp(statusCode, TargetPath);
+        using var request = new HttpRequestMessage(new HttpMethod(method), ItemsUrl);
+        if (method != HttpMethods.Get)
+        {
+            request.Content = new StringContent("{\"a\":1}", Encoding.UTF8, "application/json");
+        }
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+        Assert.Equal(TargetUrl, response.RequestMessage?.RequestUri?.ToString());
+    }
+
+    [Theory]
+    [InlineData("/api/target")]
+    [InlineData("target")]
+    [InlineData(TargetUrl)]
+    [InlineData("https://API.EXAMPLE.COM:443/api/target")]
+    public async Task SendAsync_FollowsARedirect_ToTheSameOrigin(string location)
+    {
+        var pipeline = BuildRedirectingApp(StatusCodes.Status302Found, location);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("GET||", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("https://elsewhere.example.com/api/target")]
+    [InlineData("//elsewhere.example.com/api/target")]
+    [InlineData("http://api.example.com/api/target")]
+    [InlineData("https://api.example.com:8443/api/target")]
+    public async Task SendAsync_ReturnsARedirect_ToAnotherOrigin_AsItIs(string location)
+    {
+        var served = new List<string>();
+        var pipeline = BuildRedirectingApp(StatusCodes.Status302Found, location, served);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal(location, response.Headers.Location?.OriginalString);
+        Assert.Equal(["/api/items"], served);
+    }
+
+    [Theory]
+    [InlineData(StatusCodes.Status201Created)]
+    [InlineData(StatusCodes.Status304NotModified)]
+    public async Task SendAsync_DoesNotFollowTheLocation_OfAResponseThatIsNoRedirect(int statusCode)
+    {
+        var served = new List<string>();
+        var pipeline = BuildRedirectingApp(statusCode, TargetPath, served);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Post, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(statusCode, (int)response.StatusCode);
+        Assert.Equal(["/api/items"], served);
+    }
+
+    [Fact]
+    public async Task SendAsync_KeepsTheRequestsHeaders_AuthorizationIncluded_OnARedirectIntoTheApp()
+    {
+        string? seen = null;
+        var pipeline = Build(app => app.Run(context =>
+        {
+            if (context.Request.Path != TargetPath)
+            {
+                context.Response.StatusCode = StatusCodes.Status302Found;
+                context.Response.Headers.Location = TargetPath;
+                return Task.CompletedTask;
+            }
+
+            seen = $"{context.Request.Headers.Authorization}|{context.Request.Headers["X-Custom"]}";
+            return Task.CompletedTask;
+        }));
+        using var request = new HttpRequestMessage(HttpMethod.Get, ItemsUrl);
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer token-1");
+        request.Headers.Add("X-Custom", "custom-1");
+
+        using var response = await pipeline.SendAsync(request, caller: null, CancellationToken.None);
+
+        Assert.Equal("Bearer token-1|custom-1", seen);
+    }
+
+    [Theory]
+    [InlineData("/v1/api/target", "GET|/v1|/api/target")]
+    [InlineData("/api/target", "302")]
+    public async Task SendAsync_FollowsARedirect_OnlyUnderThePathBaseAProxyGaveTheCaller(string location, string expected)
+    {
+        var pipeline = Build(app => app.Run(context =>
+        {
+            if (context.Request.Path != TargetPath)
+            {
+                context.Response.StatusCode = StatusCodes.Status302Found;
+                context.Response.Headers.Location = location;
+                return Task.CompletedTask;
+            }
+
+            return context.Response.WriteAsync($"{context.Request.Method}|{context.Request.PathBase}|{context.Request.Path}");
+        }));
+        var caller = CreateCaller(entryPath: "/mcp", pathBase: "/v1", path: "/mcp");
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/v1/api/items"), caller, CancellationToken.None);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(expected, response.StatusCode == HttpStatusCode.Found ? "302" : body);
+    }
+
+    [Fact]
+    public async Task SendAsync_StopsFollowingRedirects_AtHttpClientHandlersLimit()
+    {
+        using var handler = new HttpClientHandler();
+        var served = 0;
+        var pipeline = Build(app => app.Run(context =>
+        {
+            served++;
+            context.Response.StatusCode = StatusCodes.Status302Found;
+            context.Response.Headers.Location = "/api/items";
+            return Task.CompletedTask;
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal(handler.MaxAutomaticRedirections + 1, served);
+    }
+
+    [Fact]
+    public async Task SendAsync_ReturnsTheStatusHeadersAndBody_TheAppWrote()
+    {
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status201Created;
+            context.Response.Headers["X-Result"] = "result-1";
+            context.Response.ContentType = "text/plain";
+            await context.Response.WriteAsync("created");
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Post, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal("Created", response.ReasonPhrase);
+        Assert.Equal(["result-1"], response.Headers.GetValues("X-Result"));
+        Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("created", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_StartsTheResponse_AtTheFirstWrite_AfterItsOnStartingCallbacks()
+    {
+        var events = new List<string>();
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            context.Response.OnStarting(() =>
+            {
+                events.Add("starting");
+                context.Response.Headers["X-Started"] = "yes";
+                return Task.CompletedTask;
+            });
+            events.Add($"before write, started={context.Response.HasStarted}");
+            await context.Response.WriteAsync("body");
+            events.Add($"after write, started={context.Response.HasStarted}");
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(["before write, started=False", "starting", "after write, started=True"], events);
+        Assert.Equal(["yes"], response.Headers.GetValues("X-Started"));
+    }
+
+    [Fact]
+    public async Task SendAsync_RunsTheOnStartingCallbacks_OfAResponseWithoutABody()
+    {
+        var pipeline = Build(app => app.Run(context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status204NoContent;
+            context.Response.OnStarting(() =>
+            {
+                context.Response.Headers["X-Started"] = "yes";
+                return Task.CompletedTask;
+            });
+            return Task.CompletedTask;
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Delete, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(["yes"], response.Headers.GetValues("X-Started"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SendAsync_ReturnsWhatTheAppLeftInTheBodyWriter_WithoutAFlush(bool isStartedFirst)
+    {
+        // Utf8JsonWriter over Response.BodyWriter does this: it advances the writer and never flushes it.
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            if (isStartedFirst)
+            {
+                await context.Response.StartAsync();
+            }
+
+            var bytes = Encoding.UTF8.GetBytes("unflushed");
+            bytes.CopyTo(context.Response.BodyWriter.GetMemory(bytes.Length));
+            context.Response.BodyWriter.Advance(bytes.Length);
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("unflushed", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_RunsTheOnCompletedCallbacks_AndDisposesTheRequestsServices()
+    {
+        var tracker = new DisposalTracker();
+        var completed = false;
+        var pipeline = Build(
+            app => app.Run(context =>
+            {
+                context.RequestServices.GetRequiredService<ScopedDisposable>();
+                context.Response.OnCompleted(() =>
+                {
+                    completed = true;
+                    return Task.CompletedTask;
+                });
+                return context.Response.WriteAsync("done");
+            }),
+            services => services.AddSingleton(tracker).AddScoped<ScopedDisposable>());
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.True(completed);
+        Assert.True(tracker.IsDisposed);
+    }
+
+    [Fact]
+    public async Task SendAsync_AnswersAnUnhandledException_With500AndNothingElse_AndLogsIt()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        var pipeline = Build(
+            app => app.Run(context =>
+            {
+                context.Response.Headers["X-Partial"] = "partial";
+                throw new InvalidOperationException("boom");
+            }),
+            loggerProvider: new ListLoggerProvider(logs));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.False(response.Headers.Contains("X-Partial"));
+        Assert.Equal("", await response.Content.ReadAsStringAsync());
+        Assert.Contains(logs, x => x.Level == LogLevel.Error);
+    }
+
+    [Theory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge)]
+    [InlineData(StatusCodes.Status404NotFound)]
+    public async Task SendAsync_AnswersAnEscapedBadHttpRequestException_WithItsStatusAndNothingElse(int statusCode)
+    {
+        var pipeline = Build(app => app.Run(context =>
+        {
+            context.Response.Headers["X-Partial"] = "partial";
+            throw new BadHttpRequestException("refused", statusCode);
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(statusCode, (int)response.StatusCode);
+        Assert.False(response.Headers.Contains("X-Partial"));
+        Assert.Equal("", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_RefusesToChangeAHeader_OnceTheResponseStarted()
+    {
+        string? refusal = null;
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            await context.Response.WriteAsync("body");
+            try
+            {
+                context.Response.Headers["X-Late"] = "late";
+            }
+            catch (InvalidOperationException exception)
+            {
+                refusal = exception.Message;
+            }
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.NotNull(refusal);
+        Assert.False(response.Headers.Contains("X-Late"));
+    }
+
+    [Theory]
+    [InlineData(SynchronousRead)]
+    [InlineData(SynchronousWrite)]
+    [InlineData(SynchronousFlush)]
+    public async Task SendAsync_RefusesSynchronousBodyIO_AsKestrelDoes(string operation)
+    {
+        var pipeline = BuildSynchronousIOApp(operation, isAllowedByTheApp: false);
+
+        using var response = await pipeline.SendAsync(CreatePostRequest(), caller: null, CancellationToken.None);
+
+        Assert.Equal("refused", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(SynchronousRead)]
+    [InlineData(SynchronousWrite)]
+    [InlineData(SynchronousFlush)]
+    public async Task SendAsync_AllowsSynchronousBodyIO_WhenTheServerAllowsItForTheCaller(string operation)
+    {
+        var pipeline = BuildSynchronousIOApp(operation, isAllowedByTheApp: false);
+        var caller = CreateCaller(entryPath: "/mcp", pathBase: "", path: "/mcp", allowSynchronousIO: true);
+
+        using var response = await pipeline.SendAsync(CreatePostRequest(), caller, CancellationToken.None);
+
+        Assert.Equal("allowed", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(SynchronousRead)]
+    [InlineData(SynchronousWrite)]
+    [InlineData(SynchronousFlush)]
+    public async Task SendAsync_AllowsSynchronousBodyIO_WhenTheAppAllowsItForTheRequest(string operation)
+    {
+        var pipeline = BuildSynchronousIOApp(operation, isAllowedByTheApp: true);
+
+        using var response = await pipeline.SendAsync(CreatePostRequest(), caller: null, CancellationToken.None);
+
+        Assert.Equal("allowed", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_Throws_WhenTheAppFailsAfterTheResponseStarted()
+    {
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            await context.Response.WriteAsync("partial");
+            throw new InvalidOperationException("boom");
+        }));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SendAsync_Throws_WhenTheAppAbortsTheRequest()
+    {
+        var pipeline = Build(app => app.Run(context =>
+        {
+            context.Abort();
+            return Task.CompletedTask;
+        }));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SendAsync_AbortsTheRequest_WhenTheCallIsCanceled()
+    {
+        var started = new TaskCompletionSource();
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            started.SetResult();
+            await Task.Delay(Timeout.Infinite, context.RequestAborted);
+        }));
+        using var cancellation = new CancellationTokenSource();
+
+        var sending = pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, cancellation.Token);
+        await started.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending);
+    }
+
+    [Fact]
+    public async Task SendAsync_StopsWaiting_WhenTheCallIsCanceled_ThoughTheAppIgnoresIt_AndCleansUpWhenTheAppEnds()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completed = false;
+        var tracker = new DisposalTracker();
+        var pipeline = Build(
+            app => app.Run(async context =>
+            {
+                context.RequestServices.GetRequiredService<ScopedDisposable>();
+                context.Response.OnCompleted(() =>
+                {
+                    completed = true;
+                    return Task.CompletedTask;
+                });
+                started.SetResult();
+                await release.Task;
+            }),
+            services => services.AddSingleton(tracker).AddScoped<ScopedDisposable>());
+        using var cancellation = new CancellationTokenSource();
+
+        var sending = pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, cancellation.Token);
+        await started.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(tracker.IsDisposed);
+
+        release.SetResult();
+        await tracker.Disposed.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(completed);
+    }
+
+    [Fact]
+    public async Task SendAsync_LeavesTheCallersHttpContext_ToTheCaller()
+    {
+        // The request's own context is the current one inside the app, but setting it must not clear the caller's: the
+        // MCP request still needs its context after the tool's request.
+        var accessor = new HttpContextAccessor();
+        var isOwnContextInside = false;
+        var pipeline = Build(
+            app => app.Run(context =>
+            {
+                isOwnContextInside = ReferenceEquals(accessor.HttpContext, context);
+                return Task.CompletedTask;
+            }),
+            services => services.AddSingleton<IHttpContextAccessor>(accessor));
+        var caller = new DefaultHttpContext();
+        accessor.HttpContext = caller;
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller, CancellationToken.None);
+
+        Assert.True(isOwnContextInside);
+        Assert.Same(caller, accessor.HttpContext);
+    }
+
+    [Fact]
+    public async Task SendAsync_RunsTheApp_UnderTheCallersActivity()
+    {
+        string? activityIdInside = null;
+        var pipeline = Build(app => app.Run(context =>
+        {
+            activityIdInside = Activity.Current?.Id;
+            return Task.CompletedTask;
+        }));
+        using var activity = new Activity("tool call").Start();
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal(activity.Id, activityIdInside);
+    }
+
+    [Fact]
+    public async Task SendAsync_LogsInsideTheApp_UnderARequestScope_LikeAServedRequest()
+    {
+        var scopes = new ScopeRecordingLoggerProvider();
+        string? traceIdentifier = null;
+        var pipeline = Build(
+            app => app.Run(context =>
+            {
+                traceIdentifier = context.TraceIdentifier;
+                context.RequestServices.GetRequiredService<ILogger<InProcessApiPipelineTests>>().LogInformation("inside");
+                return Task.CompletedTask;
+            }),
+            loggerProvider: scopes);
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl + "?page=2"), caller: null, CancellationToken.None);
+
+        var scope = scopes.ScopesByMessage["inside"];
+        Assert.Equal("/api/items", scope["RequestPath"]);
+        Assert.Equal(traceIdentifier, scope["RequestId"]);
+    }
+
+    [Fact]
+    public async Task SendAsync_LogsTheRequestsMethodUrlAndStatus()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        var pipeline = Build(
+            app => app.Run(context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return Task.CompletedTask;
+            }),
+            loggerProvider: new ListLoggerProvider(logs));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Contains(logs, x => x.Level == LogLevel.Information && x.Message.Contains("GET") && x.Message.Contains(ItemsUrl) && x.Message.Contains("404"));
+    }
+
+    private static Task Trail(HttpContext context, string name, RequestDelegate next)
+    {
+        var trail = context.Items["trail"] as List<string>;
+        if (trail is null)
+        {
+            trail = [];
+            context.Items["trail"] = trail;
+        }
+
+        trail.Add(name);
+        return next(context);
+    }
+
+    /// <summary>
+    /// An app that redirects every request but one to the target, and answers that one with its method, body and content
+    /// type.
+    /// </summary>
+    private static InProcessApiPipeline BuildRedirectingApp(int statusCode, string location, List<string>? served = null)
+    {
+        return Build(app => app.Run(async context =>
+        {
+            served?.Add(context.Request.Path.Value!);
+            if (context.Request.Path != TargetPath)
+            {
+                context.Response.StatusCode = statusCode;
+                context.Response.Headers.Location = location;
+                return;
+            }
+
+            var body = await new StreamReader(context.Request.Body).ReadToEndAsync();
+            await context.Response.WriteAsync($"{context.Request.Method}|{body}|{context.Request.ContentType}");
+        }));
+    }
+
+    /// <summary>
+    /// An app that tries the synchronous operation on the request's body and answers whether it was allowed.
+    /// </summary>
+    private static InProcessApiPipeline BuildSynchronousIOApp(string operation, bool isAllowedByTheApp)
+    {
+        return Build(app => app.Run(async context =>
+        {
+            if (isAllowedByTheApp)
+            {
+                context.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = true;
+            }
+
+            try
+            {
+                switch (operation)
+                {
+                    case SynchronousRead:
+                        _ = context.Request.Body.Read(new byte[1], 0, 1);
+                        break;
+                    case SynchronousWrite:
+                        context.Response.Body.Write([], 0, 0);
+                        break;
+                    case SynchronousFlush:
+                        context.Response.Body.Flush();
+                        break;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                await context.Response.WriteAsync("refused");
+                return;
+            }
+
+            await context.Response.WriteAsync("allowed");
+        }));
+    }
+
+    private static HttpRequestMessage CreatePostRequest()
+    {
+        return new HttpRequestMessage(HttpMethod.Post, ItemsUrl) { Content = new StringContent("{\"a\":1}") };
+    }
+
+    /// <summary>
+    /// An MCP request that entered the pipeline at the entry path, and that the pipeline has given the path base and path
+    /// since.
+    /// </summary>
+    private static DefaultHttpContext CreateCaller(string entryPath, string pathBase, string path, bool allowSynchronousIO = false)
+    {
+        var caller = new DefaultHttpContext();
+        caller.Request.Path = entryPath;
+        caller.Features.Set<IHttpBodyControlFeature>(new BodyControlFeature { AllowSynchronousIO = allowSynchronousIO });
+        caller.Features.Set(new PipelineEntryFeature(caller));
+        caller.Request.PathBase = pathBase;
+        caller.Request.Path = path;
+        return caller;
+    }
+
+    private static InProcessApiPipeline Build(
+        Action<IApplicationBuilder> configure,
+        Action<IServiceCollection>? configureServices = null,
+        ILoggerProvider? loggerProvider = null)
+    {
+        var services = CreateServices(configureServices, loggerProvider);
+        var pipeline = CreatePipeline(services);
+        var builder = new PipelineCapturingApplicationBuilderFactory(new ApplicationBuilderFactory(services), pipeline)
+            .CreateBuilder(new FeatureCollection());
+        configure(builder);
+        builder.Build();
+
+        return pipeline;
+    }
+
+    private static ServiceProvider CreateServices(Action<IServiceCollection>? configureServices = null, ILoggerProvider? loggerProvider = null)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(logging =>
+        {
+            if (loggerProvider is not null)
+            {
+                logging.AddProvider(loggerProvider);
+            }
+        });
+        configureServices?.Invoke(services);
+
+        return services.BuildServiceProvider();
+    }
+
+    private static InProcessApiPipeline CreatePipeline(IServiceProvider services)
+    {
+        return new InProcessApiPipeline(new DefaultHttpContextFactory(services), services.GetRequiredService<ILogger<InProcessApiPipeline>>());
+    }
+
+    private static X509Certificate2 CreateCertificate()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=tool-caller", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    }
+
+    private sealed class DisposalTracker
+    {
+        private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsDisposed => _disposed.Task.IsCompleted;
+
+        public Task Disposed => _disposed.Task;
+
+        public void MarkDisposed()
+        {
+            _disposed.TrySetResult();
+        }
+    }
+
+    private sealed class ScopedDisposable : IDisposable
+    {
+        private readonly DisposalTracker _tracker;
+
+        public ScopedDisposable(DisposalTracker tracker)
+        {
+            _tracker = tracker;
+        }
+
+        public void Dispose()
+        {
+            _tracker.MarkDisposed();
+        }
+    }
+
+    private sealed class BodyControlFeature : IHttpBodyControlFeature
+    {
+        public bool AllowSynchronousIO { get; set; }
+    }
+
+    /// <summary>
+    /// Records, for each message, the scope values that were active when it was logged.
+    /// </summary>
+    private sealed class ScopeRecordingLoggerProvider : ILoggerProvider, ISupportExternalScope
+    {
+        private IExternalScopeProvider? _scopeProvider;
+
+        public Dictionary<string, Dictionary<string, object?>> ScopesByMessage { get; } = [];
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            return new ScopeRecordingLogger(this);
+        }
+
+        public void SetScopeProvider(IExternalScopeProvider scopeProvider)
+        {
+            _scopeProvider = scopeProvider;
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class ScopeRecordingLogger : ILogger
+        {
+            private readonly ScopeRecordingLoggerProvider _provider;
+
+            public ScopeRecordingLogger(ScopeRecordingLoggerProvider provider)
+            {
+                _provider = provider;
+            }
+
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+            {
+                return _provider._scopeProvider?.Push(state);
+            }
+
+            public bool IsEnabled(LogLevel logLevel)
+            {
+                return true;
+            }
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                var values = new Dictionary<string, object?>();
+                _provider._scopeProvider?.ForEachScope((scope, collected) =>
+                {
+                    var pairs = scope as IEnumerable<KeyValuePair<string, object?>>;
+                    if (pairs is not null)
+                    {
+                        foreach (var (key, value) in pairs)
+                        {
+                            collected[key] = value;
+                        }
+                    }
+                }, values);
+
+                lock (_provider.ScopesByMessage)
+                {
+                    _provider.ScopesByMessage[formatter(state, exception)] = values;
+                }
+            }
+        }
+    }
+}

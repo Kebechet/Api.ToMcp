@@ -21,9 +21,11 @@ public class IsolatedAssemblyCopyTests
         }
         finally
         {
+            // Deleted before the process ends: from then on, a test running in parallel, in this run or another, may
+            // delete it first as the folder of an ended run.
+            Directory.Delete(otherRunDirectoryPath, recursive: true);
             otherRun.Kill();
             otherRun.WaitForExit();
-            Directory.Delete(otherRunDirectoryPath, recursive: true);
         }
     }
 
