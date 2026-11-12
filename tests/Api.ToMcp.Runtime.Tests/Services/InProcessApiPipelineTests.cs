@@ -412,9 +412,11 @@ public class InProcessApiPipelineTests
 
     private static Task Trail(HttpContext context, string name, RequestDelegate next)
     {
-        if (context.Items["trail"] is not List<string> trail)
+        var trail = context.Items["trail"] as List<string>;
+        if (trail is null)
         {
-            context.Items["trail"] = trail = [];
+            trail = [];
+            context.Items["trail"] = trail;
         }
 
         trail.Add(name);
@@ -530,7 +532,8 @@ public class InProcessApiPipelineTests
                 var values = new Dictionary<string, object?>();
                 _provider._scopeProvider?.ForEachScope((scope, collected) =>
                 {
-                    if (scope is IEnumerable<KeyValuePair<string, object?>> pairs)
+                    var pairs = scope as IEnumerable<KeyValuePair<string, object?>>;
+                    if (pairs is not null)
                     {
                         foreach (var (key, value) in pairs)
                         {

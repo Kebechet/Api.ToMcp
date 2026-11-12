@@ -220,7 +220,8 @@ internal sealed class InProcessApiPipeline
                 LocalIpAddress = caller?.Connection.LocalIpAddress,
                 LocalPort = caller?.Connection.LocalPort ?? 0
             });
-            if (caller?.Features.Get<ITlsConnectionFeature>() is { } tlsConnection)
+            var tlsConnection = caller?.Features.Get<ITlsConnectionFeature>();
+            if (tlsConnection is not null)
             {
                 features.Set(tlsConnection);
             }

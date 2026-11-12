@@ -82,8 +82,10 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
     {
         var caller = _httpContextAccessor.HttpContext;
-        var isInProcess = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is { IsCaptured: true };
-        var url = isInProcess && caller is { Request.Host.HasValue: true }
+        var inProcessPipeline = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured
+            ? _inProcessPipeline
+            : null;
+        var url = inProcessPipeline is not null && caller is not null && caller.Request.Host.HasValue
             ? BuildInProcessUrl(caller.Request, route)
             : BuildUrl(route);
 
@@ -97,8 +99,8 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 
         _logger.LogDebug("MCP invoking {Method} {Url}", method.Method, url);
 
-        using var response = isInProcess
-            ? await _inProcessPipeline!.SendAsync(request, caller, ct)
+        using var response = inProcessPipeline is not null
+            ? await inProcessPipeline.SendAsync(request, caller, ct)
             : await _httpClient.SendAsync(request, ct);
         return await HandleResponse(response, ct);
     }

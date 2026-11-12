@@ -342,9 +342,11 @@ internal static class ParityTrail
 
     public static void Add(HttpContext context, string name)
     {
-        if (context.Items[ItemKey] is not List<string> trail)
+        var trail = context.Items[ItemKey] as List<string>;
+        if (trail is null)
         {
-            context.Items[ItemKey] = trail = [];
+            trail = [];
+            context.Items[ItemKey] = trail;
         }
 
         trail.Add(name);
