@@ -87,12 +87,23 @@ public sealed class InProcessKestrelParityTests
     [Fact]
     public async Task AToolsRequest_FailsWhenAMiddlewareSetsAHeaderAfterTheResponseStarted_AsOneSentToTheServer()
     {
+        var refusals = 0;
         await using var app = await StartAsync(app => app.Use(async (context, next) =>
         {
             await next(context);
-            if (context.Request.Path == LateHeaderRoute)
+            if (context.Request.Path != LateHeaderRoute)
+            {
+                return;
+            }
+
+            try
             {
                 context.Response.Headers["X-Late"] = "late";
+            }
+            catch (InvalidOperationException)
+            {
+                Interlocked.Increment(ref refusals);
+                throw;
             }
         }));
 
@@ -100,6 +111,7 @@ public sealed class InProcessKestrelParityTests
         var tool = await CallToolAsync(app, "parity_get", LateHeaderRoute);
 
         Assert.True(tool.IsError);
+        Assert.Equal(2, refusals);
     }
 
     [Theory]
