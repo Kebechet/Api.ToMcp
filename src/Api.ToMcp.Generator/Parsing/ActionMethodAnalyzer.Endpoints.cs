@@ -672,8 +672,9 @@ namespace Api.ToMcp.Generator.Parsing
         /// <summary>
         /// Whether a complex type without an attribute is surely a service rather than a body, as the generator cannot see
         /// which types the app registers: an interface, a delegate or an abstract class, which no body is read into but a
-        /// collection interface <c>System.Text.Json</c> fills and <c>JsonNode</c>; an Entity Framework context; and a class
-        /// of the framework's own that is neither a collection nor JSON.
+        /// collection interface <c>System.Text.Json</c> fills and <c>JsonNode</c>; an Entity Framework context; and the few
+        /// classes of the framework an app registers as services, such as <c>HttpClient</c>. Any other class, the
+        /// framework's included, may be the body.
         /// </summary>
         private static bool IsLikelyService(ITypeSymbol type)
         {
@@ -688,19 +689,9 @@ namespace Api.ToMcp.Generator.Parsing
             if (ResponseTypeResolver.IsOrImplements(type, MinimalApiNames.JsonNode))
                 return false;
 
-            if (type.IsAbstract || ResponseTypeResolver.IsOrImplements(type, MinimalApiNames.DbContext))
-                return true;
-
-            if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Array)
-                return false;
-
-            var namespaceName = type.ContainingNamespace?.ToDisplayString() + ".";
-            var isFrameworkType = namespaceName.StartsWith(MinimalApiNames.SystemNamespacePrefix, StringComparison.Ordinal) ||
-                namespaceName.StartsWith(MinimalApiNames.MicrosoftNamespacePrefix, StringComparison.Ordinal);
-
-            return isFrameworkType &&
-                !IsCollection(type) &&
-                !namespaceName.StartsWith(MinimalApiNames.JsonNamespacePrefix, StringComparison.Ordinal);
+            return type.IsAbstract ||
+                ResponseTypeResolver.IsOrImplements(type, MinimalApiNames.DbContext) ||
+                MinimalApiNames.FrameworkServiceClasses.Any(x => ResponseTypeResolver.IsOrImplements(type, x));
         }
 
         private static ITypeSymbol UnwrapNullable(ITypeSymbol type)

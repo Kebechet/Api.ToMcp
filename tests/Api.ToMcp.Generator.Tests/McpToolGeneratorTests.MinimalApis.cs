@@ -635,6 +635,9 @@ namespace TestApi
     [InlineData(@"(int id, [FromBody] Order order, OrderService service, IEnumerable<Order> all) => 1", "POST", @"var bodyJson = JsonSerializer.Serialize(order);")]
     [InlineData(@"(int id, Order order, IOrderRepository repository, ShopContext db, Func<int> clock) => 1", "PUT", @"var bodyJson = JsonSerializer.Serialize(order);")]
     [InlineData(@"(int id, IList<Order> orders) => 1", "PATCH", @"var bodyJson = JsonSerializer.Serialize(orders);")]
+    [InlineData(@"(int id, Microsoft.AspNetCore.Identity.Data.LoginRequest login) => 1", "POST", @"var bodyJson = JsonSerializer.Serialize(login);")]
+    [InlineData(@"(int id, ProblemDetails problem, System.Net.Http.HttpClient http) => 1", "POST", @"var bodyJson = JsonSerializer.Serialize(problem);")]
+    [InlineData(@"(int id, Order order, Microsoft.AspNetCore.Identity.UserManager<Microsoft.AspNetCore.Identity.IdentityUser> users) => 1", "PUT", @"var bodyJson = JsonSerializer.Serialize(order);")]
     public void EndpointParameter_IsSent_WhereTheMinimalApiBindsIt(string handler, string httpMethod, string expectedLines)
     {
         var mapMethod = "Map" + httpMethod.Substring(0, 1) + httpMethod.Substring(1).ToLowerInvariant();
@@ -778,6 +781,42 @@ record Todo(int Id, string Title);
         Assert.False(errors.Any(), string.Join(Environment.NewLine, errors));
         Assert.Contains("internal static class Program_PostApiTodosTool", generated);
         Assert.Contains("public static class Program_GetApiTodosByIdTool", generated);
+    }
+
+    [Fact]
+    public void Endpoint_OfTheJsonPatchDocsSample_SendsThePatchDocumentAsTheBody()
+    {
+        // https://learn.microsoft.com/en-us/aspnet/core/web-api/jsonpatch?view=aspnetcore-10.0: a class of the framework
+        // is the body, not a service, and the context next to it is one.
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app)
+        {
+            var group = app.MapGroup(""/customers"");
+            group.MapPatch(""/{id}"", (AppDb db, string id, JsonPatchDocument<Order> patchDoc) => 1).WithName(""PatchCustomer"");
+        }").Replace("using Api.ToMcp.Abstractions;", "using Api.ToMcp.Abstractions;\nusing Microsoft.AspNetCore.JsonPatch.SystemTextJson;") + @"
+namespace TestApi
+{
+    public class AppDb : Microsoft.EntityFrameworkCore.DbContext { }
+}
+
+namespace Microsoft.EntityFrameworkCore
+{
+    public class DbContext { }
+}
+
+namespace Microsoft.AspNetCore.JsonPatch.SystemTextJson
+{
+    public class JsonPatchDocument<TModel> where TModel : class
+    {
+        public List<object> Operations { get; } = new();
+    }
+}
+";
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_PatchCustomerTool").Replace("\r", "");
+
+        Assert.Contains("[Description(\"Parameter: id\")] string id,\n            [Description(\"Parameter: patchDoc\")] Microsoft.AspNetCore.JsonPatch.SystemTextJson.JsonPatchDocument<TestApi.Order> patchDoc,", tool);
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(patchDoc);", tool);
+        Assert.Contains("await invoker.PatchAsync(route, bodyJson, cancellationToken)", tool);
     }
 
     [Fact]

@@ -87,10 +87,24 @@ internal static class MinimalApiNames
     public const string DbContext = "Microsoft.EntityFrameworkCore.DbContext";
 
     public const string JsonNode = "System.Text.Json.Nodes.JsonNode";
-    public const string SystemNamespacePrefix = "System.";
-    public const string MicrosoftNamespacePrefix = "Microsoft.";
-    public const string CollectionsNamespacePrefix = "System.Collections.";
-    public const string JsonNamespacePrefix = "System.Text.Json.";
+
+    public const string HttpClient = "System.Net.Http.HttpClient";
+    public const string UserManager = "Microsoft.AspNetCore.Identity.UserManager<TUser>";
+    public const string SignInManager = "Microsoft.AspNetCore.Identity.SignInManager<TUser>";
+    public const string RoleManager = "Microsoft.AspNetCore.Identity.RoleManager<TRole>";
+
+    /// <summary>
+    /// Classes of the framework that an app registers as services and takes in a handler. Any other class of the
+    /// framework may be a body, such as <c>JsonPatchDocument&lt;T&gt;</c>, <c>ProblemDetails</c> or Identity's
+    /// <c>LoginRequest</c>.
+    /// </summary>
+    public static readonly string[] FrameworkServiceClasses =
+    {
+        HttpClient,
+        UserManager,
+        SignInManager,
+        RoleManager
+    };
 
     public const string ListInterface = "System.Collections.Generic.IList<T>";
     public const string CollectionInterface = "System.Collections.Generic.ICollection<T>";
