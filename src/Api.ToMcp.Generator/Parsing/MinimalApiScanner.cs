@@ -217,11 +217,12 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Whether the route pattern of the call holds <c>/mcp</c>, which no tool ever calls, so it counts for no endpoint
-        /// left out.
+        /// left out. Only arguments written as strings are read: the constant value of a lambda would bind its body.
         /// </summary>
         private static bool IsMcpPattern(InvocationExpressionSyntax invocation, SemanticModel semanticModel, CancellationToken ct)
         {
             var pattern = invocation.ArgumentList.Arguments
+                .Where(x => x.Expression is LiteralExpressionSyntax || x.Expression is InterpolatedStringExpressionSyntax || x.Expression is BinaryExpressionSyntax)
                 .Select(x => semanticModel.GetConstantValue(x.Expression, ct).Value as string)
                 .FirstOrDefault(x => x is not null);
 

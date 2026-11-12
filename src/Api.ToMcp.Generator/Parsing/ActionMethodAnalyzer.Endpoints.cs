@@ -203,7 +203,7 @@ namespace Api.ToMcp.Generator.Parsing
             if (lambda is not null || handler is AnonymousMethodExpressionSyntax)
             {
                 var attributes = lambda?.AttributeLists.SelectMany(x => x.Attributes).ToList() ?? new List<AttributeSyntax>();
-                return (semanticModel.GetEnclosingSymbol(invocation.SpanStart, ct)?.ContainingType, noMethods, attributes);
+                return (GetEnclosingType(invocation, semanticModel, ct), noMethods, attributes);
             }
 
             var memberAccess = handler as MemberAccessExpressionSyntax;
@@ -226,6 +226,19 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return (null, noMethods, noAttributes);
+        }
+
+        /// <summary>
+        /// The class a call is written in, from its declaration, which binds no method body; the class of top-level
+        /// statements, which no declaration in the file names, from the semantic model.
+        /// </summary>
+        private static INamedTypeSymbol? GetEnclosingType(SyntaxNode node, SemanticModel semanticModel, CancellationToken ct)
+        {
+            var typeDeclaration = node.FirstAncestorOrSelf<BaseTypeDeclarationSyntax>();
+
+            return typeDeclaration is null
+                ? semanticModel.GetEnclosingSymbol(node.SpanStart, ct)?.ContainingType
+                : semanticModel.GetDeclaredSymbol(typeDeclaration, ct) as INamedTypeSymbol;
         }
 
         /// <summary>
