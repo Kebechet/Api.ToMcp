@@ -133,5 +133,18 @@ namespace Api.ToMcp.Generator.Diagnostics
             DiagnosticSeverity.Info,
             isEnabledByDefault: true,
             description: "An include entry naming an endpoint or its class, and [McpExpose] on its handler or class, select an endpoint whatever \"minimalApis\" says.");
+
+        /// <summary>
+        /// An include entry such as <c>"Orders"</c> names a controller, <c>OrdersController</c>, and a class of the same
+        /// name that declares Minimal API endpoints. It selected the controller before endpoints became tools, so it selects
+        /// only the controller's actions rather than expose the endpoints too. An info, as it selects what it did before.
+        /// </summary>
+        public static readonly DiagnosticDescriptor IncludeEntryNamesControllerAndEndpoints = new DiagnosticDescriptor(
+            id: "MCP013",
+            title: "Include entry names a controller and Minimal API endpoints",
+            messageFormat: "The include entry '{0}' in generator.json names a controller and the class '{1}', which declares Minimal API endpoints; it selects only the controller's actions: {2}",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Info,
+            isEnabledByDefault: true);
     }
 }

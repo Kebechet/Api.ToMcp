@@ -618,6 +618,49 @@ namespace TestApi
     }
 
     [Fact]
+    public void IncludeEntry_ThatNamesAController_SelectsNoEndpointOfAClassOfTheSameName()
+    {
+        // "Orders" selected OrdersController before endpoints became tools; it must not now expose an admin endpoint
+        // whose handler a class Orders declares.
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app)
+        {
+            app.MapPost(""/admin/reset"", Orders.Reset);
+            app.MapGet(""/orders/export"", Orders.Export);
+        }") + @"
+namespace TestApi
+{
+    public static class Orders
+    {
+        public static int Reset() => 1;
+
+        public static int Export() => 1;
+    }
+
+    [ApiController]
+    [Route(""api/[controller]"")]
+    public class OrdersController : ControllerBase
+    {
+        [HttpGet]
+        public int GetAll() => 1;
+    }
+}
+";
+        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""Orders""] }";
+        const string namingAnEndpoint = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""Orders"", ""Orders.Export""] }";
+
+        var info = Assert.Single(GetGeneratorDiagnostics(source, config));
+
+        Assert.Equal("OrdersController_GetAllTool", Assert.Single(GetToolClassNames(RunGenerator(source, config))));
+        Assert.Equal("MCP013", info.Id);
+        Assert.Equal(DiagnosticSeverity.Info, info.Severity);
+        Assert.Equal(
+            "The include entry 'Orders' in generator.json names a controller and the class 'Orders', which declares Minimal API endpoints; it selects only the controller's actions: to select an endpoint as well, name it by an entry no controller has, such as 'Orders.Reset', or mark it [McpExpose]",
+            info.GetMessage());
+        Assert.Equal(new[] { "OrdersController_GetAllTool", "Orders_ExportTool" }, GetToolClassNames(RunGenerator(source, namingAnEndpoint)));
+    }
+
+    [Fact]
     public void ExcludeEntry_NamingAnEndpointByItsRoute_MatchesIt_WithoutTheOptIn()
     {
         // Without the opt-in, the generator analyzes only the endpoints an entry or [McpExpose] concerns; one an entry
