@@ -321,7 +321,11 @@ internal sealed class InProcessApiPipeline
                 path = fullPath;
             }
 
-            var requestBody = new InProcessRequestBodyStream(body);
+            var bodyControl = new BodyControlFeature
+            {
+                AllowSynchronousIO = caller?.Features.Get<PipelineEntryFeature>()?.AllowSynchronousIO ?? false
+            };
+            var requestBody = new InProcessRequestBodyStream(body, bodyControl);
             var requestFeature = new HttpRequestFeature
             {
                 Protocol = HttpProtocol.Http11,
@@ -350,12 +354,13 @@ internal sealed class InProcessApiPipeline
             }
 
             var response = new InProcessResponse();
-            var responseBody = new StreamResponseBodyFeature(new InProcessResponseBodyStream(response.Body, response.Feature));
+            var responseBody = new StreamResponseBodyFeature(new InProcessResponseBodyStream(response.Body, response.Feature, bodyControl));
             var lifetime = new RequestLifetimeFeature(cancellationToken);
             var features = new FeatureCollection();
             features.Set<IHttpRequestFeature>(requestFeature);
             features.Set<IHttpMaxRequestBodySizeFeature>(requestBody);
             features.Set<IHttpRequestBodyDetectionFeature>(new RequestBodyDetectionFeature(body.Length > 0));
+            features.Set<IHttpBodyControlFeature>(bodyControl);
             features.Set<IHttpResponseFeature>(response.Feature);
             features.Set<IHttpResponseBodyFeature>(responseBody);
             features.Set<IHttpRequestLifetimeFeature>(lifetime);
@@ -442,6 +447,11 @@ internal sealed class InProcessApiPipeline
         }
 
         public bool CanHaveBody { get; }
+    }
+
+    private sealed class BodyControlFeature : IHttpBodyControlFeature
+    {
+        public bool AllowSynchronousIO { get; set; }
     }
 
     /// <summary>

@@ -7,17 +7,20 @@ namespace Api.ToMcp.Runtime.Services;
 /// The body of an in-process request, held to the limit the app sets, as with <c>[RequestSizeLimit]</c>, as Kestrel
 /// holds a body to it: reading a body over the limit throws the <see cref="BadHttpRequestException"/> with 413 that
 /// Kestrel throws, and the limit is fixed once reading began. Without a limit set, the body is read whole: it is already
-/// in memory, and no larger than the MCP request the server took it from.
+/// in memory, and no larger than the MCP request the server took it from. Synchronous reads are refused unless the request
+/// allows them, as Kestrel refuses them.
 /// </summary>
 internal sealed class InProcessRequestBodyStream : Stream, IHttpMaxRequestBodySizeFeature
 {
     private readonly MemoryStream _body;
+    private readonly IHttpBodyControlFeature _bodyControl;
     private long? _maxRequestBodySize;
     private bool _isReadStarted;
 
-    public InProcessRequestBodyStream(byte[] body)
+    public InProcessRequestBodyStream(byte[] body, IHttpBodyControlFeature bodyControl)
     {
         _body = new MemoryStream(body, writable: false);
+        _bodyControl = bodyControl;
     }
 
     public bool IsReadOnly => _isReadStarted;
@@ -52,6 +55,11 @@ internal sealed class InProcessRequestBodyStream : Stream, IHttpMaxRequestBodySi
 
     public override int Read(byte[] buffer, int offset, int count)
     {
+        if (!_bodyControl.AllowSynchronousIO)
+        {
+            throw new InvalidOperationException("Synchronous operations are disallowed. Call ReadAsync or set AllowSynchronousIO to true instead.");
+        }
+
         StartReading();
         return _body.Read(buffer, offset, count);
     }

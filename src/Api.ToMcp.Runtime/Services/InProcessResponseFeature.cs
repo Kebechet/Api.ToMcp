@@ -7,14 +7,21 @@ namespace Api.ToMcp.Runtime.Services;
 /// <summary>
 /// The response of an in-process request, started and completed as a server starts and completes one: the
 /// <c>OnStarting</c> callbacks run, last registered first, right before the first byte of the body or when the app ends
-/// without one, and the <c>OnCompleted</c> callbacks, which dispose the request's services among others, after it.
+/// without one, and the <c>OnCompleted</c> callbacks, which dispose the request's services among others, after it. Once
+/// it has started, its headers are read-only, as Kestrel's are.
 /// </summary>
 internal sealed class InProcessResponseFeature : HttpResponseFeature
 {
     private readonly List<(Func<object, Task> Callback, object State)> _onStarting = [];
     private readonly List<(Func<object, Task> Callback, object State)> _onCompleted = [];
+    private readonly HeaderDictionary _headers = new();
     private bool _isStarting;
     private bool _hasStarted;
+
+    public InProcessResponseFeature()
+    {
+        Headers = _headers;
+    }
 
     public override bool HasStarted => _hasStarted;
 
@@ -50,7 +57,7 @@ internal sealed class InProcessResponseFeature : HttpResponseFeature
             await _onStarting[i].Callback(_onStarting[i].State);
         }
 
-        _hasStarted = true;
+        MarkStarted();
     }
 
     /// <summary>
@@ -61,8 +68,8 @@ internal sealed class InProcessResponseFeature : HttpResponseFeature
     {
         StatusCode = statusCode;
         ReasonPhrase = null;
-        Headers.Clear();
-        _hasStarted = true;
+        _headers.Clear();
+        MarkStarted();
     }
 
     /// <summary>
@@ -83,21 +90,30 @@ internal sealed class InProcessResponseFeature : HttpResponseFeature
             }
         }
     }
+
+    private void MarkStarted()
+    {
+        _hasStarted = true;
+        _headers.IsReadOnly = true;
+    }
 }
 
 /// <summary>
 /// The response body of an in-process request, kept in memory. Writing or flushing starts the response first, which runs
-/// its <c>OnStarting</c> callbacks while the app can still change the headers.
+/// its <c>OnStarting</c> callbacks while the app can still change the headers. Synchronous writes are refused unless the
+/// request allows them, as Kestrel refuses them.
 /// </summary>
 internal sealed class InProcessResponseBodyStream : Stream
 {
     private readonly MemoryStream _buffer;
     private readonly InProcessResponseFeature _response;
+    private readonly IHttpBodyControlFeature _bodyControl;
 
-    public InProcessResponseBodyStream(MemoryStream buffer, InProcessResponseFeature response)
+    public InProcessResponseBodyStream(MemoryStream buffer, InProcessResponseFeature response, IHttpBodyControlFeature bodyControl)
     {
         _buffer = buffer;
         _response = response;
+        _bodyControl = bodyControl;
     }
 
     public override bool CanRead => false;
@@ -116,6 +132,7 @@ internal sealed class InProcessResponseBodyStream : Stream
 
     public override void Flush()
     {
+        ThrowIfSynchronousIODisallowed();
         _response.StartAsync().GetAwaiter().GetResult();
     }
 
@@ -126,6 +143,7 @@ internal sealed class InProcessResponseBodyStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
+        ThrowIfSynchronousIODisallowed();
         _response.StartAsync().GetAwaiter().GetResult();
         _buffer.Write(buffer, offset, count);
     }
@@ -154,5 +172,13 @@ internal sealed class InProcessResponseBodyStream : Stream
     public override void SetLength(long value)
     {
         throw new NotSupportedException();
+    }
+
+    private void ThrowIfSynchronousIODisallowed()
+    {
+        if (!_bodyControl.AllowSynchronousIO)
+        {
+            throw new InvalidOperationException("Synchronous operations are disallowed. Call WriteAsync or set AllowSynchronousIO to true instead.");
+        }
     }
 }

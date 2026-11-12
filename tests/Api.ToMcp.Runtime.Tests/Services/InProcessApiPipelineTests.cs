@@ -21,6 +21,9 @@ public class InProcessApiPipelineTests
     private const string ItemsUrl = "https://api.example.com/api/items";
     private const string TargetPath = "/api/target";
     private const string TargetUrl = "https://api.example.com/api/target";
+    private const string SynchronousRead = "read";
+    private const string SynchronousWrite = "write";
+    private const string SynchronousFlush = "flush";
 
     [Fact]
     public void IsCaptured_IsFalse_UntilTheAppsPipelineIsBuilt()
@@ -247,6 +250,7 @@ public class InProcessApiPipelineTests
         builder.UsePathBase("/sub");
         builder.Run(context =>
         {
+            context.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = false;
             entry = context.Features.Get<PipelineEntryFeature>();
             pathBase = context.Request.PathBase;
             return Task.CompletedTask;
@@ -254,11 +258,13 @@ public class InProcessApiPipelineTests
         var application = builder.Build();
         var mcpRequest = new DefaultHttpContext();
         mcpRequest.Request.Path = "/sub/mcp";
+        mcpRequest.Features.Set<IHttpBodyControlFeature>(new BodyControlFeature { AllowSynchronousIO = true });
 
         await application(mcpRequest);
 
         Assert.Equal("/sub", pathBase);
         Assert.Equal("/sub/mcp", entry?.Path);
+        Assert.True(entry?.AllowSynchronousIO);
     }
 
     [Theory]
@@ -549,6 +555,69 @@ public class InProcessApiPipelineTests
     }
 
     [Fact]
+    public async Task SendAsync_RefusesToChangeAHeader_OnceTheResponseStarted()
+    {
+        string? refusal = null;
+        var pipeline = Build(app => app.Run(async context =>
+        {
+            await context.Response.WriteAsync("body");
+            try
+            {
+                context.Response.Headers["X-Late"] = "late";
+            }
+            catch (InvalidOperationException exception)
+            {
+                refusal = exception.Message;
+            }
+        }));
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.NotNull(refusal);
+        Assert.False(response.Headers.Contains("X-Late"));
+    }
+
+    [Theory]
+    [InlineData(SynchronousRead)]
+    [InlineData(SynchronousWrite)]
+    [InlineData(SynchronousFlush)]
+    public async Task SendAsync_RefusesSynchronousBodyIO_AsKestrelDoes(string operation)
+    {
+        var pipeline = BuildSynchronousIOApp(operation, isAllowedByTheApp: false);
+
+        using var response = await pipeline.SendAsync(CreatePostRequest(), caller: null, CancellationToken.None);
+
+        Assert.Equal("refused", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(SynchronousRead)]
+    [InlineData(SynchronousWrite)]
+    [InlineData(SynchronousFlush)]
+    public async Task SendAsync_AllowsSynchronousBodyIO_WhenTheServerAllowsItForTheCaller(string operation)
+    {
+        var pipeline = BuildSynchronousIOApp(operation, isAllowedByTheApp: false);
+        var caller = CreateCaller(entryPath: "/mcp", pathBase: "", path: "/mcp", allowSynchronousIO: true);
+
+        using var response = await pipeline.SendAsync(CreatePostRequest(), caller, CancellationToken.None);
+
+        Assert.Equal("allowed", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(SynchronousRead)]
+    [InlineData(SynchronousWrite)]
+    [InlineData(SynchronousFlush)]
+    public async Task SendAsync_AllowsSynchronousBodyIO_WhenTheAppAllowsItForTheRequest(string operation)
+    {
+        var pipeline = BuildSynchronousIOApp(operation, isAllowedByTheApp: true);
+
+        using var response = await pipeline.SendAsync(CreatePostRequest(), caller: null, CancellationToken.None);
+
+        Assert.Equal("allowed", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task SendAsync_Throws_WhenTheAppFailsAfterTheResponseStarted()
     {
         var pipeline = Build(app => app.Run(async context =>
@@ -704,13 +773,56 @@ public class InProcessApiPipelineTests
     }
 
     /// <summary>
+    /// An app that tries the synchronous operation on the request's body and answers whether it was allowed.
+    /// </summary>
+    private static InProcessApiPipeline BuildSynchronousIOApp(string operation, bool isAllowedByTheApp)
+    {
+        return Build(app => app.Run(async context =>
+        {
+            if (isAllowedByTheApp)
+            {
+                context.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = true;
+            }
+
+            try
+            {
+                switch (operation)
+                {
+                    case SynchronousRead:
+                        _ = context.Request.Body.Read(new byte[1], 0, 1);
+                        break;
+                    case SynchronousWrite:
+                        context.Response.Body.Write([], 0, 0);
+                        break;
+                    case SynchronousFlush:
+                        context.Response.Body.Flush();
+                        break;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                await context.Response.WriteAsync("refused");
+                return;
+            }
+
+            await context.Response.WriteAsync("allowed");
+        }));
+    }
+
+    private static HttpRequestMessage CreatePostRequest()
+    {
+        return new HttpRequestMessage(HttpMethod.Post, ItemsUrl) { Content = new StringContent("{\"a\":1}") };
+    }
+
+    /// <summary>
     /// An MCP request that entered the pipeline at the entry path, and that the pipeline has given the path base and path
     /// since.
     /// </summary>
-    private static DefaultHttpContext CreateCaller(string entryPath, string pathBase, string path)
+    private static DefaultHttpContext CreateCaller(string entryPath, string pathBase, string path, bool allowSynchronousIO = false)
     {
         var caller = new DefaultHttpContext();
         caller.Request.Path = entryPath;
+        caller.Features.Set<IHttpBodyControlFeature>(new BodyControlFeature { AllowSynchronousIO = allowSynchronousIO });
         caller.Features.Set(new PipelineEntryFeature(caller));
         caller.Request.PathBase = pathBase;
         caller.Request.Path = path;
@@ -777,6 +889,11 @@ public class InProcessApiPipelineTests
         {
             _tracker.IsDisposed = true;
         }
+    }
+
+    private sealed class BodyControlFeature : IHttpBodyControlFeature
+    {
+        public bool AllowSynchronousIO { get; set; }
     }
 
     /// <summary>
