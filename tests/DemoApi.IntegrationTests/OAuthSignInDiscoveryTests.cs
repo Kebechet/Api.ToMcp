@@ -1,55 +1,35 @@
 using System.Net;
-using System.Security.Claims;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json.Nodes;
-using Api.ToMcp.Abstractions.Scopes;
-using Api.ToMcp.Runtime;
-using Api.ToMcp.Runtime.Options;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using ModelContextProtocol.Authentication;
-using ModelContextProtocol.Client;
+using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Protocol;
 using Xunit;
+using static DemoApi.IntegrationTests.OAuthTestApp;
 
 namespace DemoApi.IntegrationTests;
 
 /// <summary>
-/// OAuth sign-in discovery on Kestrel, with the demo's generated tools and an authentication scheme named <c>Bearer</c>
-/// that reads two fixed tokens: one that grants <c>mcp:read</c>, one that grants <c>mcp:read mcp:write</c>. The demo's
-/// tools require Read, Write and Delete. The invoker's HTTP client refuses every request, so a tool call that succeeds
-/// was served in process.
+/// OAuth sign-in discovery as a client meets it: the challenges, the metadata, and the scope challenges of tool calls. See
+/// <see cref="OAuthTestApp"/> for the app.
 /// </summary>
 public sealed class OAuthSignInDiscoveryTests
 {
-    private const string ReadToken = "Bearer read-token";
-    private const string WriteToken = "Bearer write-token";
-
     /// <summary>
-    /// Grants <c>mcp:read</c> to a user in <see cref="MemberRole"/>, the role the fallback policy of some tests requires.
+    /// The body size up to which the README says a tool call is read before the SDK reads it.
     /// </summary>
-    private const string MemberToken = "Bearer member-token";
-    private const string MemberRole = "mcp-user";
-    private const string AuthorizationServer = "https://login.example.com";
-    private const string MetadataPath = "/.well-known/oauth-protected-resource/mcp";
+    private const int DocumentedPreReadLimit = 1024 * 1024;
 
-    // Seeded in ProductsController.
-    private const string LaptopId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    private static readonly JsonObject Forecast = new() { ["city"] = "Brno", ["date"] = "2026-11-12T00:00:00", ["temperatureC"] = 21, ["summary"] = "Mild" };
 
     [Fact]
     public async Task ARequestWithoutAToken_GetsA401_ThatPointsToTheMetadata()
     {
-        await using var app = await StartAppAsync();
+        await using var app = await StartAsync();
         var address = app.Urls.Single();
 
-        using var response = await PostToolCallAsync(address, "Products_GetAll", authorization: null);
+        using var response = await PostToolCallAsync(address + "/mcp", "Products_GetAll", authorization: null);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal($"Bearer resource_metadata=\"{address}{MetadataPath}\"", response.Headers.WwwAuthenticate.ToString());
@@ -58,7 +38,7 @@ public sealed class OAuthSignInDiscoveryTests
     [Fact]
     public async Task TheMetadata_NamesTheResource_TheAuthorizationServer_AndTheScopesTheToolsRequire()
     {
-        await using var app = await StartAppAsync();
+        await using var app = await StartAsync();
         var address = app.Urls.Single();
         using var client = new HttpClient();
 
@@ -77,7 +57,7 @@ public sealed class OAuthSignInDiscoveryTests
     [InlineData(WriteToken)]
     public async Task ASignedInToolCall_IsServedInProcess(string token)
     {
-        await using var app = await StartAppAsync();
+        await using var app = await StartAsync();
         await using var client = await ConnectAsync(app.Urls.Single(), token);
 
         var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
@@ -89,10 +69,10 @@ public sealed class OAuthSignInDiscoveryTests
     [Fact]
     public async Task AToolCallWithTooLittleScope_GetsA403InsufficientScope_NamingTheScopesItRequiresAndTheCallerHas()
     {
-        await using var app = await StartAppAsync();
+        await using var app = await StartAsync();
         var address = app.Urls.Single();
 
-        using var response = await PostToolCallAsync(address, "Weather_Create", ReadToken);
+        using var response = await PostToolCallAsync(address + "/mcp", "Weather_Create", ReadToken);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal(
@@ -103,12 +83,10 @@ public sealed class OAuthSignInDiscoveryTests
     [Fact]
     public async Task AToolCallWithTheScopeItRequires_IsServed()
     {
-        await using var app = await StartAppAsync();
+        await using var app = await StartAsync();
         await using var client = await ConnectAsync(app.Urls.Single(), WriteToken);
 
-        var result = await client.CallToolAsync(
-            "Weather_Create",
-            new Dictionary<string, object?> { ["request"] = new JsonObject { ["city"] = "Brno", ["date"] = "2026-11-12T00:00:00", ["temperatureC"] = 21, ["summary"] = "Mild" } });
+        var result = await client.CallToolAsync("Weather_Create", new Dictionary<string, object?> { ["request"] = Forecast.DeepClone() });
 
         Assert.NotEqual(true, result.IsError);
         Assert.Contains("Brno", ((TextContentBlock)result.Content[0]).Text);
@@ -117,12 +95,12 @@ public sealed class OAuthSignInDiscoveryTests
     [Fact]
     public async Task WithAnonymousAccess_AClientListsTheToolsBeforeItSignsIn_AndIsAskedToSignInWhenItCallsOne()
     {
-        await using var app = await StartAppAsync(allowAnonymous: true);
+        await using var app = await StartAsync(allowAnonymous: true);
         var address = app.Urls.Single();
         await using var client = await ConnectAsync(address, authorization: null);
 
         var tools = await client.ListToolsAsync();
-        using var response = await PostToolCallAsync(address, "Products_GetById", authorization: null);
+        using var response = await PostToolCallAsync(address + "/mcp", "Products_GetById", authorization: null);
 
         Assert.Contains(tools, x => x.Name == "Products_GetById");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -130,47 +108,80 @@ public sealed class OAuthSignInDiscoveryTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task TheAppsFallbackPolicy_StillRefusesASignedInCallerItDoesNotAllow(bool isSignInDiscoverable)
+    [InlineData(null, null)]
+    [InlineData(null, "/tenant")]
+    [InlineData("/oauth/resource", "/tenant")]
+    [InlineData("oauth/resource", null)]
+    [InlineData("https://metadata.example.com/prm", "/tenant")]
+    public async Task TheScopeChallenge_PointsToTheMetadata_AsTheSdksOwnChallengeDoes(string? configuredUri, string? pathBase)
     {
-        await using var app = await StartAppAsync(isSignInDiscoverable, requiresMemberRole: true);
+        await using var app = await StartAsync(
+            configureServices: services => services.Configure<McpAuthenticationOptions>(McpAuthenticationDefaults.AuthenticationScheme, options =>
+            {
+                if (configuredUri is not null)
+                {
+                    options.ResourceMetadataUri = new Uri(configuredUri, UriKind.RelativeOrAbsolute);
+                }
+            }),
+            pathBase: pathBase);
+        var mcpUrl = app.Urls.Single() + pathBase + "/mcp";
 
-        using var response = await PostToolCallAsync(app.Urls.Single(), "Products_GetAll", ReadToken);
+        using var sdkChallenge = await PostAsync(mcpUrl, ToolsList, authorization: null);
+        using var scopeChallenge = await PostToolCallAsync(mcpUrl, "Weather_Create", ReadToken);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task TheAppsFallbackPolicy_LetsInACallerItAllows(bool isSignInDiscoverable)
-    {
-        await using var app = await StartAppAsync(isSignInDiscoverable, requiresMemberRole: true);
-        await using var client = await ConnectAsync(app.Urls.Single(), MemberToken);
-
-        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
-
-        Assert.NotEqual(true, result.IsError);
-        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Equal(HttpStatusCode.Unauthorized, sdkChallenge.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, scopeChallenge.StatusCode);
+        Assert.NotEqual("", GetResourceMetadata(sdkChallenge.Headers.WwwAuthenticate));
+        Assert.Equal(GetResourceMetadata(sdkChallenge.Headers.WwwAuthenticate), GetResourceMetadata(scopeChallenge.Headers.WwwAuthenticate));
     }
 
     [Fact]
-    public async Task WithTheAppsFallbackPolicy_ARequestWithoutAToken_StillGetsTheChallengeThatPointsToTheMetadata()
+    public async Task AToolCallInUtf16_GetsTheSameChallenge_AsTheSdkReadsItTheSameWay()
     {
-        await using var app = await StartAppAsync(requiresMemberRole: true);
-        var address = app.Urls.Single();
+        await using var app = await StartAsync();
+        var body = ToolCall("Weather_Create");
 
-        using var response = await PostToolCallAsync(address, "Products_GetAll", authorization: null);
+        using var response = await PostAsync(app.Urls.Single() + "/mcp", body, ReadToken, new StringContent(body, Encoding.Unicode, "application/json"));
 
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Equal($"Bearer resource_metadata=\"{address}{MetadataPath}\"", response.Headers.WwwAuthenticate.ToString());
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("error=\"insufficient_scope\"", response.Headers.WwwAuthenticate.ToString());
+    }
+
+    [Fact]
+    public async Task AChunkedToolCall_AsTheSdksClientSendsIt_GetsTheChallenge()
+    {
+        await using var app = await StartAsync();
+        var content = new ChunkedContent(ToolCall("Weather_Create"));
+
+        using var response = await PostAsync(app.Urls.Single() + "/mcp", "", ReadToken, content);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("error=\"insufficient_scope\"", response.Headers.WwwAuthenticate.ToString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AToolCallLargerThanTheLimit_IsLeftToTheToolsOwnCheck_WhetherItsLengthIsKnownOrNot(bool isChunked)
+    {
+        await using var app = await StartAsync();
+        var forecast = Forecast.DeepClone();
+        forecast["summary"] = new string('x', DocumentedPreReadLimit);
+        var body = ToolCall("Weather_Create", new JsonObject { ["request"] = forecast }.ToJsonString());
+        HttpContent content = isChunked ? new ChunkedContent(body) : new StringContent(body, Encoding.UTF8, "application/json");
+
+        using var response = await PostAsync(app.Urls.Single() + "/mcp", body, ReadToken, content);
+        var responseText = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(response.Headers.WwwAuthenticate);
+        Assert.Contains("Insufficient scope. Required: Write, Granted: Read", responseText);
     }
 
     [Fact]
     public async Task WithoutResourceMetadata_TheEndpointServesAnyone_TheMetadataIsNotFound_AndARefusedScopeIsAnErrorResult()
     {
-        await using var app = await StartAppAsync(isSignInDiscoverable: false);
+        await using var app = await StartAsync(isSignInDiscoverable: false);
         var address = app.Urls.Single();
         using var httpClient = new HttpClient();
         await using var anonymousClient = await ConnectAsync(address, authorization: null);
@@ -178,9 +189,7 @@ public sealed class OAuthSignInDiscoveryTests
 
         var tools = await anonymousClient.ListToolsAsync();
         using var metadataResponse = await httpClient.GetAsync(address + MetadataPath);
-        var result = await readClient.CallToolAsync(
-            "Weather_Create",
-            new Dictionary<string, object?> { ["request"] = new JsonObject { ["city"] = "Brno", ["date"] = "2026-11-12T00:00:00", ["temperatureC"] = 21 } });
+        var result = await readClient.CallToolAsync("Weather_Create", new Dictionary<string, object?> { ["request"] = Forecast.DeepClone() });
 
         Assert.NotEmpty(tools);
         Assert.Equal(HttpStatusCode.NotFound, metadataResponse.StatusCode);
@@ -188,135 +197,28 @@ public sealed class OAuthSignInDiscoveryTests
         Assert.Equal("Insufficient scope. Required: Write, Granted: Read", ((TextContentBlock)result.Content[0]).Text);
     }
 
-    private static async Task<WebApplication> StartAppAsync(bool isSignInDiscoverable = true, bool allowAnonymous = false, bool requiresMemberRole = false)
-    {
-        var builder = WebApplication.CreateBuilder();
-        builder.WebHost.UseUrls("http://127.0.0.1:0");
-        builder.Logging.ClearProviders();
-        builder.Services.AddControllers().AddApplicationPart(typeof(Program).Assembly);
-        builder.Services.AddAuthentication()
-            .AddScheme<AuthenticationSchemeOptions, TokenAuthenticationHandler>(TokenAuthenticationHandler.SchemeName, null);
-        builder.Services.AddAuthorization(options =>
-        {
-            if (requiresMemberRole)
-            {
-                options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().RequireRole(MemberRole).Build();
-            }
-        });
-        builder.Services.AddMcpTools(typeof(Program).Assembly, options =>
-        {
-            options.ArePropertyDescriptionsFromXmlDocs = false;
-            options.ScopeNames[McpScope.Read] = "mcp:read";
-            options.ScopeNames[McpScope.Write] = "mcp:write";
-            options.ScopeNames[McpScope.Delete] = "mcp:delete";
-            options.ClaimToScopeMapper = claimValue => claimValue
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Aggregate(McpScope.None, (granted, scope) => granted | options.ScopeNames.FirstOrDefault(x => x.Value == scope).Key);
-            if (isSignInDiscoverable)
-            {
-                options.ResourceMetadata = new ProtectedResourceMetadata
-                {
-                    AuthorizationServers = [AuthorizationServer],
-                    ResourceName = "Demo API"
-                };
-            }
-        });
-        builder.Services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
-
-        var app = builder.Build();
-        app.UseAuthentication();
-        app.UseAuthorization();
-        app.UseMcpLoopPrevention();
-        app.MapControllers();
-        app.MapMcpEndpoint("mcp", allowAnonymous);
-        await app.StartAsync();
-
-        return app;
-    }
-
-    private static async Task<McpClient> ConnectAsync(string address, string? authorization)
-    {
-        var headers = new Dictionary<string, string>();
-        if (authorization is not null)
-        {
-            headers["Authorization"] = authorization;
-        }
-
-        var transport = new HttpClientTransport(
-            new HttpClientTransportOptions
-            {
-                Endpoint = new Uri(address + "/mcp"),
-                TransportMode = HttpTransportMode.StreamableHttp,
-                AdditionalHeaders = headers
-            },
-            NullLoggerFactory.Instance);
-
-        return await McpClient.CreateAsync(transport);
-    }
-
     /// <summary>
-    /// A <c>tools/call</c> request as an MCP client sends it, for a test that reads the HTTP response itself.
+    /// A body without a length, which <c>HttpClient</c> sends chunked, as it sends the MCP SDK client's <c>JsonContent</c>.
     /// </summary>
-    private static async Task<HttpResponseMessage> PostToolCallAsync(string address, string toolName, string? authorization)
+    private sealed class ChunkedContent : HttpContent
     {
-        using var client = new HttpClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, address + "/mcp");
-        request.Headers.Accept.ParseAdd("application/json");
-        request.Headers.Accept.ParseAdd("text/event-stream");
-        if (authorization is not null)
+        private readonly byte[] _body;
+
+        public ChunkedContent(string body)
         {
-            request.Headers.TryAddWithoutValidation("Authorization", authorization);
+            _body = Encoding.UTF8.GetBytes(body);
+            Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
         }
 
-        request.Content = new StringContent(
-            $"{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"{toolName}\",\"arguments\":{{}}}}}}",
-            Encoding.UTF8,
-            "application/json");
-
-        return await client.SendAsync(request);
-    }
-
-    private sealed class RefusingHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
         {
-            throw new InvalidOperationException($"The tool sent {request.RequestUri} over HTTP.");
-        }
-    }
-
-    /// <summary>
-    /// Stands in for JWT bearer authentication under its scheme name, which the MCP SDK's scheme forwards to.
-    /// </summary>
-    private sealed class TokenAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
-    {
-        public const string SchemeName = "Bearer";
-
-        public TokenAuthenticationHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
-            : base(options, logger, encoder)
-        {
+            return stream.WriteAsync(_body).AsTask();
         }
 
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        protected override bool TryComputeLength(out long length)
         {
-            var token = Request.Headers.Authorization.ToString();
-            var scope = token switch
-            {
-                ReadToken or MemberToken => "mcp:read",
-                WriteToken => "mcp:read mcp:write",
-                _ => null
-            };
-            if (scope is null)
-            {
-                return Task.FromResult(AuthenticateResult.NoResult());
-            }
-
-            var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "alice"), new Claim("scope", scope)], SchemeName);
-            if (token == MemberToken)
-            {
-                identity.AddClaim(new Claim(ClaimTypes.Role, MemberRole));
-            }
-
-            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
+            length = 0;
+            return false;
         }
     }
 }
