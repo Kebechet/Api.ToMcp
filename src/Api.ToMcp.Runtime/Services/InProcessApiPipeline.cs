@@ -56,7 +56,9 @@ internal sealed class InProcessApiPipeline
     /// request's path base, the path and the query.
     /// </param>
     /// <param name="caller">The MCP request the tool call came in, whose path base and connection the request carries.</param>
-    /// <param name="cancellationToken">Aborts the request, as a client that goes away does.</param>
+    /// <param name="cancellationToken">
+    /// Aborts the request, as a client that goes away does, and stops waiting for the app at once.
+    /// </param>
     /// <exception cref="HttpRequestException">
     /// The app aborted the request, or threw after its response started, which a server answers by dropping the
     /// connection.
@@ -183,7 +185,7 @@ internal sealed class InProcessApiPipeline
         CancellationToken cancellationToken)
     {
         var startTimestamp = Stopwatch.GetTimestamp();
-        using var exchange = await InProcessExchange.CreateAsync(request, caller, forwardedPathBase, cancellationToken);
+        var exchange = await InProcessExchange.CreateAsync(request, caller, forwardedPathBase, cancellationToken);
         var callerActivity = Activity.Current;
 
         Task<Exception?> serving;
@@ -196,7 +198,9 @@ internal sealed class InProcessApiPipeline
             serving = Task.Run(() => RunAsync(application, exchange, callerActivity));
         }
 
-        var unhandledException = await serving;
+        // Canceling the call stops the wait at once, as it stops HttpClient's, even when the app does not watch the abort.
+        // The app's request then ends in the background, where it still completes and disposes of the exchange.
+        var unhandledException = await serving.WaitAsync(cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
         if (exchange.Lifetime.IsAborted)
@@ -225,42 +229,45 @@ internal sealed class InProcessApiPipeline
     /// </summary>
     private async Task<Exception?> RunAsync(RequestDelegate application, InProcessExchange exchange, Activity? callerActivity)
     {
-        Activity.Current = callerActivity;
-
-        var context = _httpContextFactory.Create(exchange.Features);
-        Exception? unhandledException = null;
-        try
+        using (exchange)
         {
-            using (_logger.BeginScope(new RequestLogScope(context)))
+            Activity.Current = callerActivity;
+
+            var context = _httpContextFactory.Create(exchange.Features);
+            Exception? unhandledException = null;
+            try
             {
-                try
+                using (_logger.BeginScope(new RequestLogScope(context)))
                 {
-                    await application(context);
+                    try
+                    {
+                        await application(context);
 
-                    // A response without a body has not started yet. Like a server, run its OnStarting callbacks only
-                    // when the app succeeded; one that throws fails the request as the app would.
-                    await exchange.Response.Feature.StartAsync();
+                        // A response without a body has not started yet. Like a server, run its OnStarting callbacks only
+                        // when the app succeeded; one that throws fails the request as the app would.
+                        await exchange.Response.Feature.StartAsync();
 
-                    // Response.BodyWriter holds what the app wrote until a flush, and a server flushes it once the
-                    // app ends.
-                    await exchange.ResponseBody.CompleteAsync();
+                        // Response.BodyWriter holds what the app wrote until a flush, and a server flushes it once the
+                        // app ends.
+                        await exchange.ResponseBody.CompleteAsync();
+                    }
+                    catch (Exception exception)
+                    {
+                        unhandledException = exception;
+                        LogUnhandledException(exception, context);
+                        exchange.Response.AnswerUnhandledException(exception);
+                    }
+
+                    await exchange.Response.Feature.CompleteAsync(_logger);
                 }
-                catch (Exception exception)
-                {
-                    unhandledException = exception;
-                    LogUnhandledException(exception, context);
-                    exchange.Response.AnswerUnhandledException(exception);
-                }
-
-                await exchange.Response.Feature.CompleteAsync(_logger);
             }
-        }
-        finally
-        {
-            _httpContextFactory.Dispose(context);
-        }
+            finally
+            {
+                _httpContextFactory.Dispose(context);
+            }
 
-        return unhandledException;
+            return unhandledException;
+        }
     }
 
     private void LogUnhandledException(Exception exception, HttpContext context)

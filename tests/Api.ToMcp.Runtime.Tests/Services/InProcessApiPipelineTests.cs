@@ -662,6 +662,40 @@ public class InProcessApiPipelineTests
     }
 
     [Fact]
+    public async Task SendAsync_StopsWaiting_WhenTheCallIsCanceled_ThoughTheAppIgnoresIt_AndCleansUpWhenTheAppEnds()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completed = false;
+        var tracker = new DisposalTracker();
+        var pipeline = Build(
+            app => app.Run(async context =>
+            {
+                context.RequestServices.GetRequiredService<ScopedDisposable>();
+                context.Response.OnCompleted(() =>
+                {
+                    completed = true;
+                    return Task.CompletedTask;
+                });
+                started.SetResult();
+                await release.Task;
+            }),
+            services => services.AddSingleton(tracker).AddScoped<ScopedDisposable>());
+        using var cancellation = new CancellationTokenSource();
+
+        var sending = pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, cancellation.Token);
+        await started.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(tracker.IsDisposed);
+
+        release.SetResult();
+        await tracker.Disposed.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(completed);
+    }
+
+    [Fact]
     public async Task SendAsync_LeavesTheCallersHttpContext_ToTheCaller()
     {
         // The request's own context is the current one inside the app, but setting it must not clear the caller's: the
@@ -873,7 +907,16 @@ public class InProcessApiPipelineTests
 
     private sealed class DisposalTracker
     {
-        public bool IsDisposed { get; set; }
+        private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsDisposed => _disposed.Task.IsCompleted;
+
+        public Task Disposed => _disposed.Task;
+
+        public void MarkDisposed()
+        {
+            _disposed.TrySetResult();
+        }
     }
 
     private sealed class ScopedDisposable : IDisposable
@@ -887,7 +930,7 @@ public class InProcessApiPipelineTests
 
         public void Dispose()
         {
-            _tracker.IsDisposed = true;
+            _tracker.MarkDisposed();
         }
     }
 

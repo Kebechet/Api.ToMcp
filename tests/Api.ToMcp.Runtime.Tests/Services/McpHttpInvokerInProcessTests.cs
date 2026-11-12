@@ -59,6 +59,55 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
+    public async Task GetAsync_FailsAsHttpClientDoes_WhenTheAppOutlastsTheClientsTimeout()
+    {
+        _accessor.HttpContext = CreateCaller();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invoker = CreateInvoker(
+            BuildPipeline(app => app.Run(_ => release.Task)),
+            httpClient: new HttpClient(_httpHandler) { Timeout = TimeSpan.FromMilliseconds(200) });
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<TaskCanceledException>(() => invoker.GetAsync("/api/products/7").WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.IsType<TimeoutException>(exception.InnerException);
+            Assert.Contains("HttpClient.Timeout", exception.Message);
+        }
+        finally
+        {
+            release.SetResult();
+        }
+    }
+
+    [Fact]
+    public async Task GetAsync_ThrowsTheCallersCancellation_AsHttpClientDoes_ThoughTheAppIgnoresIt()
+    {
+        _accessor.HttpContext = CreateCaller();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invoker = CreateInvoker(BuildPipeline(app => app.Run(_ =>
+        {
+            started.SetResult();
+            return release.Task;
+        })));
+        using var cancellation = new CancellationTokenSource();
+
+        try
+        {
+            var calling = invoker.GetAsync("/api/products/7", cancellation.Token);
+            await started.Task;
+            cancellation.Cancel();
+
+            var exception = await Assert.ThrowsAsync<TaskCanceledException>(() => calling.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal(cancellation.Token, exception.CancellationToken);
+        }
+        finally
+        {
+            release.SetResult();
+        }
+    }
+
+    [Fact]
     public async Task GetAsync_ForwardsTheAuthorization_AndMarksTheRequestAsInternal_InProcess()
     {
         _accessor.HttpContext = CreateCaller();
@@ -139,10 +188,10 @@ public class McpHttpInvokerInProcessTests
         Assert.Equal([$"{ProviderBaseUrl}/api/products/7"], _httpHandler.Requests);
     }
 
-    private McpHttpInvoker CreateInvoker(InProcessApiPipeline pipeline, McpScopeOptions? scopeOptions = null)
+    private McpHttpInvoker CreateInvoker(InProcessApiPipeline pipeline, McpScopeOptions? scopeOptions = null, HttpClient? httpClient = null)
     {
         return new McpHttpInvoker(
-            new HttpClient(_httpHandler),
+            httpClient ?? new HttpClient(_httpHandler),
             new FixedBaseUrlProvider(ProviderBaseUrl),
             _accessor,
             NullLogger<McpHttpInvoker>.Instance,

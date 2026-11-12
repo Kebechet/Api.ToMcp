@@ -100,9 +100,34 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         _logger.LogDebug("MCP invoking {Method} {Url}", method.Method, url);
 
         using var response = inProcessPipeline is not null
-            ? await inProcessPipeline.SendAsync(request, caller, ct)
+            ? await SendInProcessAsync(inProcessPipeline, request, caller, ct)
             : await _httpClient.SendAsync(request, ct);
         return await HandleResponse(response, ct);
+    }
+
+    /// <summary>
+    /// Serves the request in process under the <see cref="HttpClient.Timeout"/> of the invoker's client, and fails a
+    /// timed-out or canceled call with the exceptions <see cref="HttpClient"/> throws, so the call ends as it did over HTTP.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendInProcessAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(_httpClient.Timeout);
+        try
+        {
+            return await pipeline.SendAsync(request, caller, timeout.Token);
+        }
+        catch (OperationCanceledException exception) when (ct.IsCancellationRequested)
+        {
+            throw new TaskCanceledException(exception.Message, exception, ct);
+        }
+        catch (OperationCanceledException exception) when (timeout.IsCancellationRequested)
+        {
+            throw new TaskCanceledException(
+                $"The request was canceled due to the configured HttpClient.Timeout of {_httpClient.Timeout.TotalSeconds} seconds elapsing.",
+                new TimeoutException(exception.Message, exception),
+                exception.CancellationToken);
+        }
     }
 
     public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default)
