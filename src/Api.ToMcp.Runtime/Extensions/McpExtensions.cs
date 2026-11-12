@@ -63,7 +63,9 @@ public static class McpExtensions
         services.TryAddSingleton<McpOutputSchemaBuilder>();
         services.TryAddSingleton<McpToolScopes>();
         services.TryAddSingleton<McpScopeChallenge>();
-        services.TryAddTransient<McpAuthenticationHandler>();
+        // McpAuthenticationHandler is not registered: it needs UrlEncoder, which only AddAuthentication registers, and a
+        // host that validates its services on build, as in Development, would fail for an app without authentication.
+        // AuthenticationHandlerProvider creates a scheme's handler with ActivatorUtilities when it is not registered.
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<AuthenticationOptions>, McpAuthenticationSetup>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<McpAuthenticationOptions>, McpAuthenticationSetup>());
         services.AddHostedService<McpToolsStartupCheck>();

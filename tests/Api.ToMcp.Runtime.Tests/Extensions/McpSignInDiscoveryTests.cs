@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore.Authentication;
@@ -28,6 +29,34 @@ public class McpSignInDiscoveryTests
 {
     private const string AppScheme = "Bearer";
     private const string AuthorizationServer = "https://login.example.com";
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task AddMcpTools_RegistersNothingThatADevelopmentHostCannotCreate(bool hasAuthentication, bool isSignInDiscoverable)
+    {
+        // In Development the host validates every registration when it builds its provider; an app without
+        // AddAuthentication has no UrlEncoder, which the MCP SDK's authentication handler needs.
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        builder.Host.UseDefaultServiceProvider(options =>
+        {
+            options.ValidateOnBuild = true;
+            options.ValidateScopes = true;
+        });
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton<IParityService, ParityService>();
+        if (hasAuthentication)
+        {
+            builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, SignedInHandler>(AppScheme, null);
+        }
+
+        AddMcpTools(builder.Services, isSignInDiscoverable ? EnableSignInDiscovery : null);
+
+        await using var app = builder.Build();
+
+        Assert.True(app.Environment.IsDevelopment());
+    }
 
     [Fact]
     public async Task AddMcpTools_AddsNoScheme_WithoutResourceMetadata()
