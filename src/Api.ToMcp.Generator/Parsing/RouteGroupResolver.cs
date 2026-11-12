@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using Api.ToMcp.Generator.Models;
@@ -68,16 +67,17 @@ namespace Api.ToMcp.Generator.Parsing
     }
 
     /// <summary>
-    /// Follows the route builder a Minimal API endpoint is mapped on back to the app: through <c>MapGroup</c> calls, the
-    /// ASP.NET Core conventions that return the builder they are called on, local variables assigned once, and the
-    /// parameters of the app's own methods, to every call of them in the compilation. A <c>WebApplication</c> is the root.
+    /// Follows the route builder a Minimal API endpoint is mapped on back to the app. It goes through <c>MapGroup</c>
+    /// calls, ASP.NET Core's conventions that return the builder they are called on, local variables assigned once, the
+    /// app's own methods that return a builder, and the parameters of the app's own methods, to every call of them in the
+    /// compilation. A <c>WebApplication</c> is the root.
     /// </summary>
     internal static class RouteGroupResolver
     {
         private const char PathSeparator = '/';
 
         /// <summary>
-        /// How many calls deep the generator follows a builder through the app's methods, and how many routes one endpoint
+        /// How many steps deep the generator follows a builder through the app's methods, and how many routes one endpoint
         /// may get from the methods that map it: the limits keep a cycle the generator does not see, or methods that call
         /// one another many times, from running the build long.
         /// </summary>
@@ -94,7 +94,9 @@ namespace Api.ToMcp.Generator.Parsing
 
         public static RouteGroups Resolve(ExpressionSyntax builder, SemanticModel semanticModel, CancellationToken ct)
         {
-            return Resolve(builder, semanticModel, new HashSet<SyntaxReference>(SyntaxReferenceComparer.Instance), depth: 0, ct);
+            var context = new ResolveContext(semanticModel.Compilation, ct);
+
+            return Resolve(builder, semanticModel, frame: null, context, depth: 0);
         }
 
         /// <summary>
@@ -110,22 +112,17 @@ namespace Api.ToMcp.Generator.Parsing
             return PathSeparator + string.Join(PathSeparator.ToString(), parts);
         }
 
-        private static RouteGroups Resolve(
-            ExpressionSyntax expression,
-            SemanticModel semanticModel,
-            HashSet<SyntaxReference> methodsBeingFollowed,
-            int depth,
-            CancellationToken ct)
+        private static RouteGroups Resolve(ExpressionSyntax expression, SemanticModel semanticModel, Frame? frame, ResolveContext context, int depth)
         {
-            ct.ThrowIfCancellationRequested();
+            context.Ct.ThrowIfCancellationRequested();
             expression = Unwrap(expression);
 
             if (depth > MaxDepth)
             {
-                return RouteGroups.Fail($"the generator follows the route builder '{expression}' no deeper than {MaxDepth} calls");
+                return RouteGroups.Fail($"the generator follows the route builder '{expression}' no deeper than {MaxDepth} steps");
             }
 
-            var type = semanticModel.GetTypeInfo(expression, ct).Type;
+            var type = semanticModel.GetTypeInfo(expression, context.Ct).Type;
             if (type is not null && IsWebApplication(type))
             {
                 return RouteGroups.Root;
@@ -134,77 +131,139 @@ namespace Api.ToMcp.Generator.Parsing
             var invocation = expression as InvocationExpressionSyntax;
             if (invocation is not null)
             {
-                return ResolveInvocation(invocation, semanticModel, methodsBeingFollowed, depth, ct);
+                return ResolveInvocation(invocation, semanticModel, frame, context, depth);
             }
 
             var identifier = expression as IdentifierNameSyntax;
             if (identifier is not null)
             {
-                return ResolveIdentifier(identifier, semanticModel, methodsBeingFollowed, depth, ct);
+                return ResolveIdentifier(identifier, semanticModel, frame, context, depth);
+            }
+
+            if (expression is ConditionalExpressionSyntax || expression.IsKind(SyntaxKind.CoalesceExpression))
+            {
+                return ResolveNullCheck(expression, semanticModel, frame, context, depth);
             }
 
             return RouteGroups.Fail($"the generator cannot tell which route group '{expression}' is");
         }
 
-        private static RouteGroups ResolveInvocation(
-            InvocationExpressionSyntax invocation,
-            SemanticModel semanticModel,
-            HashSet<SyntaxReference> methodsBeingFollowed,
-            int depth,
-            CancellationToken ct)
+        private static RouteGroups ResolveInvocation(InvocationExpressionSyntax invocation, SemanticModel semanticModel, Frame? frame, ResolveContext context, int depth)
         {
-            var operation = semanticModel.GetOperation(invocation, ct) as IInvocationOperation;
+            var operation = semanticModel.GetOperation(invocation, context.Ct) as IInvocationOperation;
             var method = operation?.TargetMethod;
-            if (operation is null || method is null || !method.IsExtensionMethod)
+            if (operation is null || method is null)
             {
                 return RouteGroups.Fail($"the generator cannot tell which route group '{invocation}' gives");
             }
 
-            var receiver = GetArgument(operation, 0)?.Syntax as ExpressionSyntax;
-            if (receiver is null)
+            if (IsMapGroup(method) || ReturnsItsReceiver(method))
             {
-                return RouteGroups.Fail($"the generator cannot tell which route group '{invocation}' gives");
-            }
-
-            if (IsMapGroup(method))
-            {
-                var prefix = GetArgument(operation, MinimalApiNames.PatternParameter)?.ConstantValue;
-                var prefixText = prefix is null || !prefix.Value.HasValue ? null : prefix.Value.Value as string;
-                if (prefixText is null)
+                var receiver = GetArgument(operation, 0)?.Syntax as ExpressionSyntax;
+                if (receiver is null)
                 {
-                    return RouteGroups.Fail($"the generator cannot read the prefix of the route group '{invocation}', as it is not a constant string");
+                    return RouteGroups.Fail($"the generator cannot tell which route group '{invocation}' gives");
                 }
 
-                return Resolve(receiver, semanticModel, methodsBeingFollowed, depth + 1, ct).Append(prefixText);
+                var receiverGroups = Resolve(receiver, semanticModel, frame, context, depth + 1);
+                if (!IsMapGroup(method))
+                {
+                    return receiverGroups;
+                }
+
+                var prefix = GetArgument(operation, MinimalApiNames.PatternParameter)?.ConstantValue;
+                var prefixText = prefix is null || !prefix.Value.HasValue ? null : prefix.Value.Value as string;
+
+                return prefixText is null
+                    ? RouteGroups.Fail($"the generator cannot read the prefix of the route group '{invocation}', as it is not a constant string")
+                    : receiverGroups.Append(prefixText);
             }
 
-            if (ReturnsItsBuilder(method))
-            {
-                return Resolve(receiver, semanticModel, methodsBeingFollowed, depth + 1, ct);
-            }
-
-            return RouteGroups.Fail($"the generator cannot tell which route group '{invocation}' gives, as only MapGroup and ASP.NET Core's conventions are followed");
+            return ResolveReturnedBuilder(invocation, operation, semanticModel, frame, context, depth);
         }
 
-        private static RouteGroups ResolveIdentifier(
-            IdentifierNameSyntax identifier,
+        /// <summary>
+        /// The groups of the builder a method of the app's own code returns, such as <c>MapTodos(this RouteGroupBuilder
+        /// group)</c> that returns <c>group</c>, or a sub-group of it: each of its <c>return</c>s, with its parameters bound
+        /// to the call's arguments. A method of a referenced assembly has no code to read.
+        /// </summary>
+        private static RouteGroups ResolveReturnedBuilder(
+            InvocationExpressionSyntax invocation,
+            IInvocationOperation call,
             SemanticModel semanticModel,
-            HashSet<SyntaxReference> methodsBeingFollowed,
-            int depth,
-            CancellationToken ct)
+            Frame? frame,
+            ResolveContext context,
+            int depth)
         {
-            var symbol = semanticModel.GetSymbolInfo(identifier, ct).Symbol;
+            var method = call.TargetMethod.OriginalDefinition;
+            var methodReference = method.DeclaringSyntaxReferences.FirstOrDefault();
+            var returnedExpressions = methodReference is null ? new List<ExpressionSyntax>() : GetReturnedExpressions(methodReference.GetSyntax(context.Ct));
+            if (methodReference is null || returnedExpressions.Count == 0)
+            {
+                return RouteGroups.Fail($"the generator cannot tell which route group '{invocation}' gives, as it follows only MapGroup, ASP.NET Core's conventions and the project's own methods that return a builder");
+            }
+
+            var methodName = $"{method.ContainingType?.Name}.{method.Name}";
+            if (!context.MethodsBeingFollowed.Add(methodReference))
+            {
+                return RouteGroups.Fail($"'{methodName}' calls itself, so the generator cannot tell which route group '{invocation}' gives");
+            }
+
+            try
+            {
+                var methodFrame = new Frame(methodReference, call, semanticModel, frame);
+                var methodModel = SyntaxIndex.GetSemanticModel(context.Compilation, methodReference.SyntaxTree);
+
+                return RouteGroups.Merge(returnedExpressions.Select(x => Resolve(x, methodModel, methodFrame, context, depth + 1)));
+            }
+            finally
+            {
+                context.MethodsBeingFollowed.Remove(methodReference);
+            }
+        }
+
+        /// <summary>
+        /// The expressions a method's body returns: the expression body, or the value of each <c>return</c> outside its
+        /// lambdas and local functions.
+        /// </summary>
+        private static List<ExpressionSyntax> GetReturnedExpressions(SyntaxNode declaration)
+        {
+            var method = declaration as BaseMethodDeclarationSyntax;
+            var localFunction = declaration as LocalFunctionStatementSyntax;
+            var expressionBody = method?.ExpressionBody ?? localFunction?.ExpressionBody;
+            if (expressionBody is not null)
+            {
+                return new List<ExpressionSyntax> { expressionBody.Expression };
+            }
+
+            var body = method?.Body ?? localFunction?.Body;
+            if (body is null)
+            {
+                return new List<ExpressionSyntax>();
+            }
+
+            return body
+                .DescendantNodes(x => !(x is AnonymousFunctionExpressionSyntax) && !(x is LocalFunctionStatementSyntax))
+                .OfType<ReturnStatementSyntax>()
+                .Select(x => x.Expression)
+                .OfType<ExpressionSyntax>()
+                .ToList();
+        }
+
+        private static RouteGroups ResolveIdentifier(IdentifierNameSyntax identifier, SemanticModel semanticModel, Frame? frame, ResolveContext context, int depth)
+        {
+            var symbol = semanticModel.GetSymbolInfo(identifier, context.Ct).Symbol;
 
             var local = symbol as ILocalSymbol;
             if (local is not null)
             {
-                return ResolveLocal(local, semanticModel, methodsBeingFollowed, depth, ct);
+                return ResolveLocal(local, semanticModel, frame, context, depth);
             }
 
             var parameter = symbol as IParameterSymbol;
             if (parameter is not null)
             {
-                return ResolveParameter(parameter, semanticModel.Compilation, methodsBeingFollowed, depth, ct);
+                return ResolveParameter(parameter, frame, context, depth);
             }
 
             return RouteGroups.Fail($"the generator cannot tell which route group '{identifier}' is");
@@ -213,43 +272,45 @@ namespace Api.ToMcp.Generator.Parsing
         /// <summary>
         /// The groups of the value a local variable is declared with, when nothing assigns it another.
         /// </summary>
-        private static RouteGroups ResolveLocal(
-            ILocalSymbol local,
-            SemanticModel semanticModel,
-            HashSet<SyntaxReference> methodsBeingFollowed,
-            int depth,
-            CancellationToken ct)
+        private static RouteGroups ResolveLocal(ILocalSymbol local, SemanticModel semanticModel, Frame? frame, ResolveContext context, int depth)
         {
-            var declarator = local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) as VariableDeclaratorSyntax;
+            var declarator = local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(context.Ct) as VariableDeclaratorSyntax;
             if (declarator?.Initializer is null)
             {
                 return RouteGroups.Fail($"the generator cannot tell which route group '{local.Name}' is, as it is not assigned where it is declared");
             }
 
-            var scope = local.ContainingSymbol.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct);
+            var scope = local.ContainingSymbol.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(context.Ct);
             var isAssignedAgain = scope?.DescendantNodes()
                 .OfType<IdentifierNameSyntax>()
                 .Where(x => x.Identifier.ValueText == local.Name && RouteAttributeReader.IsWritten(RouteAttributeReader.GetReferenceExpression(x)))
-                .Any(x => SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(x, ct).Symbol, local)) ?? true;
+                .Any(x => SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(x, context.Ct).Symbol, local)) ?? true;
             if (isAssignedAgain)
             {
                 return RouteGroups.Fail($"the generator cannot tell which route group '{local.Name}' is, as it is assigned again after its declaration");
             }
 
-            return Resolve(declarator.Initializer.Value, semanticModel, methodsBeingFollowed, depth + 1, ct);
+            return Resolve(declarator.Initializer.Value, semanticModel, frame, context, depth + 1);
         }
 
         /// <summary>
-        /// The groups of a method's parameter: those of the argument every call of the method passes for it. A parameter
-        /// of the lambda that <c>app.UseEndpoints</c> calls is the app's root builder.
+        /// The groups of a method's parameter: those of the argument the call being followed passes for it, or else of the
+        /// argument every call of the method passes for it. A parameter of the lambda that <c>app.UseEndpoints</c> calls is
+        /// the app's root builder.
         /// </summary>
-        private static RouteGroups ResolveParameter(
-            IParameterSymbol parameter,
-            Compilation compilation,
-            HashSet<SyntaxReference> methodsBeingFollowed,
-            int depth,
-            CancellationToken ct)
+        private static RouteGroups ResolveParameter(IParameterSymbol parameter, Frame? frame, ResolveContext context, int depth)
         {
+            var boundFrame = frame?.Find(parameter.ContainingSymbol);
+            if (boundFrame is not null)
+            {
+                var argument = boundFrame.GetArgument(parameter.Ordinal);
+                var argumentExpression = argument?.Syntax as ExpressionSyntax;
+
+                return argument is null || IsNullConstant(argument) || argumentExpression is null || argument.IsImplicit
+                    ? RouteGroups.Fail($"the generator cannot tell which route group the parameter '{parameter.Name}' is")
+                    : Resolve(argumentExpression, boundFrame.CallModel, boundFrame.Parent, context, depth + 1);
+            }
+
             var method = parameter.ContainingSymbol as IMethodSymbol;
             var methodReference = method?.DeclaringSyntaxReferences.FirstOrDefault();
             if (method is null || methodReference is null)
@@ -259,42 +320,192 @@ namespace Api.ToMcp.Generator.Parsing
 
             if (method.MethodKind == MethodKind.AnonymousFunction)
             {
-                return IsUseEndpointsCallback(methodReference.GetSyntax(ct), compilation, ct)
+                return IsUseEndpointsCallback(methodReference.GetSyntax(context.Ct), context)
                     ? RouteGroups.Root
                     : RouteGroups.Fail($"the generator cannot tell which route group the lambda parameter '{parameter.Name}' is");
             }
 
-            var methodName = $"{method.ContainingType?.Name}.{method.Name}";
-            if (!methodsBeingFollowed.Add(methodReference))
+            return ResolveForEachCall(method, methodReference, parameter.Name, context, depth, (callFrame, callDepth) =>
             {
-                return RouteGroups.Fail($"'{methodName}' calls itself, so the generator cannot tell which route group '{parameter.Name}' is");
+                var argument = callFrame.GetArgument(parameter.Ordinal);
+                var argumentExpression = argument?.Syntax as ExpressionSyntax;
+
+                return argument is null || argument.IsImplicit || argumentExpression is null
+                    ? RouteGroups.Fail($"the generator cannot read the route group a call of '{callFrame.MethodName}' passes as '{parameter.Name}'")
+                    : Resolve(argumentExpression, callFrame.CallModel, callFrame.Parent, context, callDepth);
+            });
+        }
+
+        /// <summary>
+        /// The groups of <c>group is null ? app : group</c> or <c>group ?? app</c>, where <c>group</c> is a parameter of the
+        /// method the expression is in: the branch each call of the method takes, as it passes <c>null</c>, or leaves out
+        /// an argument whose default is <c>null</c>, or passes a builder.
+        /// </summary>
+        private static RouteGroups ResolveNullCheck(ExpressionSyntax expression, SemanticModel semanticModel, Frame? frame, ResolveContext context, int depth)
+        {
+            var (checkedExpression, whenNull, whenNotNull) = GetNullCheckBranches(expression);
+            var parameter = checkedExpression is null || whenNull is null || whenNotNull is null
+                ? null
+                : semanticModel.GetSymbolInfo(Unwrap(checkedExpression), context.Ct).Symbol as IParameterSymbol;
+            if (parameter is null)
+            {
+                return RouteGroups.Fail($"the generator cannot tell which route group '{expression}' is, as it decides only a null check of a parameter");
+            }
+
+            return ResolveNullCheck(expression, parameter, whenNull!, whenNotNull!, semanticModel, frame, context, depth);
+        }
+
+        private static RouteGroups ResolveNullCheck(
+            ExpressionSyntax expression,
+            IParameterSymbol parameter,
+            ExpressionSyntax whenNull,
+            ExpressionSyntax whenNotNull,
+            SemanticModel semanticModel,
+            Frame? frame,
+            ResolveContext context,
+            int depth)
+        {
+            var boundFrame = frame?.Find(parameter.ContainingSymbol);
+            if (boundFrame is not null)
+            {
+                var isNull = IsNullArgument(boundFrame.GetArgument(parameter.Ordinal), boundFrame);
+                return isNull is null
+                    ? RouteGroups.Fail($"the generator cannot tell whether '{parameter.Name}' is null, which '{expression}' decides on")
+                    : Resolve(isNull.Value ? whenNull : whenNotNull, semanticModel, frame, context, depth + 1);
+            }
+
+            var method = parameter.ContainingSymbol as IMethodSymbol;
+            var methodReference = method?.DeclaringSyntaxReferences.FirstOrDefault();
+            if (method is null || methodReference is null || method.MethodKind == MethodKind.AnonymousFunction)
+            {
+                return RouteGroups.Fail($"the generator cannot tell which route group '{expression}' is");
+            }
+
+            return ResolveForEachCall(method, methodReference, parameter.Name, context, depth, (callFrame, callDepth) =>
+                ResolveNullCheck(expression, parameter, whenNull, whenNotNull, semanticModel, callFrame, context, callDepth));
+        }
+
+        /// <summary>
+        /// What a conditional or a <c>??</c> checks for null, and the builder it gives when that is null and when not.
+        /// </summary>
+        private static (ExpressionSyntax? Checked, ExpressionSyntax? WhenNull, ExpressionSyntax? WhenNotNull) GetNullCheckBranches(ExpressionSyntax expression)
+        {
+            var coalesce = expression as BinaryExpressionSyntax;
+            if (coalesce is not null)
+            {
+                return (coalesce.Left, coalesce.Right, coalesce.Left);
+            }
+
+            var conditional = (ConditionalExpressionSyntax)expression;
+            var (checkedExpression, isTrueWhenNull) = GetNullCheck(conditional.Condition);
+
+            return isTrueWhenNull
+                ? (checkedExpression, conditional.WhenTrue, conditional.WhenFalse)
+                : (checkedExpression, conditional.WhenFalse, conditional.WhenTrue);
+        }
+
+        /// <summary>
+        /// The expression a condition checks for null, and whether the condition is true when it is: <c>x is null</c>,
+        /// <c>x == null</c> and <c>null == x</c> are; <c>x is not null</c> and <c>x != null</c> are not.
+        /// </summary>
+        private static (ExpressionSyntax? Expression, bool IsTrueWhenNull) GetNullCheck(ExpressionSyntax condition)
+        {
+            condition = Unwrap(condition);
+
+            var isPattern = condition as IsPatternExpressionSyntax;
+            if (isPattern is not null)
+            {
+                var constant = isPattern.Pattern as ConstantPatternSyntax;
+                var notPattern = isPattern.Pattern as UnaryPatternSyntax;
+                var negated = notPattern?.Pattern as ConstantPatternSyntax;
+
+                if (constant is not null && constant.Expression.IsKind(SyntaxKind.NullLiteralExpression))
+                    return (isPattern.Expression, true);
+
+                if (negated is not null && negated.Expression.IsKind(SyntaxKind.NullLiteralExpression))
+                    return (isPattern.Expression, false);
+
+                return (null, false);
+            }
+
+            var binary = condition as BinaryExpressionSyntax;
+            if (binary is not null && (binary.IsKind(SyntaxKind.EqualsExpression) || binary.IsKind(SyntaxKind.NotEqualsExpression)))
+            {
+                var checkedExpression = binary.Right.IsKind(SyntaxKind.NullLiteralExpression) ? binary.Left
+                    : binary.Left.IsKind(SyntaxKind.NullLiteralExpression) ? binary.Right
+                    : null;
+
+                return (checkedExpression, binary.IsKind(SyntaxKind.EqualsExpression));
+            }
+
+            return (null, false);
+        }
+
+        /// <summary>
+        /// Whether a call passes null for a parameter: a null constant, or a left-out argument whose default is null.
+        /// Unknown for a parameter of the caller that no call being followed binds.
+        /// </summary>
+        private static bool? IsNullArgument(IOperation? argument, Frame frame)
+        {
+            if (argument is null)
+            {
+                return null;
+            }
+
+            if (IsNullConstant(argument))
+            {
+                return true;
+            }
+
+            var parameterReference = argument as IParameterReferenceOperation;
+            if (parameterReference is not null)
+            {
+                var outerFrame = frame.Parent?.Find(parameterReference.Parameter.ContainingSymbol);
+                return outerFrame is null ? null : IsNullArgument(outerFrame.GetArgument(parameterReference.Parameter.Ordinal), outerFrame);
+            }
+
+            return false;
+        }
+
+        private static bool IsNullConstant(IOperation operation)
+        {
+            return operation.ConstantValue.HasValue && operation.ConstantValue.Value is null;
+        }
+
+        /// <summary>
+        /// The groups the resolution gives for each call of the method, with the method's parameters bound to the call's
+        /// arguments; a method called through an interface it implements or a base method it overrides counts too.
+        /// </summary>
+        private static RouteGroups ResolveForEachCall(
+            IMethodSymbol method,
+            SyntaxReference methodReference,
+            string parameterName,
+            ResolveContext context,
+            int depth,
+            Func<Frame, int, RouteGroups> resolve)
+        {
+            var methodName = $"{method.ContainingType?.Name}.{method.Name}";
+            if (!context.MethodsBeingFollowed.Add(methodReference))
+            {
+                return RouteGroups.Fail($"'{methodName}' calls itself, so the generator cannot tell which route group '{parameterName}' is");
             }
 
             try
             {
-                var calls = GetCalledMembers(method).SelectMany(x => FindCalls(x, compilation, ct)).ToList();
+                var calls = GetCalledMembers(method).SelectMany(x => FindCalls(x, context.Compilation, context.Ct)).ToList();
                 if (calls.Count == 0)
                 {
-                    return RouteGroups.Fail($"the generator finds no call of '{methodName}' in the project to tell which route group '{parameter.Name}' is");
+                    return RouteGroups.Fail($"the generator finds no call of '{methodName}' in the project to tell which route group '{parameterName}' is");
                 }
 
-                var groups = new List<RouteGroups>();
-                foreach (var (call, semanticModel) in calls)
-                {
-                    var argument = GetArgument(call, parameter.Ordinal)?.Syntax as ExpressionSyntax;
-                    groups.Add(argument is null
-                        ? RouteGroups.Fail($"the generator cannot read the route group a call of '{methodName}' passes as '{parameter.Name}'")
-                        : Resolve(argument, semanticModel, methodsBeingFollowed, depth + 1, ct));
-                }
-
-                var merged = RouteGroups.Merge(groups);
+                var merged = RouteGroups.Merge(calls.Select(x => resolve(new Frame(methodReference, x.Call, x.SemanticModel, parent: null), depth + 1)));
                 return merged.Prefixes.Count > MaxPrefixes
                     ? RouteGroups.Fail($"'{methodName}' maps the endpoint at more than {MaxPrefixes} routes")
                     : merged;
             }
             finally
             {
-                methodsBeingFollowed.Remove(methodReference);
+                context.MethodsBeingFollowed.Remove(methodReference);
             }
         }
 
@@ -385,7 +596,7 @@ namespace Api.ToMcp.Generator.Parsing
                 SyntaxReferenceComparer.Instance.Equals(targetReference, methodReference);
         }
 
-        private static bool IsUseEndpointsCallback(SyntaxNode lambda, Compilation compilation, CancellationToken ct)
+        private static bool IsUseEndpointsCallback(SyntaxNode lambda, ResolveContext context)
         {
             var invocation = (lambda.Parent as ArgumentSyntax)?.Parent?.Parent as InvocationExpressionSyntax;
             if (invocation is null)
@@ -393,7 +604,7 @@ namespace Api.ToMcp.Generator.Parsing
                 return false;
             }
 
-            var method = SyntaxIndex.GetSemanticModel(compilation, invocation.SyntaxTree).GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
+            var method = SyntaxIndex.GetSemanticModel(context.Compilation, invocation.SyntaxTree).GetSymbolInfo(invocation, context.Ct).Symbol as IMethodSymbol;
             var definition = method?.ReducedFrom ?? method;
 
             return definition is not null &&
@@ -424,16 +635,19 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether the method is one of ASP.NET Core's conventions, such as <c>WithTags</c> or <c>RequireAuthorization</c>,
-        /// which add to the builder they are called on and return it.
+        /// Whether the method is a convention that returns the builder it is called on, as ASP.NET Core's <c>WithTags</c>,
+        /// <c>RequireAuthorization</c> and the others do: <c>TBuilder M&lt;TBuilder&gt;(this TBuilder builder, ...)</c>,
+        /// which can return no other builder. A method that returns its builder's type itself may return a sub-group.
         /// </summary>
-        private static bool ReturnsItsBuilder(IMethodSymbol method)
+        private static bool ReturnsItsReceiver(IMethodSymbol method)
         {
             var definition = method.OriginalDefinition;
+            var receiverType = definition.Parameters.FirstOrDefault()?.Type as ITypeParameterSymbol;
 
-            return definition.Parameters.Length > 0 &&
-                (definition.ContainingNamespace?.ToDisplayString() + ".").StartsWith(MinimalApiNames.AspNetCoreNamespacePrefix, StringComparison.Ordinal) &&
-                SymbolEqualityComparer.Default.Equals(definition.ReturnType, definition.Parameters[0].Type);
+            return definition.IsExtensionMethod &&
+                receiverType is not null &&
+                SymbolEqualityComparer.Default.Equals(receiverType.DeclaringMethod, definition) &&
+                SymbolEqualityComparer.Default.Equals(definition.ReturnType, receiverType);
         }
 
         private static bool IsWebApplication(ITypeSymbol type)
@@ -468,6 +682,69 @@ namespace Api.ToMcp.Generator.Parsing
                 {
                     return expression;
                 }
+            }
+        }
+
+        /// <summary>
+        /// What one resolution shares: the compilation, and the methods it is following, which it must not enter again.
+        /// </summary>
+        private sealed class ResolveContext
+        {
+            public ResolveContext(Compilation compilation, CancellationToken ct)
+            {
+                Compilation = compilation;
+                Ct = ct;
+            }
+
+            public Compilation Compilation { get; }
+            public CancellationToken Ct { get; }
+            public HashSet<SyntaxReference> MethodsBeingFollowed { get; } = new HashSet<SyntaxReference>(SyntaxReferenceComparer.Instance);
+        }
+
+        /// <summary>
+        /// A call being followed into a method of the app's code: the method's parameters stand for the call's arguments,
+        /// which are read in the caller's file, in the frame of the call the caller is in.
+        /// </summary>
+        private sealed class Frame
+        {
+            private readonly SyntaxReference _method;
+            private readonly IInvocationOperation _call;
+
+            public Frame(SyntaxReference method, IInvocationOperation call, SemanticModel callModel, Frame? parent)
+            {
+                _method = method;
+                _call = call;
+                CallModel = callModel;
+                Parent = parent;
+            }
+
+            public SemanticModel CallModel { get; }
+            public Frame? Parent { get; }
+            public string MethodName => $"{_call.TargetMethod.ContainingType?.Name}.{_call.TargetMethod.Name}";
+
+            /// <summary>
+            /// The frame of the nearest call being followed into the method, or null.
+            /// </summary>
+            public Frame? Find(ISymbol method)
+            {
+                var methodReference = method.DeclaringSyntaxReferences.FirstOrDefault();
+                for (var frame = this; frame is not null; frame = frame.Parent)
+                {
+                    if (methodReference is not null && SyntaxReferenceComparer.Instance.Equals(frame._method, methodReference))
+                    {
+                        return frame;
+                    }
+                }
+
+                return null;
+            }
+
+            /// <summary>
+            /// The value the call passes for the parameter at the position, its default when the call leaves it out.
+            /// </summary>
+            public IOperation? GetArgument(int ordinal)
+            {
+                return RouteGroupResolver.GetArgument(_call, ordinal);
             }
         }
 

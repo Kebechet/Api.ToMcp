@@ -207,6 +207,129 @@ namespace TestApi
     }
 
     [Fact]
+    public void Endpoint_MappedOnWhatAnAppsOwnMethodReturns_TakesItsGroups()
+    {
+        // A fluent method that returns its group, and one in ASP.NET Core's namespace that returns a sub-group of it: the
+        // generator reads what each returns rather than trusting a method by its namespace.
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app)
+        {
+            app.MapGroup(""/api"").MapTodos().MapUsers();
+            app.MapGroup(""/shop"").MapV1().MapGet(""/orders"", () => 1).WithName(""Orders"");
+        }
+
+        public static RouteGroupBuilder MapTodos(this RouteGroupBuilder group)
+        {
+            group.MapGet(""/todos"", () => 1).WithName(""Todos"");
+            return group;
+        }
+
+        public static RouteGroupBuilder MapUsers(this RouteGroupBuilder group)
+        {
+            group.MapGet(""/users"", () => 1).WithName(""Users"");
+            return group;
+        }") + @"
+namespace Microsoft.AspNetCore.Builder
+{
+    public static class VersionGroups
+    {
+        public static RouteGroupBuilder MapV1(this RouteGroupBuilder group) => group.MapGroup(""/v1"");
+    }
+}
+";
+        var generated = RunGenerator(source, MinimalApisConfig);
+
+        Assert.Empty(GetGeneratorDiagnostics(source, MinimalApisConfig));
+        Assert.Equal("var route = $\"/api/todos\";", GetRouteLine(generated, "Endpoints_TodosTool"));
+        Assert.Equal("var route = $\"/api/users\";", GetRouteLine(generated, "Endpoints_UsersTool"));
+        Assert.Equal("var route = $\"/shop/v1/orders\";", GetRouteLine(generated, "Endpoints_OrdersTool"));
+    }
+
+    [Fact]
+    public void Endpoint_MappedOnWhatALibrarysMethodReturns_IsFollowedOnlyThroughAConventionThatReturnsItsReceiver()
+    {
+        // A library's code cannot be read: its generic TBuilder convention returns the builder it is given, while a method
+        // that returns a RouteGroupBuilder may return a sub-group.
+        const string library = MinimalApiUsings + @"
+namespace Microsoft.AspNetCore.Builder
+{
+    public static class LibraryConventions
+    {
+        public static TBuilder WithAudit<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder => builder;
+
+        public static RouteGroupBuilder MapV1(this RouteGroupBuilder group) => group.MapGroup(""/v1"");
+    }
+}
+";
+        var source = MinimalApi(@"
+            app.MapGroup(""/api"").WithAudit().MapGet(""/audited"", () => 1).WithName(""Audited"");
+            app.MapGroup(""/api"").MapV1().MapGet(""/orders"", () => 1).WithName(""Orders"");");
+        var compilation = CreateCompilation(source).AddReferences(CompileToReference(library, "Library"));
+
+        var runResult = CreateDriver(MinimalApisConfig).RunGenerators(compilation).GetRunResult();
+        var generated = string.Join("\n", runResult.Results.SelectMany(x => x.GeneratedSources).Select(x => x.SourceText.ToString()));
+        var warning = Assert.Single(runResult.Diagnostics);
+
+        Assert.Equal("var route = $\"/api/audited\";", GetRouteLine(generated, "Endpoints_AuditedTool"));
+        Assert.DoesNotContain("Endpoints_OrdersTool", generated);
+        Assert.Equal(UnbuildableEndpointId, warning.Id);
+        Assert.EndsWith(
+            ": the generator cannot tell which route group 'app.MapGroup(\"/api\").MapV1()' gives, as it follows only MapGroup, ASP.NET Core's conventions and the project's own methods that return a builder",
+            warning.GetMessage());
+    }
+
+    [Fact]
+    public void Endpoint_MappedOnAParameterANullCheckChooses_TakesTheBranchEachCallTakes()
+    {
+        // The pattern of registering every IEndpoint class: a group when the caller passes one, else the app itself.
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app)
+        {
+            app.MapEndpoints();
+            app.MapEndpoints(app.MapGroup(""/v2""));
+            app.MapCoalesced(null);
+        }
+
+        public static WebApplication MapEndpoints(this WebApplication app, RouteGroupBuilder? routeGroupBuilder = null)
+        {
+            IEndpointRouteBuilder builder = routeGroupBuilder is null ? app : routeGroupBuilder;
+            builder.MapGet(""/items"", () => 1);
+            return app;
+        }
+
+        public static WebApplication MapCoalesced(this WebApplication app, RouteGroupBuilder? group)
+        {
+            var builder = group ?? (IEndpointRouteBuilder)app.MapGroup(""/fallback"");
+            builder.MapGet(""/things"", () => 1);
+            return app;
+        }");
+
+        var generated = RunGenerator(source, MinimalApisConfig);
+
+        Assert.Empty(GetGeneratorDiagnostics(source, MinimalApisConfig));
+        Assert.Equal("var route = $\"/items\";", GetRouteLine(generated, "Endpoints_GetItemsTool"));
+        Assert.Equal("var route = $\"/v2/items\";", GetRouteLine(generated, "Endpoints_GetV2ItemsTool"));
+        Assert.Equal("var route = $\"/fallback/things\";", GetRouteLine(generated, "Endpoints_GetFallbackThingsTool"));
+    }
+
+    [Fact]
+    public void Endpoint_MappedOnAConditionThatIsNoNullCheckOfAParameter_GetsNoToolAndWarning()
+    {
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app, bool versioned)
+        {
+            IEndpointRouteBuilder builder = versioned ? app.MapGroup(""/v1"") : app;
+            builder.MapGet(""/items"", () => 1);
+        }");
+
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, MinimalApisConfig), x => x.Id == UnbuildableEndpointId);
+
+        Assert.EndsWith(
+            ": the generator cannot tell which route group 'versioned ? app.MapGroup(\"/v1\") : app' is, as it decides only a null check of a parameter",
+            warning.GetMessage());
+    }
+
+    [Fact]
     public void Endpoint_MappedInTheCallbackOfUseEndpoints_IsMappedOnTheRoot()
     {
         var source = MinimalApi(@"app.UseRouting(); app.UseEndpoints(endpoints => { endpoints.MapGet(""/legacy"", () => 1); });");
