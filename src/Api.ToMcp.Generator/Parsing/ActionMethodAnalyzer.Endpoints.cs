@@ -7,9 +7,31 @@ using System.Threading;
 using Api.ToMcp.Generator.Emitting;
 using Api.ToMcp.Generator.Models;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Api.ToMcp.Generator.Parsing
 {
+    /// <summary>
+    /// Whether the config can select the endpoint a <c>Map*</c> call maps, as far as a look at its handler tells.
+    /// </summary>
+    internal enum EndpointSelection
+    {
+        /// <summary>
+        /// The config may select it, or the generator cannot tell, so it analyzes the endpoint.
+        /// </summary>
+        Possible,
+
+        /// <summary>
+        /// Nothing selects it: no opt-in, no entry naming its class, no <c>[McpExpose]</c>.
+        /// </summary>
+        LeftOut,
+
+        /// <summary>
+        /// <c>[McpIgnore]</c> keeps it from MCP.
+        /// </summary>
+        Ignored
+    }
+
     /// <summary>
     /// Minimal API endpoints as actions: the same model a controller's action has, so the same emitter writes their tools,
     /// with each parameter's source decided by the Minimal API binding rules
@@ -105,6 +127,100 @@ namespace Api.ToMcp.Generator.Parsing
         public static bool IsToolHttpMethod(string httpMethod)
         {
             return ToolHttpMethods.Contains(httpMethod);
+        }
+
+        /// <summary>
+        /// Whether the config can select the endpoint a <c>Map*</c> call maps, read without binding the call: always
+        /// with <c>"minimalApis": true</c>, else when an include or exclude entry names the class that declares the
+        /// handler, or one of its endpoints, or <c>[McpExpose]</c> marks the handler or the class. The analysis of an
+        /// endpoint, its route followed through the app's methods, is what costs, so a project that never opts in skips it.
+        /// </summary>
+        public static EndpointSelection GetEndpointSelection(
+            InvocationExpressionSyntax invocation,
+            ExpressionSyntax? handler,
+            SemanticModel semanticModel,
+            GeneratorConfigModel config,
+            CancellationToken ct)
+        {
+            if (config.MinimalApis == true)
+            {
+                return EndpointSelection.Possible;
+            }
+
+            var (type, methods, attributes) = FindHandlerCheaply(invocation, handler, semanticModel, ct);
+            if (type is null)
+            {
+                return EndpointSelection.Possible;
+            }
+
+            var classNames = new[] { type.Name, TrimSuffix(type.Name, ConventionNames.ControllerSuffix) };
+            var isNamedByEntry = config.Include.Concat(config.Exclude).Any(entry => entry is not null &&
+                classNames.Any(name => entry == name || entry.StartsWith(name + ConventionNames.EntryActionSeparator, StringComparison.Ordinal)));
+            if (isNamedByEntry)
+            {
+                return EndpointSelection.Possible;
+            }
+
+            var attributeClasses = attributes
+                .Select(x => semanticModel.GetSymbolInfo(x, ct).Symbol?.ContainingType?.ToDisplayString())
+                .ToList();
+            var isIgnored = FindNearestAttribute(type, x => x.BaseType, IsMcpIgnoreAttribute) is not null ||
+                attributeClasses.Contains(McpIgnoreAttributeFullName) ||
+                (methods.Count > 0 && methods.All(x => FindNearestAttribute(x, method => method.OverriddenMethod, IsMcpIgnoreAttribute) is not null));
+            if (isIgnored)
+            {
+                return EndpointSelection.Ignored;
+            }
+
+            var isExposed = FindNearestAttribute(type, x => x.BaseType, IsMcpExposeAttribute) is not null ||
+                attributeClasses.Contains(McpExposeAttributeFullName) ||
+                methods.Any(x => FindNearestAttribute(x, method => method.OverriddenMethod, IsMcpExposeAttribute) is not null);
+
+            return isExposed ? EndpointSelection.Possible : EndpointSelection.LeftOut;
+        }
+
+        /// <summary>
+        /// The class that declares a handler, the methods its name may stand for, and a lambda's attributes, read by binding
+        /// the handler's names rather than the call: the class a lambda is written in; the class or the type of the value a
+        /// method group's member access starts from; the methods a simple name finds in scope. Null when the handler is
+        /// written some other way.
+        /// </summary>
+        private static (INamedTypeSymbol? Type, List<IMethodSymbol> Methods, IReadOnlyList<AttributeSyntax> Attributes) FindHandlerCheaply(
+            InvocationExpressionSyntax invocation,
+            ExpressionSyntax? handler,
+            SemanticModel semanticModel,
+            CancellationToken ct)
+        {
+            var noMethods = new List<IMethodSymbol>();
+            var noAttributes = Array.Empty<AttributeSyntax>();
+
+            var lambda = handler as LambdaExpressionSyntax;
+            if (lambda is not null || handler is AnonymousMethodExpressionSyntax)
+            {
+                var attributes = lambda?.AttributeLists.SelectMany(x => x.Attributes).ToList() ?? new List<AttributeSyntax>();
+                return (semanticModel.GetEnclosingSymbol(invocation.SpanStart, ct)?.ContainingType, noMethods, attributes);
+            }
+
+            var memberAccess = handler as MemberAccessExpressionSyntax;
+            if (memberAccess is not null)
+            {
+                var receiver = semanticModel.GetSymbolInfo(memberAccess.Expression, ct).Symbol as INamedTypeSymbol ??
+                    semanticModel.GetTypeInfo(memberAccess.Expression, ct).Type as INamedTypeSymbol;
+                var methods = receiver is null
+                    ? noMethods
+                    : GetBaseTypes(receiver).Prepend(receiver).SelectMany(x => x.GetMembers(memberAccess.Name.Identifier.ValueText)).OfType<IMethodSymbol>().ToList();
+
+                return (methods.FirstOrDefault()?.ContainingType ?? receiver, methods, noAttributes);
+            }
+
+            var identifier = handler as IdentifierNameSyntax;
+            if (identifier is not null)
+            {
+                var methods = semanticModel.LookupSymbols(invocation.SpanStart, name: identifier.Identifier.ValueText).OfType<IMethodSymbol>().ToList();
+                return (methods.FirstOrDefault()?.ContainingType, methods, noAttributes);
+            }
+
+            return (null, noMethods, noAttributes);
         }
 
         /// <summary>

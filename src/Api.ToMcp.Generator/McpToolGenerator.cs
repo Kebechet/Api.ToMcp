@@ -21,10 +21,7 @@ namespace Api.ToMcp.Generator
         private const string GeneratedSourceSuffix = ".g.cs";
         private const string RegistrationSourceName = "McpToolsRegistration";
 
-        /// <summary>
-        /// Separates the controller from the action in an include or exclude entry such as <c>Products.GetById</c>.
-        /// </summary>
-        private const char EntryActionSeparator = '.';
+        private const char EntryActionSeparator = ConventionNames.EntryActionSeparator;
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
@@ -45,22 +42,21 @@ namespace Api.ToMcp.Generator
                 .Select((info, _) => info!)
                 .WithTrackingName(TrackingNames.Controllers);
 
-            // Step 2b: Find the Minimal API endpoints, each Map* call as the actions of the class that declares its handler.
-            // A call's route can depend on the calls of the method it is in, in any file, which Roslyn's run of the transform
-            // after every edit reads again.
-            var endpointProvider = context.SyntaxProvider
-                .CreateSyntaxProvider(
-                    predicate: (node, _) => MinimalApiScanner.IsMapCall(node),
-                    transform: (ctx, ct) => MinimalApiScanner.TryGetEndpoints(ctx, ct))
-                .Where(info => info != null)
-                .Select((info, _) => info!)
+            // Step 2b: Find the Minimal API endpoints the config could select, each Map* call as the actions of the class
+            // that declares its handler. An endpoint's route can depend on the calls of the method it is in, in any file,
+            // so this step reads the whole compilation, after every edit; it looks up the Map* calls in an index of each
+            // file's invocations, which an edit builds again only for the file it changed, and analyzes only the endpoints
+            // the config could select.
+            var endpointProvider = context.CompilationProvider
+                .Combine(configProvider)
+                .Select((source, ct) => MinimalApiScanner.GetEndpoints(source.Left, source.Right, ct))
                 .WithTrackingName(TrackingNames.Endpoints);
 
             // Step 3: Decide which tools to generate and which diagnostics to report, from the models alone. After an edit
             // that changes no controller, no endpoint and not the config, Roslyn reuses this step's output and the sources
             // made from it.
             var plan = controllerProvider.Collect()
-                .Combine(endpointProvider.Collect())
+                .Combine(endpointProvider)
                 .Combine(configProvider)
                 .Select((source, _) => CreatePlan(source.Left.Left, source.Left.Right, source.Right))
                 .WithTrackingName(TrackingNames.Plan);
@@ -102,10 +98,10 @@ namespace Api.ToMcp.Generator
         /// </summary>
         private static GenerationPlanModel CreatePlan(
             ImmutableArray<ControllerInfoModel> scannedControllers,
-            ImmutableArray<ControllerInfoModel> endpointCalls,
+            EndpointsModel endpoints,
             GeneratorConfigModel config)
         {
-            var controllers = scannedControllers.AddRange(GroupEndpointsByClass(endpointCalls));
+            var controllers = scannedControllers.AddRange(GroupEndpointsByClass(endpoints.Classes));
             var diagnostics = new List<DiagnosticInfoModel>();
             var selectedActions = SelectActions(controllers, config);
             var entryNames = GetEntryNames(controllers);
@@ -133,7 +129,7 @@ namespace Api.ToMcp.Generator
             diagnostics.AddRange(unbuildableRouteDiagnostics);
             ReportDuplicateToolNames(diagnostics, toolActions, config);
             ReportEndpointsWithSeveralHttpMethods(diagnostics, toolActions);
-            ReportEndpointsLeftOut(diagnostics, controllers, config);
+            ReportEndpointsLeftOut(diagnostics, controllers, config, endpoints.LeftOutCount);
 
             var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(toolActions);
             var tools = toolActions.Select((action, i) => new ToolSourceModel
@@ -201,7 +197,7 @@ namespace Api.ToMcp.Generator
         /// The Minimal API endpoints of each class that declares handlers, as one controller-like model, whichever calls
         /// and files map them.
         /// </summary>
-        private static IEnumerable<ControllerInfoModel> GroupEndpointsByClass(ImmutableArray<ControllerInfoModel> endpointCalls)
+        private static IEnumerable<ControllerInfoModel> GroupEndpointsByClass(EquatableArray<ControllerInfoModel> endpointCalls)
         {
             return endpointCalls
                 .GroupBy(x => (x.Namespace, x.Name))
@@ -312,10 +308,12 @@ namespace Api.ToMcp.Generator
         /// Tells a project in AllExceptExcluded mode whose generator.json does not say whether to select Minimal API
         /// endpoints how many of them the mode leaves out (MCP012). An info, as nothing is wrong: the project has to opt in.
         /// </summary>
+        /// <param name="unanalyzedCount">The endpoints the generator did not analyze, as nothing could select them.</param>
         private static void ReportEndpointsLeftOut(
             List<DiagnosticInfoModel> diagnostics,
             ImmutableArray<ControllerInfoModel> controllers,
-            GeneratorConfigModel config)
+            GeneratorConfigModel config,
+            int unanalyzedCount)
         {
             if (config.Mode != SelectionModeModel.AllExceptExcluded || config.MinimalApis is not null)
                 return;
@@ -326,7 +324,7 @@ namespace Api.ToMcp.Generator
                     IsSelectable(controller, action) &&
                     !IsOptedIn(controller, action, config) &&
                     !GetEntryNames(controller, action).Any(config.Exclude.Contains)))
-                .Count();
+                .Count() + unanalyzedCount;
             if (leftOutCount == 0)
                 return;
 

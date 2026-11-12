@@ -86,13 +86,6 @@ namespace Api.ToMcp.Generator.Parsing
         private const int MaxPrefixes = 32;
 
         /// <summary>
-        /// Every invocation of the compilation, by the name of the method it calls, which the search for the calls of a
-        /// method looks through. Built once per compilation, the first time an endpoint is mapped on a parameter.
-        /// </summary>
-        private static readonly CompilationCache<Compilation, ILookup<string, InvocationExpressionSyntax>> InvocationsByName =
-            new CompilationCache<Compilation, ILookup<string, InvocationExpressionSyntax>>(EqualityComparer<Compilation>.Default);
-
-        /// <summary>
         /// The calls of each method, which every endpoint the method maps asks for. A local function is not kept, as each
         /// semantic model makes its symbol anew.
         /// </summary>
@@ -115,28 +108,6 @@ namespace Api.ToMcp.Generator.Parsing
                 .Where(x => x.Length > 0);
 
             return PathSeparator + string.Join(PathSeparator.ToString(), parts);
-        }
-
-        /// <summary>
-        /// The name a call invokes a method by, whatever form the call takes: <c>M()</c>, <c>x.M()</c>, <c>x?.M()</c> or
-        /// <c>M&lt;T&gt;()</c>; null for a call of a delegate an expression gives.
-        /// </summary>
-        public static string? GetInvokedName(ExpressionSyntax expression)
-        {
-            var simpleName = expression as SimpleNameSyntax;
-            if (simpleName is not null)
-            {
-                return simpleName.Identifier.ValueText;
-            }
-
-            var memberAccess = expression as MemberAccessExpressionSyntax;
-            if (memberAccess is not null)
-            {
-                return memberAccess.Name.Identifier.ValueText;
-            }
-
-            var memberBinding = expression as MemberBindingExpressionSyntax;
-            return memberBinding?.Name.Identifier.ValueText;
         }
 
         private static RouteGroups Resolve(
@@ -371,35 +342,28 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static List<(IInvocationOperation Call, SemanticModel SemanticModel)> FindUncachedCalls(IMethodSymbol method, Compilation compilation, CancellationToken ct)
         {
-            var invocations = InvocationsByName.GetOrAdd(compilation, compilation, x => IndexInvocations(x, ct));
             var calls = new List<(IInvocationOperation Call, SemanticModel SemanticModel)>();
 
-            foreach (var invocation in invocations[method.Name])
+            foreach (var tree in compilation.SyntaxTrees)
             {
-                var semanticModel = compilation.GetSemanticModel(invocation.SyntaxTree);
-                var target = semanticModel.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
-                if (target is null || !IsSameMethod(target, method))
+                foreach (var invocation in SyntaxIndex.GetInvocations(tree)[method.Name])
                 {
-                    continue;
-                }
+                    var semanticModel = SyntaxIndex.GetSemanticModel(compilation, tree);
+                    var target = semanticModel.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
+                    if (target is null || !IsSameMethod(target, method))
+                    {
+                        continue;
+                    }
 
-                var call = semanticModel.GetOperation(invocation, ct) as IInvocationOperation;
-                if (call is not null)
-                {
-                    calls.Add((call, semanticModel));
+                    var call = semanticModel.GetOperation(invocation, ct) as IInvocationOperation;
+                    if (call is not null)
+                    {
+                        calls.Add((call, semanticModel));
+                    }
                 }
             }
 
             return calls;
-        }
-
-        private static ILookup<string, InvocationExpressionSyntax> IndexInvocations(Compilation compilation, CancellationToken ct)
-        {
-            return compilation.SyntaxTrees
-                .SelectMany(x => x.GetRoot(ct).DescendantNodes().OfType<InvocationExpressionSyntax>())
-                .Select(x => (Name: GetInvokedName(x.Expression), Invocation: x))
-                .Where(x => x.Name is not null)
-                .ToLookup(x => x.Name!, x => x.Invocation, StringComparer.Ordinal);
         }
 
         /// <summary>
@@ -429,7 +393,7 @@ namespace Api.ToMcp.Generator.Parsing
                 return false;
             }
 
-            var method = compilation.GetSemanticModel(invocation.SyntaxTree).GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
+            var method = SyntaxIndex.GetSemanticModel(compilation, invocation.SyntaxTree).GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
             var definition = method?.ReducedFrom ?? method;
 
             return definition is not null &&

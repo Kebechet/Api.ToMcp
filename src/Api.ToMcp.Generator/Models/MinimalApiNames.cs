@@ -25,6 +25,17 @@ internal static class MinimalApiNames
     /// </summary>
     public const int HttpMethodsParameter = 2;
 
+    /// <summary>
+    /// The names of the <c>Map*</c> methods' handler parameter, of type <c>Delegate</c> and <c>RequestDelegate</c>.
+    /// </summary>
+    public const string HandlerParameterName = "handler";
+    public const string RequestDelegateParameterName = "requestDelegate";
+
+    /// <summary>
+    /// What no tool's route holds, as the generator never exposes the MCP endpoint itself.
+    /// </summary>
+    public const string McpRouteSegment = "/mcp";
+
     public const string EndpointRoutingExtensions = "Microsoft.AspNetCore.Builder.EndpointRoutingApplicationBuilderExtensions";
 
     /// <summary>

@@ -217,6 +217,17 @@ namespace Api.ToMcp.Generator.Models
     }
 
     /// <summary>
+    /// The Minimal API endpoints the config could select, the <c>Map*</c> calls of each class that declares handlers as one
+    /// controller-like model each, and how many endpoints the generator did not analyze, as nothing in the config or the
+    /// code selects them.
+    /// </summary>
+    internal sealed record EndpointsModel
+    {
+        public EquatableArray<ControllerInfoModel> Classes { get; init; } = EquatableArray<ControllerInfoModel>.Empty;
+        public int LeftOutCount { get; init; }
+    }
+
+    /// <summary>
     /// What the generator makes of the controllers and the config: the tools to generate, in the order the registration
     /// lists them, and the diagnostics to report.
     /// </summary>

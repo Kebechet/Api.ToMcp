@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Api.ToMcp.Generator.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -73,24 +74,54 @@ namespace Api.ToMcp.Generator.Parsing
         };
 
         /// <summary>
-        /// Whether the node calls a method by the name of one that maps an endpoint, which the transform then checks.
+        /// The Minimal API endpoints of the compilation that the config could select, each <c>Map*</c> call as the actions
+        /// of the class that declares its handler, and how many endpoints it leaves out. Only an endpoint the config could
+        /// select is analyzed, its route followed through the app's methods; finding the others costs a look at the
+        /// handler, so a project that never opts in pays little on each edit.
         /// </summary>
-        public static bool IsMapCall(SyntaxNode node)
+        public static EndpointsModel GetEndpoints(Compilation compilation, GeneratorConfigModel config, CancellationToken ct)
         {
-            var invocation = node as InvocationExpressionSyntax;
-            var name = invocation is null ? null : RouteGroupResolver.GetInvokedName(invocation.Expression);
+            var selectedCalls = new List<(InvocationExpressionSyntax Invocation, SemanticModel SemanticModel)>();
+            var leftOutCount = 0;
 
-            return name is not null && HttpMethodByMapMethod.ContainsKey(name);
+            foreach (var tree in compilation.SyntaxTrees)
+            {
+                var invocations = SyntaxIndex.GetInvocations(tree);
+                foreach (var invocation in HttpMethodByMapMethod.Keys.SelectMany(x => invocations[x]).OrderBy(x => x.SpanStart))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var semanticModel = SyntaxIndex.GetSemanticModel(compilation, tree);
+
+                    var selection = ActionMethodAnalyzer.GetEndpointSelection(invocation, GetHandlerSyntax(invocation), semanticModel, config, ct);
+                    if (selection == EndpointSelection.Possible)
+                    {
+                        selectedCalls.Add((invocation, semanticModel));
+                    }
+                    else if (selection == EndpointSelection.LeftOut && !IsMcpPattern(invocation, semanticModel, ct))
+                    {
+                        leftOutCount++;
+                    }
+                }
+            }
+
+            // Roslyn runs a syntax provider's transforms in parallel; the endpoints are analyzed so too, and kept in order.
+            var endpoints = new ControllerInfoModel?[selectedCalls.Count];
+            Parallel.For(0, selectedCalls.Count, new ParallelOptions { CancellationToken = ct }, i =>
+                endpoints[i] = TryGetEndpoints(selectedCalls[i].Invocation, selectedCalls[i].SemanticModel, ct));
+
+            return new EndpointsModel
+            {
+                Classes = endpoints.OfType<ControllerInfoModel>().ToImmutableArray(),
+                LeftOutCount = leftOutCount
+            };
         }
 
         /// <summary>
         /// The endpoints a <c>Map*</c> call maps, one for each route its groups give it, as the actions of the class that
         /// declares its handler; null when the call maps none a tool can call, such as one for <c>HEAD</c> only.
         /// </summary>
-        public static ControllerInfoModel? TryGetEndpoints(GeneratorSyntaxContext context, CancellationToken ct)
+        private static ControllerInfoModel? TryGetEndpoints(InvocationExpressionSyntax invocation, SemanticModel semanticModel, CancellationToken ct)
         {
-            var invocation = (InvocationExpressionSyntax)context.Node;
-            var semanticModel = context.SemanticModel;
             var operation = semanticModel.GetOperation(invocation, ct) as IInvocationOperation;
             if (operation is null || !IsMapMethod(operation.TargetMethod))
             {
@@ -151,6 +182,50 @@ namespace Api.ToMcp.Generator.Parsing
         {
             return HttpMethodByMapMethod.ContainsKey(method.Name) &&
                 method.ContainingType.ToDisplayString() == MinimalApiNames.EndpointRouteBuilderExtensions;
+        }
+
+        /// <summary>
+        /// The handler a <c>Map*</c> call passes, as written: its <c>handler</c> or <c>requestDelegate</c> argument, which
+        /// comes last unless named, without parentheses and casts.
+        /// </summary>
+        private static ExpressionSyntax? GetHandlerSyntax(InvocationExpressionSyntax invocation)
+        {
+            var arguments = invocation.ArgumentList.Arguments;
+            var handler = arguments.FirstOrDefault(x =>
+                x.NameColon?.Name.Identifier.ValueText is MinimalApiNames.HandlerParameterName or MinimalApiNames.RequestDelegateParameterName) ??
+                arguments.LastOrDefault(x => x.NameColon is null);
+
+            var expression = handler?.Expression;
+            while (true)
+            {
+                var parenthesized = expression as ParenthesizedExpressionSyntax;
+                var cast = expression as CastExpressionSyntax;
+                if (parenthesized is not null)
+                {
+                    expression = parenthesized.Expression;
+                }
+                else if (cast is not null)
+                {
+                    expression = cast.Expression;
+                }
+                else
+                {
+                    return expression;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether the route pattern of the call holds <c>/mcp</c>, which no tool ever calls, so it counts for no endpoint
+        /// left out.
+        /// </summary>
+        private static bool IsMcpPattern(InvocationExpressionSyntax invocation, SemanticModel semanticModel, CancellationToken ct)
+        {
+            var pattern = invocation.ArgumentList.Arguments
+                .Select(x => semanticModel.GetConstantValue(x.Expression, ct).Value as string)
+                .FirstOrDefault(x => x is not null);
+
+            return pattern is not null && pattern.IndexOf(MinimalApiNames.McpRouteSegment, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>

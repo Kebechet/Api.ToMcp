@@ -457,6 +457,18 @@ namespace TestApi
     }
 
     [Fact]
+    public void ExcludeEntry_NamingAnEndpointByItsRoute_MatchesIt_WithoutTheOptIn()
+    {
+        // Without the opt-in, the generator analyzes only the endpoints an entry or [McpExpose] concerns; one an entry
+        // names is analyzed, so it keeps the name its route gives it and the entry does not name nothing.
+        var source = MinimalApi(@"var api = app.MapGroup(""/api""); api.MapGet(""/items"", () => 1);");
+        const string config = @"{ ""schemaVersion"": 1, ""mode"": ""AllExceptExcluded"", ""exclude"": [""Endpoints.GetApiItems""] }";
+
+        Assert.Empty(GetGeneratorDiagnostics(source, config));
+        Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, config));
+    }
+
+    [Fact]
     public void ProjectOfEndpoints_ThatSelectsNone_GetsNoWarning_UntilItOptsIn()
     {
         // Before endpoints became tools, such a project got no MCP006; an update must not start failing its build.
