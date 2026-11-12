@@ -15,6 +15,7 @@ namespace Api.ToMcp.Generated
     public static class ProductsController_SearchTool
     {
         [McpServerTool(Name = "Products_Search", Title = "Search", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+        [global::Api.ToMcp.Runtime.McpRequiredScope(McpScope.Read)]
         [Description("Finds products by name.")]
         public static async Task<CallToolResult> InvokeAsync(
             IMcpHttpInvoker invoker,
@@ -52,6 +53,7 @@ namespace Api.ToMcp.Generated
     public static class ProductsController_GetLabelTool
     {
         [McpServerTool(Name = "Products_GetLabel", Title = "Get label", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+        [global::Api.ToMcp.Runtime.McpRequiredScope(McpScope.Read)]
         [Description("Invokes ProductsController.GetLabel")]
         public static async Task<CallToolResult> InvokeAsync(
             IMcpHttpInvoker invoker,
@@ -84,6 +86,7 @@ namespace Api.ToMcp.Generated
     public static class ProductsController_CreateTool
     {
         [McpServerTool(Name = "Products_Create", Title = "Create", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
+        [global::Api.ToMcp.Runtime.McpRequiredScope(McpScope.Write)]
         [Description("Invokes ProductsController.Create")]
         public static async Task<CallToolResult> InvokeAsync(
             IMcpHttpInvoker invoker,
@@ -116,6 +119,7 @@ namespace Api.ToMcp.Generated
     public static class ProductsController_DeleteTool
     {
         [McpServerTool(Name = "Products_Delete", Title = "Delete", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = false)]
+        [global::Api.ToMcp.Runtime.McpRequiredScope(McpScope.Delete)]
         [Description("Invokes ProductsController.Delete")]
         public static async Task<CallToolResult> InvokeAsync(
             IMcpHttpInvoker invoker,

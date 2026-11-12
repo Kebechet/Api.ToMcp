@@ -7,7 +7,8 @@ namespace Api.ToMcp.Generator.Tests;
 /// <summary>
 /// The whole emitted code of tools without an output schema, which output schemas must leave as it was. Each expected
 /// file in <c>Snapshots</c> is 2.0.0's output for the same source, plus the tool annotations that 2.1.0 and the title
-/// that 2.2.0 add to <c>[McpServerTool]</c>, and the query value equal to the action's default that 2.2.0 leaves out.
+/// that 2.2.0 add to <c>[McpServerTool]</c>, the query value equal to the action's default that 2.2.0 leaves out, and the
+/// <c>[McpRequiredScope]</c> that OAuth sign-in discovery reads (https://github.com/Kebechet/Api.ToMcp/issues/64).
 /// </summary>
 public partial class McpToolGeneratorTests
 {
