@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 
 namespace Api.ToMcp.Generator.Models
@@ -155,11 +156,49 @@ namespace Api.ToMcp.Generator.Models
 
         /// <summary>
         /// Where the action is declared in source, which an inherited action shares with every controller that inherits
-        /// it; for an action declared in a referenced assembly, the controller's name.
+        /// it; for an action declared in a referenced assembly, the controller's name. For a Minimal API endpoint, the
+        /// <c>Map*</c> call that maps it.
         /// </summary>
         public SourceLocationModel? SourceLocation { get; init; }
 
-        public string ToolClassName => $"{ControllerName}_{Name}Tool";
+        /// <summary>
+        /// Whether the action is a Minimal API endpoint, mapped by a call such as <c>app.MapGet(...)</c>, rather than an
+        /// action of a controller. <see cref="ControllerName"/> is then the class that declares its handler.
+        /// </summary>
+        public bool IsMinimalApiEndpoint { get; init; }
+
+        /// <summary>
+        /// The description a Minimal API endpoint's own metadata gives it: <c>.WithDescription</c> or
+        /// <c>[EndpointDescription]</c>, else <c>.WithSummary</c> or <c>[EndpointSummary]</c>, else <c>[Description]</c> on
+        /// its handler; null for a controller action.
+        /// </summary>
+        public string? EndpointDescription { get; init; }
+
+        /// <summary>
+        /// The other HTTP methods a tool sends that a Minimal API endpoint is mapped for, which its tool, calling it with
+        /// <see cref="HttpMethod"/>, never uses.
+        /// </summary>
+        public EquatableArray<string> OtherHttpMethods { get; init; } = EquatableArray<string>.Empty;
+
+        /// <summary>
+        /// A Minimal API endpoint's name is any string, from <c>.WithName</c>, so the characters a C# identifier cannot
+        /// hold become underscores.
+        /// </summary>
+        public string ToolClassName => $"{ToIdentifierPart(ControllerName)}_{ToIdentifierPart(Name)}Tool";
+
+        private static string ToIdentifierPart(string name)
+        {
+            var characters = name.ToCharArray();
+            for (var i = 0; i < characters.Length; i++)
+            {
+                if (!SyntaxFacts.IsIdentifierPartCharacter(characters[i]))
+                {
+                    characters[i] = '_';
+                }
+            }
+
+            return new string(characters);
+        }
     }
 
     /// <summary>

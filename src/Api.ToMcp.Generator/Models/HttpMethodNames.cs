@@ -14,4 +14,6 @@ internal static class HttpMethodNames
     public const string Put = "PUT";
     public const string Patch = "PATCH";
     public const string Delete = "DELETE";
+    public const string Trace = "TRACE";
+    public const string Connect = "CONNECT";
 }

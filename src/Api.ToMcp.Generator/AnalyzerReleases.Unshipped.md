@@ -6,6 +6,8 @@ MCP006 | Api.ToMcp.Generator | Warning | No tools generated
 MCP007 | Api.ToMcp.Generator | Warning | Duplicate tool name
 MCP008 | Api.ToMcp.Generator | Warning | Config entry matches nothing
 MCP009 | Api.ToMcp.Generator | Warning | Tool route cannot be built
+MCP010 | Api.ToMcp.Generator | Warning | Endpoint cannot become a tool
+MCP011 | Api.ToMcp.Generator | Warning | Endpoint mapped for several HTTP methods
 
 ### Removed Rules
 

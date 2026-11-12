@@ -92,5 +92,32 @@ namespace Api.ToMcp.Generator.Diagnostics
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true,
             description: "Give the action a parameter, or a property of one, for every required route value, or mark it [McpIgnore] to keep it from MCP without the warning.");
+
+        /// <summary>
+        /// The generator cannot tell at build time what a Minimal API endpoint serves, or cannot send what it reads: its
+        /// route, from a pattern or a group prefix that is not a constant, or a route group it cannot follow to the app;
+        /// its handler; or a form, a header or a body it cannot tell. It leaves the tool out, as MCP009 does for an action.
+        /// </summary>
+        public static readonly DiagnosticDescriptor UnbuildableEndpoint = new DiagnosticDescriptor(
+            id: "MCP010",
+            title: "Endpoint cannot become a tool",
+            messageFormat: "No MCP tool is generated for endpoint '{0}.{1}': {2}",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Map the endpoint with a constant route pattern, in route groups the generator can follow to the app, and with a handler it can read, or mark the handler [McpIgnore] to keep it from MCP without the warning.");
+
+        /// <summary>
+        /// A tool calls its endpoint with one HTTP method, the first one a tool sends that <c>MapMethods</c> lists, so the
+        /// endpoint's other methods have no tool.
+        /// </summary>
+        public static readonly DiagnosticDescriptor EndpointHasSeveralHttpMethods = new DiagnosticDescriptor(
+            id: "MCP011",
+            title: "Endpoint mapped for several HTTP methods",
+            messageFormat: "The MCP tool of endpoint '{0}.{1}' calls it with {2} only, though it is mapped for {3} as well",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Map each HTTP method with a call of its own, such as MapGet and MapPost, to give each of them a tool.");
     }
 }

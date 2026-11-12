@@ -11,7 +11,7 @@ using Api.ToMcp.Generator.Models;
 
 namespace Api.ToMcp.Generator.Parsing
 {
-    internal static class ActionMethodAnalyzer
+    internal static partial class ActionMethodAnalyzer
     {
         private const string McpExposeAttributeFullName = "Api.ToMcp.Abstractions.McpExposeAttribute";
         private const string McpIgnoreAttributeFullName = "Api.ToMcp.Abstractions.McpIgnoreAttribute";
@@ -1002,9 +1002,9 @@ namespace Api.ToMcp.Generator.Parsing
             return null;
         }
 
-        private static string? GetDeclaredXmlDocSummary(IMethodSymbol method)
+        private static string? GetDeclaredXmlDocSummary(ISymbol symbol)
         {
-            var xml = method.GetDocumentationCommentXml();
+            var xml = symbol.GetDocumentationCommentXml();
             if (string.IsNullOrEmpty(xml))
                 return null;
 

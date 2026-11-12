@@ -41,7 +41,10 @@ namespace Api.ToMcp.Generator.Emitting
         private static string Emit(ActionInfoModel action, NamingConfigModel naming, bool structuredOutput, string className)
         {
             var toolName = FormatToolName(action, naming);
-            var description = action.CustomDescription ?? action.XmlDocSummary ?? $"Invokes {action.ControllerName}.{action.Name}";
+            var fallbackDescription = action.IsMinimalApiEndpoint
+                ? $"Invokes {action.HttpMethod} {action.RouteTemplate}"
+                : $"Invokes {action.ControllerName}.{action.Name}";
+            var description = action.CustomDescription ?? action.EndpointDescription ?? action.XmlDocSummary ?? fallbackDescription;
 
             var sb = new StringBuilder();
 

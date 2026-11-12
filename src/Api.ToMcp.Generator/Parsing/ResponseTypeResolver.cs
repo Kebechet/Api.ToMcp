@@ -134,6 +134,134 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
+        /// What a Minimal API endpoint's successful responses carry, as ASP.NET Core's OpenAPI reads it from the handler:
+        /// the <c>[Produces]</c> and <c>[ProducesResponseType]</c> attributes of the handler, which a Minimal API applies
+        /// as an action's own, else its return type without <c>Task&lt;T&gt;</c> or <c>ValueTask&lt;T&gt;</c>. A typed
+        /// result such as <c>Ok&lt;T&gt;</c>, or a <c>Results&lt;Ok&lt;T&gt;, NotFound&gt;</c> union of them, declares
+        /// its responses itself; a union with a result the generator does not know gets no output schema.
+        /// </summary>
+        public static ResponseTypeInfo ResolveEndpoint(IMethodSymbol handler, Compilation compilation)
+        {
+            var produces = GetProducesAttributes(handler, x => x.OverriddenMethod);
+            if (!produces.All(CanReadProduces) || !produces.All(x => CanBeJson(GetContentTypes(x, firstContentTypeArgument: 0))))
+            {
+                return new ResponseTypeInfo(null, hasBodylessSuccess: false);
+            }
+
+            var declaredType = GetDeclaredType(handler.ReturnType);
+            var responses = ReadSuccessResponses(GetInheritedAttributes(handler, x => x.OverriddenMethod), produces);
+            var successTypes = new List<ITypeSymbol>();
+            var hasBodylessSuccess = false;
+            var hasNonJsonSuccess = false;
+
+            var typedResults = declaredType is null ? null : ReadTypedResults(declaredType);
+            if (typedResults is not null)
+            {
+                if (!typedResults.IsKnown)
+                {
+                    return new ResponseTypeInfo(null, hasBodylessSuccess: false);
+                }
+
+                successTypes.AddRange(typedResults.BodyTypes);
+                hasBodylessSuccess = typedResults.HasBodylessSuccess;
+                declaredType = null;
+            }
+
+            foreach (var (statusCode, type, contentTypes) in responses)
+            {
+                hasNonJsonSuccess |= !CanBeJson(contentTypes);
+
+                if (type is not null && type.SpecialType != SpecialType.System_Void)
+                {
+                    successTypes.Add(type);
+                }
+                else if (statusCode is HttpStatusCodes.Status200OK or HttpStatusCodes.Status201Created)
+                {
+                    if (declaredType is not null)
+                        successTypes.Add(declaredType);
+                }
+                else
+                {
+                    hasBodylessSuccess = true;
+                }
+            }
+
+            if (responses.Count == 0 && typedResults is null && declaredType is not null && !OpenResultTypes.Contains(declaredType.OriginalDefinition.ToDisplayString()))
+                successTypes.Add(declaredType);
+
+            var distinctTypes = successTypes.Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToList();
+            if (hasNonJsonSuccess || distinctTypes.Count != 1 || !CanDescribe(distinctTypes[0], compilation))
+            {
+                return new ResponseTypeInfo(null, hasBodylessSuccess);
+            }
+
+            return new ResponseTypeInfo(distinctTypes[0], hasBodylessSuccess);
+        }
+
+        /// <summary>
+        /// The successes a typed result of <c>Microsoft.AspNetCore.Http.HttpResults</c>, or a <c>Results&lt;...&gt;</c>
+        /// union of them, declares, or null for a type that is none. Its errors need no body, as a tool reports them as
+        /// errors; any result the generator does not know, such as <c>JsonHttpResult&lt;T&gt;</c>, whose status the
+        /// handler picks, makes the whole unknown.
+        /// </summary>
+        private static TypedResultsInfo? ReadTypedResults(ITypeSymbol type)
+        {
+            var namedType = type as INamedTypeSymbol;
+            if (namedType is null || namedType.ContainingNamespace?.ToDisplayString() != MinimalApiNames.HttpResultsNamespace)
+            {
+                return null;
+            }
+
+            var results = namedType.Name == MinimalApiNames.ResultsUnion
+                ? namedType.TypeArguments.OfType<INamedTypeSymbol>().ToList()
+                : new List<INamedTypeSymbol> { namedType };
+            var info = new TypedResultsInfo();
+
+            foreach (var result in results)
+            {
+                var isInHttpResults = result.ContainingNamespace?.ToDisplayString() == MinimalApiNames.HttpResultsNamespace;
+                if (isInHttpResults && MinimalApiNames.ErrorResults.Contains(result.Name))
+                {
+                    continue;
+                }
+
+                if (isInHttpResults && IsSuccessResult(result.Name))
+                {
+                    if (result.TypeArguments.Length == 1)
+                        info.BodyTypes.Add(result.TypeArguments[0]);
+                    else
+                        info.HasBodylessSuccess = true;
+
+                    continue;
+                }
+
+                info.IsKnown = false;
+            }
+
+            return info;
+        }
+
+        private static bool IsSuccessResult(string name)
+        {
+            return name is MinimalApiNames.Ok or MinimalApiNames.Created or MinimalApiNames.CreatedAtRoute or
+                MinimalApiNames.Accepted or MinimalApiNames.AcceptedAtRoute or MinimalApiNames.NoContent;
+        }
+
+        /// <summary>
+        /// The successes of a typed result or a union of them.
+        /// </summary>
+        private sealed class TypedResultsInfo
+        {
+            public List<ITypeSymbol> BodyTypes { get; } = new List<ITypeSymbol>();
+            public bool HasBodylessSuccess { get; set; }
+
+            /// <summary>
+            /// Whether the generator knows every result of the union.
+            /// </summary>
+            public bool IsKnown { get; set; } = true;
+        }
+
+        /// <summary>
         /// The <c>typeof</c> operand for the type: <c>global::</c>-qualified and without nullable reference annotations,
         /// which <c>typeof</c> does not accept.
         /// </summary>
@@ -432,6 +560,10 @@ namespace Api.ToMcp.Generator.Parsing
 
             if (type is INamedTypeSymbol namedType)
             {
+                // A lambda that maps a Minimal API endpoint can return one, which no C# names.
+                if (namedType.IsAnonymousType)
+                    return false;
+
                 if (!namedType.TypeArguments.All(CanBeNamed))
                     return false;
 
