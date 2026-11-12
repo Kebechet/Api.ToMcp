@@ -50,6 +50,11 @@ namespace Api.ToMcp.Generator.Parsing
         private const string NullableAnnotationSuffix = "?";
 
         /// <summary>
+        /// What joins the words that tell an endpoint's routes apart to a tool name <c>[McpExpose(ToolName)]</c> gives.
+        /// </summary>
+        private const string ToolNameSeparator = "_";
+
+        /// <summary>
         /// The HTTP methods for which a Minimal API infers no body (<c>RouteEndpointDataSource.ShouldDisableInferredBodyParameters</c>):
         /// an endpoint mapped for any of them reads a complex parameter without an attribute from the services only.
         /// </summary>
@@ -232,22 +237,28 @@ namespace Api.ToMcp.Generator.Parsing
             var type = endpoint.DeclaringType;
             var classMcpExpose = FindNearestAttribute(type, x => x.BaseType, IsMcpExposeAttribute);
 
-            List<(string Route, string? Problem)> routes;
+            List<(string Route, string? Problem, string NamePrefix)> routes;
             if (endpoint.Pattern is null)
             {
-                routes = [("", endpoint.Problem)];
+                routes = [("", endpoint.Problem, "")];
             }
             else if (groups.Problem is not null)
             {
-                routes = [(RouteGroupResolver.Combine("", endpoint.Pattern), endpoint.Problem ?? groups.Problem)];
+                routes = [(RouteGroupResolver.Combine("", endpoint.Pattern), endpoint.Problem ?? groups.Problem, "")];
             }
             else
             {
-                routes = groups.Prefixes.Select(x => (RouteGroupResolver.Combine(x, endpoint.Pattern), endpoint.Problem)).ToList();
+                var pattern = endpoint.Pattern;
+                var prefixes = groups.Prefixes
+                    .GroupBy(x => RouteGroupResolver.Combine(x, pattern), StringComparer.Ordinal)
+                    .Select(x => x.First())
+                    .ToList();
+                var namePrefixes = GetDistinguishingWords(prefixes);
+                routes = prefixes.Select((x, i) => (RouteGroupResolver.Combine(x, pattern), endpoint.Problem, namePrefixes[i])).ToList();
             }
 
             var actions = routes
-                .Select(x => CreateEndpointAction(endpoint, x.Route, x.Problem, classMcpExpose, compilation, ct))
+                .Select(x => CreateEndpointAction(endpoint, x.Route, x.Problem, x.NamePrefix, classMcpExpose, compilation, ct))
                 .ToImmutableArray();
 
             return new ControllerInfoModel
@@ -262,10 +273,15 @@ namespace Api.ToMcp.Generator.Parsing
             };
         }
 
+        /// <param name="namePrefix">
+        /// What tells this route of the endpoint apart from its others, when one call maps it at several, put before a name
+        /// that does not come from the route.
+        /// </param>
         private static ActionInfoModel CreateEndpointAction(
             EndpointDeclaration endpoint,
             string route,
             string? routeProblem,
+            string namePrefix,
             AttributeData? classMcpExpose,
             Compilation compilation,
             CancellationToken ct)
@@ -291,11 +307,15 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var successType = responseType.SuccessType;
-            var name = endpoint.Name ??
+            var givenName = endpoint.Name ??
                 GetAttributeText(handler, MinimalApiNames.EndpointNameAttribute) ??
-                (handler is not null && handler.MethodKind is MethodKind.Ordinary or MethodKind.LocalFunction ? handler.Name : null) ??
-                DeriveEndpointName(endpoint.HttpMethod, route);
+                (handler is not null && handler.MethodKind is MethodKind.Ordinary or MethodKind.LocalFunction ? handler.Name : null);
+            var name = givenName is null ? DeriveEndpointName(endpoint.HttpMethod, route) : namePrefix + givenName;
             var (customToolName, customTitle, customDescription) = GetExposeTexts(handlerMcpExpose);
+            if (customToolName is not null && namePrefix.Length > 0)
+            {
+                customToolName = namePrefix + ToolNameSeparator + customToolName;
+            }
 
             return new ActionInfoModel
             {
@@ -392,22 +412,58 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         internal static string DeriveEndpointName(string httpMethod, string route)
         {
-            var name = new StringBuilder(Capitalize(httpMethod.ToLowerInvariant()));
+            return Capitalize(httpMethod.ToLowerInvariant()) + string.Concat(GetRouteWords(route));
+        }
+
+        /// <summary>
+        /// The words of a route as a derived name spells them: each word of its text capitalized, and each route value
+        /// after <c>By</c>.
+        /// </summary>
+        private static List<string> GetRouteWords(string route)
+        {
+            var words = new List<string>();
             foreach (var part in RouteTemplate.Parse(route).Parts)
             {
                 if (part.IsParameter)
                 {
-                    name.Append(RouteValueWord).Append(Capitalize(part.Text));
+                    words.Add(RouteValueWord + Capitalize(part.Text));
                     continue;
                 }
 
-                foreach (var word in SplitRouteWords(part.Text))
-                {
-                    name.Append(Capitalize(word));
-                }
+                words.AddRange(SplitRouteWords(part.Text).Select(Capitalize));
             }
 
-            return name.ToString();
+            return words;
+        }
+
+        /// <summary>
+        /// For the route prefixes one call maps an endpoint under, the words in which each differs from the others, so
+        /// that its name differs too: <c>/v1</c> and <c>/v2</c> give <c>V1</c> and <c>V2</c>, and <c>/api/v1/admin</c>
+        /// and <c>/api/v2/admin</c> the same, as the words all share at their start and end are left out. Empty for one
+        /// prefix alone.
+        /// </summary>
+        private static List<string> GetDistinguishingWords(IReadOnlyList<string> prefixes)
+        {
+            if (prefixes.Count < 2)
+            {
+                return prefixes.Select(_ => "").ToList();
+            }
+
+            var words = prefixes.Select(GetRouteWords).ToList();
+            var shortest = words.Min(x => x.Count);
+            var sharedStart = 0;
+            while (sharedStart < shortest && words.All(x => x[sharedStart] == words[0][sharedStart]))
+            {
+                sharedStart++;
+            }
+
+            var sharedEnd = 0;
+            while (sharedEnd < shortest - sharedStart && words.All(x => x[x.Count - 1 - sharedEnd] == words[0][words[0].Count - 1 - sharedEnd]))
+            {
+                sharedEnd++;
+            }
+
+            return words.Select(x => string.Concat(x.Skip(sharedStart).Take(x.Count - sharedStart - sharedEnd))).ToList();
         }
 
         private static IEnumerable<string> SplitRouteWords(string text)

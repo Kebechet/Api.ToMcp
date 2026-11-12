@@ -207,6 +207,44 @@ namespace TestApi
     }
 
     [Fact]
+    public void Endpoint_OfAHandlerMappedAtSeveralRoutes_GetsANameForEachRoute()
+    {
+        // A method group, a .WithName and a ToolName are the same for each call of the method that maps them, and the SDK
+        // keeps one tool of a name, so each route's name starts with the words that tell its prefix apart.
+        var source = MinimalApiClass(@"
+        public static void Map(WebApplication app)
+        {
+            app.MapGroup(""/api/v1/admin"").MapOrders();
+            app.MapGroup(""/api/v2/admin"").MapOrders();
+        }
+
+        public static IEndpointRouteBuilder MapOrders(this IEndpointRouteBuilder builder)
+        {
+            builder.MapGet(""/orders/{id}"", GetOrder);
+            builder.MapGet(""/items/{id}"", (int id) => id).WithName(""GetItem"");
+            builder.MapGet(""/lines/{id}"", [McpExpose(ToolName = ""get_line"")] (int id) => id);
+            builder.MapGet(""/notes/{id}"", (int id) => id);
+            return builder;
+        }
+
+        private static int GetOrder(int id) => id;");
+        const string selectingOne = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""Endpoints.V2GetOrder""] }";
+
+        var generated = RunGenerator(source, MinimalApisConfig);
+
+        Assert.Empty(GetGeneratorDiagnostics(source, MinimalApisConfig));
+        Assert.Equal("var route = $\"/api/v1/admin/orders/{routeid}\";", GetRouteLine(generated, "Endpoints_V1GetOrderTool"));
+        Assert.Equal("var route = $\"/api/v2/admin/orders/{routeid}\";", GetRouteLine(generated, "Endpoints_V2GetOrderTool"));
+        Assert.Contains("[McpServerTool(Name = \"Endpoints_V1GetItem\"", generated);
+        Assert.Contains("[McpServerTool(Name = \"Endpoints_V2GetItem\"", generated);
+        Assert.Contains("[McpServerTool(Name = \"V1_get_line\"", generated);
+        Assert.Contains("[McpServerTool(Name = \"V2_get_line\"", generated);
+        Assert.Contains("[McpServerTool(Name = \"Endpoints_GetApiV1AdminNotesById\"", generated);
+        Assert.Contains("[McpServerTool(Name = \"Endpoints_GetApiV2AdminNotesById\"", generated);
+        Assert.Equal("Endpoints_V2GetOrderTool", Assert.Single(GetToolClassNames(RunGenerator(source, selectingOne)), x => x.Contains("GetOrder")));
+    }
+
+    [Fact]
     public void Endpoint_MappedOnWhatAnAppsOwnMethodReturns_TakesItsGroups()
     {
         // A fluent method that returns its group, and one in ASP.NET Core's namespace that returns a sub-group of it: the
@@ -1202,6 +1240,16 @@ namespace TestApi
     }}
 }}
 ";
+    }
+
+    /// <summary>
+    /// The tool classes the generated registration lists, in its order.
+    /// </summary>
+    private static string[] GetToolClassNames(string generated)
+    {
+        return System.Text.RegularExpressions.Regex.Matches(generated, @"^\s*typeof\((\w+)\),\s*$", System.Text.RegularExpressions.RegexOptions.Multiline)
+            .Select(x => x.Groups[1].Value)
+            .ToArray();
     }
 
     private static string GenerateCompilingToolClass(string source, string generatorJson, string toolClassName)
