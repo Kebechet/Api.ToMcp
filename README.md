@@ -619,10 +619,22 @@ What each part does:
 - **`resource`** is the MCP endpoint's URL, taken from the request: `https://api.example.com/mcp`. The client checks it against the URL it connects to, so behind a proxy that terminates TLS the app has to see the public scheme and host: use forwarded headers as above, configured to trust your proxy, or set `ResourceMetadata.Resource`. The `resource_metadata` address in the challenges is taken from the request too.
 - **`ScopeNames`** names the OAuth scope that grants each `McpScope` flag. `scopes_supported` lists the names of the scopes your generated tools require, in the order Read, Write, Delete: an API with no tool that requires Delete does not list `mcp:delete`. Set `ResourceMetadata.ScopesSupported` yourself to list other scopes. The startup log warns about a scope the tools require that has no name.
 - **`ClaimToScopeMapper`** decides what a token grants, as in [Scope-Based Access Control](#scope-based-access-control). With it, a refused tool call becomes a [scope challenge](#scope-challenges).
-- **`MapMcpEndpoint`** requires a signed-in caller, through the SDK's scheme (`McpAuthenticationDefaults.AuthenticationScheme`, `McpAuth`). That scheme serves the metadata and sends the `401` challenge; to authenticate, it forwards to the scheme named `Bearer`, which is `JwtBearerDefaults.AuthenticationScheme`. If your token scheme has another name, point it there: `builder.Services.Configure<McpAuthenticationOptions>(McpAuthenticationDefaults.AuthenticationScheme, options => options.ForwardAuthenticate = "MyScheme");`.
+- **`MapMcpEndpoint`** signs the caller in through the SDK's scheme (`McpAuthenticationDefaults.AuthenticationScheme`, `McpAuth`) and requires a signed-in caller. That scheme serves the metadata and sends the `401` challenge. To read the token, it forwards to the scheme named `Bearer`, which is `JwtBearerDefaults.AuthenticationScheme`, whatever the app's default scheme is, cookies included. If your token scheme has another name, point it there: `builder.Services.Configure<McpAuthenticationOptions>(McpAuthenticationDefaults.AuthenticationScheme, options => options.ForwardAuthenticate = "MyScheme");`. The startup log shows an error when that scheme is not registered.
 - **`UseAuthentication`** serves the metadata document, and **`UseAuthorization`** sends the `401`. Both are needed.
 
-The app's own authentication stays as it was: its default and challenge schemes do not change, and an app with a single scheme and no default keeps that scheme as its default after the SDK's scheme is added. Your API's endpoints still answer a missing token with their own `401`. The MCP endpoint requires the app's default authorization policy, and also its `FallbackPolicy` when it sets one, so turning sign-in discovery on never lets in a caller the fallback policy refused. ASP.NET Core applies a fallback policy only to endpoints without authorization metadata, so `MapMcpEndpoint` adds it to the endpoint itself, from `AuthorizationOptions` as they are when it maps the endpoint. Do not also call the SDK's `AddAuthentication().AddMcp()`: `AddMcpTools` adds that scheme.
+#### Who the MCP endpoint lets in
+
+The MCP endpoint never lets in a caller your app's own authorization would refuse there. It requires all of these:
+
+- a caller signed in through the SDK's scheme, so even policies that allow anonymous callers do not turn sign-in off;
+- your app's default authorization policy;
+- your app's fallback policy, when it has one.
+
+Both policies come from your `IAuthorizationPolicyProvider` on each request, so a custom provider works as it does for the rest of the app. A policy that names its own authentication schemes is met only through them: a fallback tied to an API-key or certificate scheme still needs that credential, and the bearer token alone does not meet it. A policy that names none is met by the caller the SDK's scheme signed in. A caller the policies refuse gets `403`; one who is not signed in gets the SDK's `401` challenge.
+
+The endpoint has to apply the two policies itself. ASP.NET Core applies the fallback policy only to endpoints without authorization metadata, and `[Authorize]` stops bringing in the default policy once a policy object is on the endpoint.
+
+The rest of your app's authentication stays as it was: its default and challenge schemes do not change, and an app with a single scheme and no default keeps that scheme as its default after the SDK's scheme is added. Your API's endpoints still answer a missing token with their own `401`. An app with no scheme of its own gets no SDK scheme either, so it cannot become the default of the whole app; the MCP endpoint then fails, and the startup log says why. Do not also call the SDK's `AddAuthentication().AddMcp()`: `AddMcpTools` adds that scheme.
 
 The token reaches your API in process, so the same `JwtBearer` options validate it there: an `Audience` of the MCP endpoint's URL is what the API checks too.
 
@@ -632,22 +644,25 @@ With `ClaimToScopeMapper` set, the MCP endpoint answers a `tools/call` that the 
 
 | Caller | Response |
 |---|---|
-| Signed in, but the token lacks a scope the tool requires, or the `ClaimName` claim | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="mcp:write", resource_metadata="...", error_description="Insufficient scope. Required: Write, Granted: Read"` |
+| Signed in, but the token lacks a scope the tool requires, or the `ClaimName` claim | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="mcp:read mcp:write", resource_metadata="...", error_description="Insufficient scope. Required: Write, Granted: Read"` |
 | Not signed in, which reaches a tool only with `allowAnonymous: true` | `401` with `WWW-Authenticate: Bearer resource_metadata="...", scope="mcp:read"` |
 
-`scope` names every scope the tool requires, not only the missing ones. A client that supports step-up authorization signs the user in again for those scopes and repeats the call; others report the error. The app logs the refusal as a warning from `Api.ToMcp.Runtime.Middleware.McpScopeChallenge`.
+`scope` names every scope the tool requires, and the named scopes the token already grants. A 2025-11-25 client asks for the challenge's scopes alone, so without them its new token would lose the scopes it had. A scope named for several flags is named once. A client that supports step-up authorization signs the user in again for those scopes and repeats the call; others report the error. The app logs the refusal as a warning from `Api.ToMcp.Runtime.Middleware.McpScopeChallenge`.
 
-The check has to run before the tool. The MCP SDK sends the response status of a tool call before it runs the tool, at once for a protocol version before `2026-07-28` and after 250 ms from then on, so the tool itself can no longer change it. The endpoint reads the `tools/call` request first, and each generated tool names its scope in `[McpRequiredScope]` (see [Generated Code Example](#generated-code-example)). The tool still checks its scope when it runs.
+The check has to run before the tool. The MCP SDK sends the response status of a tool call before it runs the tool, at once for a protocol version before `2026-07-28` and after 250 ms from then on, so the tool itself can no longer change it. The endpoint reads the `tools/call` request first, as the SDK reads it, in the charset its content type names, and each generated tool names its scope in `[McpRequiredScope]` (see [Generated Code Example](#generated-code-example)). The tool still checks its scope when it runs.
 
 These calls still get an `isError: true` result with the reason, as without sign-in discovery:
 
 - a call to a tool that requires a scope with no `ScopeNames` entry, because a challenge naming only some of the scopes would send the user to sign in for too little;
 - a call to a hand-written tool, which names no scope;
+- a call whose body is larger than 1 MiB, which the endpoint does not read ahead of the SDK, so no request holds more than that in memory first and none goes to disk;
 - every refused call when `ResourceMetadata` is not set.
 
 ### Listing the tools before signing in
 
-`MapMcpEndpoint("mcp", allowAnonymous: true)` lets a client connect and list the tools without a token. The metadata is still served. With `ClaimToScopeMapper` set, a tool call without a token gets the `401` challenge above, so the client signs the user in on the first call. Without it, nothing asks for a token, and an API action that requires one answers the tool with `HTTP 401: Unauthorized`.
+`MapMcpEndpoint("mcp", allowAnonymous: true)` lets a client connect and list the tools without a token. The metadata is still served, and a caller who sends a token is still signed in through the SDK's scheme, so the tools see that user. With `ClaimToScopeMapper` set, a tool call without a token gets the `401` challenge above, so the client signs the user in on the first call. Without it, nothing asks for a token, and an API action that requires one answers the tool with `HTTP 401: Unauthorized`.
+
+⚠️ This needs the default stateless session mode. In a stateful mode (`HttpServerSessionMode.Stateful`, or `StatefulForInitializeClients` for clients that send `initialize`), the SDK ties a session to the user who started it. A client that starts one without a token and signs in when a tool call asks for it then gets `403` for the signed-in retry in that session. `MapMcpEndpoint` logs a warning for anonymous access with discovery on and a stateful mode.
 
 ### Checking it
 
