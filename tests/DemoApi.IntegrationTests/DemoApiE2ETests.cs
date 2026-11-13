@@ -387,24 +387,31 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             ["review"] = new JsonObject { ["rating"] = 5, ["comment"] = "Fine" }
         };
 
+        // The plain tool goes first: the warning comes once per invoker type, so after the header tool's it could not
+        // show a wrong one.
+        var plain = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+        var warningsAfterThePlainTool = GetInvokerWarnings(logs);
         var first = await CallToolRawAsync(client, "Products_AddReview", arguments);
         var second = await CallToolRawAsync(client, "Products_AddReview", arguments.DeepClone().AsObject());
-        var plain = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+        var warnings = GetInvokerWarnings(logs);
 
-        List<(LogLevel Level, string Message)> warnings;
-        lock (logs)
-        {
-            warnings = logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("IMcpHttpRequestInvoker")).ToList();
-        }
-
+        Assert.NotEqual(true, plain["isError"]?.GetValue<bool>());
+        Assert.Empty(warningsAfterThePlainTool);
         Assert.True(first["isError"]!.GetValue<bool>());
         Assert.Contains("implement IMcpHttpRequestInvoker as well", first["content"]![0]!["text"]!.GetValue<string>());
         Assert.True(second["isError"]!.GetValue<bool>());
-        Assert.NotEqual(true, plain["isError"]?.GetValue<bool>());
         var warning = Assert.Single(warnings);
         Assert.Equal(
             $"The tool Products_AddReview sends request headers or a form, which the registered IMcpHttpInvoker, {typeof(HeaderlessInvoker).FullName}, cannot send, so its calls with any get an error result. Implement IMcpHttpRequestInvoker as well.",
             warning.Message);
+    }
+
+    private static List<(LogLevel Level, string Message)> GetInvokerWarnings(List<(LogLevel Level, string Message)> logs)
+    {
+        lock (logs)
+        {
+            return logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("IMcpHttpRequestInvoker")).ToList();
+        }
     }
 
     [Theory]
