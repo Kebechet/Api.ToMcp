@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Api.ToMcp.Runtime;
+using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -371,6 +372,21 @@ public static class ParityProbeTools
     public static Task<CallToolResult> Post(IMcpHttpInvoker invoker, string route, string body, CancellationToken cancellationToken)
     {
         return invoker.PostAsync(route, body, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a header and a form as a generated tool of <c>[FromHeader]</c> and <c>[FromForm]</c> parameters does.
+    /// </summary>
+    [McpServerTool(Name = "parity_headers_form")]
+    public static Task<CallToolResult> SendHeadersAndForm(IMcpHttpInvoker invoker, string route, string name, string[] tags, string comment, CancellationToken cancellationToken)
+    {
+        var headers = new List<KeyValuePair<string, string>>();
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Name", name));
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tags", tags));
+        var formParts = new List<string>();
+        McpRequestValueFormatter.AddFormValue(formParts, "comment", comment);
+
+        return new McpHttpRequest(HttpMethod.Post, route) { Headers = headers, FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
     }
 }
 

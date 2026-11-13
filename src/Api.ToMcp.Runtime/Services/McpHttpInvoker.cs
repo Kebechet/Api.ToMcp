@@ -140,7 +140,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
                 throw new ArgumentException($"The value of the header '{name}' holds a character an HTTP header cannot carry.", nameof(headers));
             }
 
-            if (!message.Headers.TryAddWithoutValidation(name, value))
+            // Kestrel drops the spaces and tabs around a value, which the in-process request would keep.
+            if (!message.Headers.TryAddWithoutValidation(name, McpRequestValueFormatter.TrimHeaderValue(value)))
             {
                 throw new ArgumentException($"'{name}' is no header the tool's request can carry: it describes the body, or is no valid header name.", nameof(headers));
             }

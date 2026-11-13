@@ -264,6 +264,18 @@ namespace TestApi
     }
 
     [Theory]
+    [InlineData("[FromHeader(Name = \"X-Tags\")] string[] tags")]
+    [InlineData("[FromHeader(Name = \"X-Tags\")] List<string>? tags")]
+    public void Generator_RefusesAHeaderArrayItemMvcWouldReadBackOtherwise_BeforeCallingTheApi(string parameter)
+    {
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains(
+            "Text = \"The argument 'tags' is sent as the request header 'X-Tags', one value per item, and an item cannot be empty and can hold only visible ASCII characters other than '\\\"', spaces and tabs.\"",
+            tool);
+    }
+
+    [Theory]
     [InlineData("[Consumes(\"multipart/form-data\")]", "", "it reads 'name' from a form, which its [Consumes] does not accept: a tool sends application/x-www-form-urlencoded")]
     [InlineData("", "[Consumes(\"application/json\", \"text/plain\")]", "it reads 'name' from a form, which its [Consumes] does not accept: a tool sends application/x-www-form-urlencoded")]
     [InlineData("[ValidateAntiForgeryToken]", "", "it reads 'name' from a form, and its [ValidateAntiForgeryToken] checks an antiforgery token, which a tool's request does not carry")]

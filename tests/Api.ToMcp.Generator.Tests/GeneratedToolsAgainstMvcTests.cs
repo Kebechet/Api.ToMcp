@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -18,6 +19,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
@@ -165,6 +167,10 @@ namespace TestApi
         [HttpGet(""own-headers"")]
         public object GetOwnHeaders([FromHeader(Name = ""Authorization"")] string? auth, [FromHeader(Name = ""X-MS-CLIENT-PRINCIPAL-ID"")] string? userId, [FromHeader(Name = ""X-Forwarded-For"")] string? clientIp)
             => new { auth, userId, clientIp };
+
+        [HttpPost(""amounts"")]
+        public object PostAmounts([FromForm] decimal amount, [FromForm] double ratio, [FromForm] DateOnly day, [FromForm] int delta, [FromForm] decimal[]? amounts, [FromHeader(Name = ""X-Amount"")] decimal? headerAmount, [FromQuery] decimal? queryAmount)
+            => new { amount, ratio, day, delta, amounts, headerAmount, queryAmount };
 
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
@@ -549,6 +555,7 @@ namespace TestApi
     [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}")]
     [InlineData("EchoController_GetHeaderTool", @"{}", @"{""tenant"":null,""ids"":[],""tags"":[],""status"":null}")]
+    [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""  t1\t "",""tags"":["" sp "",""a, b""]}", @"{""tenant"":""t1"",""ids"":[],""tags"":[""sp"",""a, b""],""status"":null}")]
     [InlineData("EchoController_GetOwnHeadersTool", @"{""auth"":""Bearer forged"",""userId"":""bob"",""clientIp"":""10.0.0.5""}", @"{""auth"":null,""userId"":null,""clientIp"":null}")]
     [InlineData("EchoController_GetHeaderDefaultTool", @"{""page"":3}", @"{""page"":3,""sent"":true}")]
     [InlineData("EchoController_GetHeaderDefaultTool", @"{}", @"{""page"":2,""sent"":false}")]
@@ -693,6 +700,43 @@ namespace TestApi
         Assert.True(result.IsError, $"{toolClassName}: {GetText(result)}");
     }
 
+    [Theory]
+    [InlineData(@"{""tags"":[""\""q\""""]}")]
+    [InlineData(@"{""tags"":[""x,\""y"",""z""]}")]
+    [InlineData(@"{""tags"":[""a"",""""]}")]
+    [InlineData(@"{""tags"":[""a"","" \t ""]}")]
+    public async Task Tool_RefusesAHeaderArrayItemMvcWouldReadBackOtherwise_WithoutCallingTheApi(string arguments)
+    {
+        // MVC splits the header at its commas, drops an empty item and removes or splits at a quote.
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_GetHeaderTool", arguments);
+
+        Assert.True(requestCount == _host.RequestCount, $"The tool called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "The argument 'tags' is sent as the request header 'X-Tags', one value per item, and an item cannot be empty and can hold only visible ASCII characters other than '\"', spaces and tabs.",
+            GetText(result));
+    }
+
+    [Fact]
+    public async Task Tool_WritesFormNumbersAndDates_InTheCultureMvcReadsTheFormWith()
+    {
+        // MVC reads a form with the request's culture and the query string and headers with the invariant one, so under
+        // de-DE 1234.25 written invariantly arrives as 123425. The app's request localization defaults to de-DE, and the
+        // tool call runs under the culture the MCP request got, the same default.
+        const string arguments = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-09-28"",""delta"":-12,""amounts"":[1.5,2.25],""headerAmount"":1.25,""queryAmount"":1.25}";
+        const string expected = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-09-28"",""delta"":-12,""amounts"":[1.5,2.25],""headerAmount"":1.25,""queryAmount"":1.25}";
+
+        var (germanStatus, germanBody) = await _host.InvokeToolAsync("EchoController_PostAmountsTool", arguments, MvcHost.GermanCulture);
+        var (statusCode, body) = await _host.InvokeToolAsync("EchoController_PostAmountsTool", arguments);
+
+        Assert.True(germanStatus == StatusCodes.Status200OK, $"{germanStatus} {germanBody}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(germanBody)), $"de-DE: MVC bound {germanBody}");
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(body)), $"invariant: MVC bound {body}");
+    }
+
     [Fact]
     public async Task Tool_RefusesAHeaderValueAnHttpHeaderCannotHold_WithoutCallingTheApi()
     {
@@ -792,10 +836,18 @@ namespace TestApi
     {
         private static readonly JsonSerializerOptions ArgumentOptions = new(JsonSerializerDefaults.Web);
 
+        /// <summary>
+        /// The culture of the second app, whose request localization defaults to it, and which reads a decimal comma.
+        /// </summary>
+        public static readonly CultureInfo GermanCulture = CultureInfo.GetCultureInfo("de-DE");
+
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
         private HttpClient _client = null!;
         private RecordingInvoker _invoker = null!;
+        private WebApplication _germanApp = null!;
+        private HttpClient _germanClient = null!;
+        private RecordingInvoker _germanInvoker = null!;
 
         public async Task InitializeAsync()
         {
@@ -812,6 +864,24 @@ namespace TestApi
             var address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
             _client = new HttpClient { BaseAddress = new Uri(address) };
             _invoker = new RecordingInvoker(_client);
+
+            var germanBuilder = WebApplication.CreateBuilder();
+            germanBuilder.Logging.ClearProviders();
+            germanBuilder.WebHost.UseUrls("http://127.0.0.1:0");
+            germanBuilder.Services.AddControllers().AddApplicationPart(_assembly);
+            _germanApp = germanBuilder.Build();
+            _germanApp.UseRequestLocalization(new RequestLocalizationOptions
+            {
+                DefaultRequestCulture = new RequestCulture(GermanCulture),
+                SupportedCultures = [GermanCulture],
+                SupportedUICultures = [GermanCulture]
+            });
+            _germanApp.MapControllers();
+            await _germanApp.StartAsync();
+
+            var germanAddress = _germanApp.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+            _germanClient = new HttpClient { BaseAddress = new Uri(germanAddress) };
+            _germanInvoker = new RecordingInvoker(_germanClient);
         }
 
         public async Task DisposeAsync()
@@ -819,6 +889,27 @@ namespace TestApi
             _client.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
+            _germanClient.Dispose();
+            await _germanApp.StopAsync();
+            await _germanApp.DisposeAsync();
+        }
+
+        /// <summary>
+        /// Calls a generated tool as <see cref="InvokeToolAsync(string, string)"/> does, under the culture, against the app
+        /// whose request localization defaults to <see cref="GermanCulture"/>.
+        /// </summary>
+        public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, CultureInfo culture)
+        {
+            var previousCulture = CultureInfo.CurrentCulture;
+            CultureInfo.CurrentCulture = culture;
+            try
+            {
+                return await InvokeToolAsync(toolClassName, arguments, _germanInvoker);
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = previousCulture;
+            }
         }
 
         /// <summary>

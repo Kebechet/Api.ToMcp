@@ -250,7 +250,9 @@ namespace Api.ToMcp.Generator.Emitting
                 foreach (var parameter in headerParameters)
                 {
                     var headerName = GetBinderModelName(parameter);
-                    var message = $"The argument '{parameter.Name}' is sent as the request header '{headerName}', which can hold only visible ASCII characters, spaces and tabs.";
+                    var message = parameter.IsCollection
+                        ? $"The argument '{parameter.Name}' is sent as the request header '{headerName}', one value per item, and an item cannot be empty and can hold only visible ASCII characters other than '\"', spaces and tabs."
+                        : $"The argument '{parameter.Name}' is sent as the request header '{headerName}', which can hold only visible ASCII characters, spaces and tabs.";
                     sb.AppendLine($"            if (!{RequestValueFormatter}.TryAddHeaderValue({names.Headers}, {SymbolDisplay.FormatLiteral(headerName, quote: true)}, {GetSentValue(parameter)}))");
                     sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
                 }

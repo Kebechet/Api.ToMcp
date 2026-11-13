@@ -1,3 +1,4 @@
+using System.Globalization;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -23,11 +24,11 @@ public class McpRequestValueFormatterHeaderAndFormTests
         var formParts = new List<string>();
 
         McpRequestValueFormatter.AddFormValue(formParts, "name", "a b&c=d+e");
-        McpRequestValueFormatter.AddFormValue(formParts, "day", new DateOnly(2026, 9, 28));
+        McpRequestValueFormatter.AddFormValue(formParts, "at", new DateTime(2026, 9, 28, 14, 30, 0));
         McpRequestValueFormatter.AddFormValue(formParts, "ids", new[] { 1, 2 });
         McpRequestValueFormatter.AddFormValue(formParts, "none", null);
 
-        Assert.Equal(new[] { "name=a%20b%26c%3Dd%2Be", "day=2026-09-28", "ids=1", "ids=2" }, formParts);
+        Assert.Equal(new[] { "name=a%20b%26c%3Dd%2Be", "at=2026-09-28T14%3A30%3A00.0000000", "ids=1", "ids=2" }, formParts);
     }
 
     [Fact]
@@ -83,9 +84,113 @@ public class McpRequestValueFormatterHeaderAndFormTests
         var headers = new List<KeyValuePair<string, string>>();
 
         var isAdded = McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tenant", new[] { "ok", value });
+        var isSingleAdded = McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tenant", value);
+
+        Assert.False(isAdded);
+        Assert.False(isSingleAdded);
+        Assert.Empty(headers);
+    }
+
+    [Theory]
+    [InlineData("\"q\"")]
+    [InlineData("x,\"y")]
+    [InlineData("a\"b")]
+    [InlineData("")]
+    [InlineData(" \t ")]
+    public void TryAddHeaderValue_RefusesAnArrayItemMvcWouldReadBackOtherwise(string item)
+    {
+        // MVC splits the header at its commas outside quotes, drops an empty item and removes the quotes around one.
+        var headers = new List<KeyValuePair<string, string>>();
+
+        var isAdded = McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tags", new[] { "ok", item });
 
         Assert.False(isAdded);
         Assert.Empty(headers);
+    }
+
+    [Fact]
+    public void TryAddHeaderValue_DropsTheSpacesAndTabsAroundAValue_AsKestrelDoes()
+    {
+        var headers = new List<KeyValuePair<string, string>>();
+
+        McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Name", "  padded\t ");
+        McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Quoted", "\"kept\" as is");
+        McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tags", new[] { " sp ", "a, b" });
+
+        Assert.Equal(
+            new KeyValuePair<string, string>[] { new("X-Name", "padded"), new("X-Quoted", "\"kept\" as is"), new("X-Tags", "sp"), new("X-Tags", "\"a, b\"") },
+            headers);
+    }
+
+    [Theory]
+    [InlineData("de-DE", "amount=1234%2C25", "ratio=-0%2C5", "day=28.09.2026", "delta=-12")]
+    [InlineData("en-US", "amount=1234.25", "ratio=-0.5", "day=9%2F28%2F2026", "delta=-12")]
+    public void AddFormValue_WritesNumbersAndDates_InTheCurrentCulture_AsMvcReadsAForm(string cultureName, string amount, string ratio, string day, string delta)
+    {
+        // MVC reads a form with the request's culture, unlike the query string, so 1234.25 would be 123425 under de-DE.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo(cultureName);
+        try
+        {
+            var formParts = new List<string>();
+
+            McpRequestValueFormatter.AddFormValue(formParts, "amount", 1234.25m);
+            McpRequestValueFormatter.AddFormValue(formParts, "ratio", -0.5);
+            McpRequestValueFormatter.AddFormValue(formParts, "day", new DateOnly(2026, 9, 28));
+            McpRequestValueFormatter.AddFormValue(formParts, "delta", -12);
+            McpRequestValueFormatter.AddFormValue(formParts, "id", Guid.Empty);
+
+            Assert.Equal(new[] { amount, ratio, day, delta, "id=00000000-0000-0000-0000-000000000000" }, formParts);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
+    public void AddFormValue_WritesANumber_ThatTheCurrentCultureParsesBack_InEveryCulture()
+    {
+        // Arabic cultures write the minus sign with a letter mark that the invariant text lacks and they require.
+        var previousCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures))
+            {
+                CultureInfo.CurrentCulture = culture;
+                var formParts = new List<string>();
+
+                McpRequestValueFormatter.AddFormValue(formParts, "a", -1234.25m);
+
+                var text = Uri.UnescapeDataString(formParts[0]["a=".Length..]);
+                Assert.True(
+                    decimal.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands, culture, out var value) && value == -1234.25m,
+                    $"{culture.Name}: {text}");
+            }
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
+    public void AddQueryValue_WritesNumbers_InTheInvariantCulture_WhateverTheCurrentOne()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+        try
+        {
+            var queryParts = new List<string>();
+
+            McpRequestValueFormatter.AddQueryValue(queryParts, "amount", 1234.25m);
+
+            Assert.Equal(new[] { "amount=1234.25" }, queryParts);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
     }
 
     private sealed class FormReview

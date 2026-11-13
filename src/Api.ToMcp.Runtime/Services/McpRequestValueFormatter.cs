@@ -88,16 +88,21 @@ public static class McpRequestValueFormatter
 
     /// <summary>
     /// The characters besides visible ASCII ones that an HTTP header value may hold (RFC 9110, section 5.5); Kestrel
-    /// refuses a request with any other, and <c>HttpClient</c> sends none.
+    /// refuses a request with any other, and <c>HttpClient</c> sends none. Kestrel drops them around a value.
     /// </summary>
-    private const string HeaderWhitespace = " \t";
+    private static readonly char[] HeaderWhitespace = [' ', '\t'];
 
     /// <summary>
     /// The separator MVC splits a header's value at to read an array (<c>GetCommaSeparatedValues</c>), and the quote
-    /// that keeps an item holding it whole.
+    /// that keeps an item holding it whole, which MVC removes.
     /// </summary>
     private const char HeaderValueSeparator = ',';
     private const char HeaderValueQuote = '"';
+
+    /// <summary>
+    /// The standard format of a date in a culture, as <c>DateOnlyConverter</c> writes and reads it.
+    /// </summary>
+    private const string ShortDateFormat = "d";
 
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasModelBinderByType = new();
@@ -110,8 +115,8 @@ public static class McpRequestValueFormatter
     /// first call, so that a call only reads the values. Like the caches above, each holds one entry per type a tool
     /// sends, not per call.
     /// </summary>
-    private static readonly RequestPart Query = new(SourcesNotFilledByTheQuery);
-    private static readonly RequestPart Form = new(SourcesNotFilledByTheForm);
+    private static readonly RequestPart Query = new(SourcesNotFilledByTheQuery, Format);
+    private static readonly RequestPart Form = new(SourcesNotFilledByTheForm, FormatFormValue);
 
     /// <summary>
     /// Whether a route value, as a tool writes it into the URL, sends the request to another path: empty where the route
@@ -179,6 +184,9 @@ public static class McpRequestValueFormatter
     /// query parameter, which is the form's encoding too, so the parts joined with <c>&amp;</c> are the form. An object
     /// adds each property MVC reads from the form, under the <c>name.Property</c> keys its form binding reads: not one
     /// that a binding attribute such as <c>[FromQuery]</c> or <c>[FromHeader]</c> binds from elsewhere, nor a form file.
+    /// MVC reads a form with the culture of the request, not the invariant one, so a number and a date are written in
+    /// <see cref="CultureInfo.CurrentCulture"/>, which the API request runs under as well when nothing in it asks for
+    /// another, such as an <c>Accept-Language</c> that <c>UseRequestLocalization</c> reads.
     /// </summary>
     public static void AddFormValue(List<string> formParts, string name, object? value)
     {
@@ -186,10 +194,12 @@ public static class McpRequestValueFormatter
     }
 
     /// <summary>
-    /// Adds a request header, its value written as a query value is. A null value adds nothing, and a collection one
-    /// value per item, which MVC reads back as the items of an array once it splits the header at its commas; an item
-    /// that holds a comma goes in quotes, which MVC removes. False, and nothing added, when a value holds a character an
-    /// HTTP header cannot carry: only visible ASCII characters, spaces and tabs.
+    /// Adds a request header, its value written as a query value is, without the spaces and tabs around it, which Kestrel
+    /// drops, so a value arrives the same in process and over HTTP. A null value adds nothing, and a collection one value
+    /// per item, which MVC reads back as the items of an array once it splits the header at its commas: an item that
+    /// holds a comma goes in quotes, which MVC removes. False, and nothing added, when a value holds a character an HTTP
+    /// header cannot carry, anything but visible ASCII characters, spaces and tabs, or when an item is one MVC would read
+    /// back otherwise: an empty one, which it drops, or one with a quote, which it removes or splits at.
     /// </summary>
     public static bool TryAddHeaderValue(List<KeyValuePair<string, string>> headers, string name, object? value)
     {
@@ -199,16 +209,42 @@ public static class McpRequestValueFormatter
         }
 
         var items = value as IEnumerable;
-        var values = items is not null && !IsScalar(value.GetType())
-            ? items.Cast<object?>().Where(x => x is not null).Select(x => QuoteHeaderItem(Format(x))).ToList()
-            : [Format(value)];
-        if (!values.All(IsHeaderValue))
+        if (items is null || IsScalar(value.GetType()))
         {
-            return false;
+            var text = TrimHeaderValue(Format(value));
+            if (!IsHeaderValue(text))
+            {
+                return false;
+            }
+
+            headers.Add(new KeyValuePair<string, string>(name, text));
+            return true;
+        }
+
+        var values = new List<string>();
+        foreach (var item in items)
+        {
+            if (item is null)
+            {
+                continue;
+            }
+
+            var text = TrimHeaderValue(Format(item));
+            if (text.Length == 0 || text.Contains(HeaderValueQuote) || !IsHeaderValue(text))
+            {
+                return false;
+            }
+
+            values.Add(text.Contains(HeaderValueSeparator) ? HeaderValueQuote + text + HeaderValueQuote : text);
         }
 
         headers.AddRange(values.Select(x => new KeyValuePair<string, string>(name, x)));
         return true;
+    }
+
+    internal static string TrimHeaderValue(string value)
+    {
+        return value.Trim(HeaderWhitespace);
     }
 
     /// <summary>
@@ -219,11 +255,22 @@ public static class McpRequestValueFormatter
         return value.All(x => x is >= '!' and <= '~' || HeaderWhitespace.Contains(x));
     }
 
-    private static string QuoteHeaderItem(string item)
+    /// <summary>
+    /// A form value as MVC's form binding reads it back with <see cref="CultureInfo.CurrentCulture"/>: a number and a
+    /// date in that culture, whose decimal separator, digit grouping, sign and calendar MVC applies; any other value as
+    /// <see cref="Format"/> writes it, whose text every culture reads the same.
+    /// </summary>
+    private static string FormatFormValue(object value)
     {
-        return item.Contains(HeaderValueSeparator) && !item.Contains(HeaderValueQuote)
-            ? HeaderValueQuote + item + HeaderValueQuote
-            : item;
+        var culture = CultureInfo.CurrentCulture;
+
+        return value switch
+        {
+            DateOnly date => date.ToString(ShortDateFormat, culture),
+            byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal or Half or Int128 or UInt128 =>
+                ((IFormattable)value).ToString(null, culture),
+            _ => Format(value)
+        };
     }
 
     private static void AddValue(List<string> queryParts, string key, object? value, int depth, RequestPart part)
@@ -235,13 +282,13 @@ public static class McpRequestValueFormatter
 
         if (IsScalar(value.GetType()))
         {
-            AddWholeValue(queryParts, key, value);
+            AddWholeValue(queryParts, key, value, part);
             return;
         }
 
         if (HasModelBinder(value.GetType()))
         {
-            AddBinderValue(queryParts, key, value);
+            AddBinderValue(queryParts, key, value, part);
             return;
         }
 
@@ -285,20 +332,20 @@ public static class McpRequestValueFormatter
         AddProperties(queryParts, key, value, depth + 1, part);
     }
 
-    private static void AddWholeValue(List<string> queryParts, string key, object value)
+    private static void AddWholeValue(List<string> queryParts, string key, object value, RequestPart part)
     {
-        queryParts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(Format(value))}");
+        queryParts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(part.Format(value))}");
     }
 
     /// <summary>
     /// A value a model binder of its own reads from the query string under its key: one value, or for a collection
     /// each item under the same key, all of which the binder finds in the key's <c>Values</c>.
     /// </summary>
-    private static void AddBinderValue(List<string> queryParts, string key, object value)
+    private static void AddBinderValue(List<string> queryParts, string key, object value, RequestPart part)
     {
         if (value is not IEnumerable items || IsScalar(value.GetType()))
         {
-            AddWholeValue(queryParts, key, value);
+            AddWholeValue(queryParts, key, value, part);
             return;
         }
 
@@ -306,7 +353,7 @@ public static class McpRequestValueFormatter
         {
             if (item is not null)
             {
-                AddWholeValue(queryParts, key, item);
+                AddWholeValue(queryParts, key, item, part);
             }
         }
     }
@@ -320,7 +367,7 @@ public static class McpRequestValueFormatter
             var propertyValue = property.Property.GetValue(value);
             if (propertyValue is not null && property.HasModelBinder)
             {
-                AddBinderValue(queryParts, key, propertyValue);
+                AddBinderValue(queryParts, key, propertyValue, part);
                 continue;
             }
 
@@ -568,12 +615,14 @@ public static class McpRequestValueFormatter
     private sealed record QueryProperty(PropertyInfo Property, string Key, bool HasModelBinder);
 
     /// <summary>
-    /// A part of the request a value goes into, by the binding sources that never fill it, with what MVC reads of each
-    /// type's properties from it.
+    /// A part of the request a value goes into, by the binding sources that never fill it and how a value is written into
+    /// it, with what MVC reads of each type's properties from it.
     /// </summary>
-    private sealed class RequestPart(BindingSource[] unfilledSources)
+    private sealed class RequestPart(BindingSource[] unfilledSources, Func<object, string> format)
     {
         public BindingSource[] UnfilledSources { get; } = unfilledSources;
+
+        public Func<object, string> Format { get; } = format;
 
         public ConcurrentDictionary<Type, QueryProperty[]> PropertiesByType { get; } = new();
     }

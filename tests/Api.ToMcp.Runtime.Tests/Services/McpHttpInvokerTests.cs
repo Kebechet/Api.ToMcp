@@ -1112,6 +1112,17 @@ public class McpHttpInvokerTests
         Assert.Null(capturedRequest);
     }
 
+    [Fact]
+    public async Task SendAsync_DropsTheSpacesAndTabsAroundAHeaderValue_AsKestrelDoes()
+    {
+        string? name = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", request => name = string.Join("|", request.Headers.GetValues("X-Name")));
+
+        await CreateInvoker().SendAsync(new McpHttpRequest(HttpMethod.Get, "/api/x") { Headers = [new("X-Name", "  padded\t ")] });
+
+        Assert.Equal("padded", name);
+    }
+
     [Theory]
     [InlineData("X-MS-CLIENT-PRINCIPAL-ID")]
     [InlineData("x-forwarded-for")]

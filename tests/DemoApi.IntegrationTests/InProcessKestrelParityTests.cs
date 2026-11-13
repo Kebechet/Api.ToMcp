@@ -143,6 +143,40 @@ public sealed class InProcessKestrelParityTests
         Assert.StartsWith("HTTP 302: Found", tool.Text);
     }
 
+    [Theory]
+    [InlineData(true, "/headers-form")]
+    [InlineData(false, "/headers-form")]
+    [InlineData(true, "/form-redirect")]
+    [InlineData(false, "/form-redirect")]
+    public async Task AToolsHeadersAndForm_ReachTheAction_AsThoseOfARequestSentToTheServer(bool areApiCallsInProcess, string path)
+    {
+        // Kestrel drops the spaces around a header value and HttpClient sends a header's values as one line, which the
+        // in-process request has to match; a 307 keeps the method, the form and the headers.
+        await using var app = await StartAsync(areApiCallsInProcess: areApiCallsInProcess);
+        using var client = new HttpClient();
+        using var direct = new HttpRequestMessage(HttpMethod.Post, app.Urls.Single() + Route + "/headers-form")
+        {
+            Content = new FormUrlEncodedContent([new("comment", "x & y = 100%")])
+        };
+        direct.Headers.Add("X-Name", "padded");
+        direct.Headers.Add("X-Tags", ["sp", "\"a, b\""]);
+        using var directResponse = await client.SendAsync(direct);
+
+        var tool = await CallToolAsync(app.Urls.Single(), "parity_headers_form", new Dictionary<string, object?>
+        {
+            ["route"] = Route + path,
+            ["name"] = "  padded \t",
+            ["tags"] = new[] { " sp ", "a, b" },
+            ["comment"] = "x & y = 100%"
+        });
+
+        var directBody = await directResponse.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, directResponse.StatusCode);
+        Assert.False(tool.IsError, tool.Text);
+        Assert.Equal("{\"name\":\"padded\",\"tags\":[\"sp\",\"a, b\"],\"comment\":\"x & y = 100%\"}", directBody);
+        Assert.Equal(directBody, tool.Text);
+    }
+
     [Fact]
     public async Task AToolsRequest_ReachesTheMapBranchOfItsMcpRequest_AsOneSentToTheServer()
     {
@@ -184,12 +218,12 @@ public sealed class InProcessKestrelParityTests
         }
     }
 
-    private static async Task<WebApplication> StartAsync(Action<WebApplication>? configure = null)
+    private static async Task<WebApplication> StartAsync(Action<WebApplication>? configure = null, bool areApiCallsInProcess = true)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
-        ConfigureServices(builder.Services);
+        ConfigureServices(builder.Services, areApiCallsInProcess);
 
         var app = builder.Build();
         configure?.Invoke(app);
@@ -201,11 +235,26 @@ public sealed class InProcessKestrelParityTests
         return app;
     }
 
-    private static void ConfigureServices(IServiceCollection services)
+    /// <param name="areApiCallsInProcess">
+    /// Whether the tools call the API in process, with an HTTP client that refuses every request, or over HTTP to the
+    /// server's own address.
+    /// </param>
+    private static void ConfigureServices(IServiceCollection services, bool areApiCallsInProcess)
     {
         services.AddControllers().AddApplicationPart(typeof(KestrelParityController).Assembly);
-        services.AddMcpTools(typeof(ParityProbeTools).Assembly);
-        services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
+        if (areApiCallsInProcess)
+        {
+            services.AddMcpTools(typeof(ParityProbeTools).Assembly);
+            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
+            return;
+        }
+
+        services.AddMcpTools(typeof(ParityProbeTools).Assembly, options => options.AreApiCallsInProcess = false);
+    }
+
+    private static void ConfigureServices(IServiceCollection services)
+    {
+        ConfigureServices(services, areApiCallsInProcess: true);
     }
 
     private static Task<(HttpStatusCode Status, string Body)> SendDirectlyAsync(WebApplication app, HttpMethod method, string route, string? body = null)
@@ -247,6 +296,21 @@ public sealed class InProcessKestrelParityTests
         {
             arguments["body"] = body;
         }
+
+        var result = await client.CallToolAsync(toolName, arguments);
+        return (result.IsError == true, ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    private static async Task<(bool IsError, string Text)> CallToolAsync(string address, string toolName, Dictionary<string, object?> arguments)
+    {
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(address + "/mcp"),
+                TransportMode = HttpTransportMode.StreamableHttp
+            },
+            NullLoggerFactory.Instance);
+        await using var client = await McpClient.CreateAsync(transport);
 
         var result = await client.CallToolAsync(toolName, arguments);
         return (result.IsError == true, ((TextContentBlock)result.Content[0]).Text);
@@ -328,6 +392,18 @@ public sealed class KestrelParityController : ControllerBase
     public IActionResult RedirectElsewhere()
     {
         return Redirect("http://elsewhere.invalid" + TargetPath);
+    }
+
+    [HttpPost("headers-form")]
+    public IActionResult HeadersAndForm([FromHeader(Name = "X-Name")] string? name, [FromHeader(Name = "X-Tags")] string[]? tags, [FromForm] string? comment)
+    {
+        return Ok(new { name, tags, comment });
+    }
+
+    [HttpPost("form-redirect")]
+    public IActionResult FormRedirect()
+    {
+        return RedirectPreserveMethod("/api/kestrel-parity/headers-form");
     }
 
     [HttpGet("target")]
