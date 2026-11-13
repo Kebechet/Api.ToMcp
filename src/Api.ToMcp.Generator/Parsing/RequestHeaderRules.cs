@@ -90,8 +90,9 @@ namespace Api.ToMcp.Generator.Parsing
         };
 
         /// <summary>
-        /// The headers of <see cref="Names"/> a tool's request may carry of its own: the <c>Authorization</c> it forwards
-        /// from the MCP request, the host, the loop prevention mark, and, over HTTP, the trace context.
+        /// The headers a tool never sends from an argument that its request may carry of its own: the
+        /// <c>Authorization</c> it forwards from the MCP request, the host, the loop prevention mark, and, over HTTP, the
+        /// trace context and the <c>X-Forwarded-Proto</c> the invoker sends to a loopback address for an HTTPS request.
         /// </summary>
         private static readonly HashSet<string> CarriedByTheRequest = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -101,7 +102,8 @@ namespace Api.ToMcp.Generator.Parsing
             HttpHeaderNames.TraceParent,
             HttpHeaderNames.TraceState,
             HttpHeaderNames.Baggage,
-            HttpHeaderNames.CorrelationContext
+            HttpHeaderNames.CorrelationContext,
+            HttpHeaderNames.ForwardedProto
         };
 
         /// <summary>

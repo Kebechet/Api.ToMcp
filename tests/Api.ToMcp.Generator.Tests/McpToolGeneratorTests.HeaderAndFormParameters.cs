@@ -155,6 +155,7 @@ public partial class McpToolGeneratorTests
     [InlineData("HttpGet", "[FromHeader(Name = \"Authorization\")] string auth")]
     [InlineData("HttpGet", "[FromHeader] string authorization, [FromHeader(Name = \"X-MCP-Internal-Call\")] string internalCall, [FromHeader] string host")]
     [InlineData("HttpGet", "[FromHeader(Name = \"traceparent\")] string trace")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-Proto\")] string scheme")]
     [InlineData("HttpPost", "[FromHeader(Name = \"Content-Type\")] string contentType, [FromForm] string name")]
     [InlineData("HttpPut", "[FromHeader(Name = \"content-length\")] string length, [FromBody] ProductFilter filter")]
     [InlineData("HttpGet", "[FromHeader(Name = \"Cookie\")] string? cookie")]

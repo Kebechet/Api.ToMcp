@@ -71,6 +71,12 @@ internal static class HttpHeaderNames
     public const string ForwardedPrefix = "X-Forwarded-";
 
     /// <summary>
+    /// The default name of the header by which the invoker tells the app, over HTTP to a loopback address, that the MCP
+    /// request came in over HTTPS.
+    /// </summary>
+    public const string ForwardedProto = "X-Forwarded-Proto";
+
+    /// <summary>
     /// Where <c>UseForwardedHeaders</c> keeps the values it replaced.
     /// </summary>
     public const string OriginalPrefix = "X-Original-";
