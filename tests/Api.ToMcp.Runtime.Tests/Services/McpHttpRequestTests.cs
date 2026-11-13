@@ -25,15 +25,48 @@ public class McpHttpRequestTests
     }
 
     [Fact]
-    public async Task SendAsync_CallsTheInvokersMethod_WhenTheRequestHasNoHeadersAndNoForm()
+    public async Task SendAsync_CallsTheInvokersMethodForEachHttpMethod_WhenTheRequestHasNoHeadersAndNoForm()
     {
         var invoker = new Mock<IMcpHttpInvoker>(MockBehavior.Strict);
-        var expected = new CallToolResult();
-        invoker.Setup(x => x.PostAsync("/api/x", "{}", It.IsAny<CancellationToken>())).ReturnsAsync(expected);
+        var get = new CallToolResult();
+        var post = new CallToolResult();
+        var put = new CallToolResult();
+        var patch = new CallToolResult();
+        var delete = new CallToolResult();
+        invoker.Setup(x => x.GetAsync("/api/x", It.IsAny<CancellationToken>())).ReturnsAsync(get);
+        invoker.Setup(x => x.PostAsync("/api/x", "{\"a\":1}", It.IsAny<CancellationToken>())).ReturnsAsync(post);
+        invoker.Setup(x => x.PutAsync("/api/x", "{\"a\":2}", It.IsAny<CancellationToken>())).ReturnsAsync(put);
+        invoker.Setup(x => x.PatchAsync("/api/x", "{\"a\":3}", It.IsAny<CancellationToken>())).ReturnsAsync(patch);
+        invoker.Setup(x => x.DeleteAsync("/api/x", It.IsAny<CancellationToken>())).ReturnsAsync(delete);
 
-        var result = await new McpHttpRequest(HttpMethod.Post, "/api/x") { JsonBody = "{}" }.SendAsync(invoker.Object);
+        Assert.Same(get, await new McpHttpRequest(HttpMethod.Get, "/api/x").SendAsync(invoker.Object));
+        Assert.Same(post, await new McpHttpRequest(HttpMethod.Post, "/api/x") { JsonBody = "{\"a\":1}" }.SendAsync(invoker.Object));
+        Assert.Same(put, await new McpHttpRequest(HttpMethod.Put, "/api/x") { JsonBody = "{\"a\":2}" }.SendAsync(invoker.Object));
+        Assert.Same(patch, await new McpHttpRequest(HttpMethod.Patch, "/api/x") { JsonBody = "{\"a\":3}" }.SendAsync(invoker.Object));
+        Assert.Same(delete, await new McpHttpRequest(HttpMethod.Delete, "/api/x").SendAsync(invoker.Object));
+    }
 
-        Assert.Same(expected, result);
+    [Theory]
+    [InlineData("GET", null, true)]
+    [InlineData("POST", "{}", true)]
+    [InlineData("PUT", null, true)]
+    [InlineData("DELETE", null, true)]
+    [InlineData("GET", "{}", false)]
+    [InlineData("HEAD", null, false)]
+    public async Task SendAsync_ReturnsAnErrorWithoutCallingTheInvoker_WhenItCannotSendTheRequest(string method, string? jsonBody, bool hasHeaders)
+    {
+        // An invoker without IMcpHttpRequestInvoker would drop the headers, a GET's body or the method, so the call is refused.
+        var invoker = new StubInvoker();
+        var request = new McpHttpRequest(new HttpMethod(method), "/api/x")
+        {
+            JsonBody = jsonBody,
+            Headers = hasHeaders ? [new("X-Tenant", "t1")] : []
+        };
+
+        var result = await request.SendAsync(invoker);
+
+        Assert.True(result.IsError);
+        Assert.Equal(0, invoker.CallCount);
     }
 
     [Fact]

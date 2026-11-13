@@ -163,6 +163,9 @@ namespace TestApi
         [HttpPost(""form-header/{id}"")]
         public object PostFormHeader(int id, [FromForm] Shipment shipment, [FromHeader(Name = ""Idempotency-Key"")] string key) => new { id, shipment.Note, key };
 
+        [HttpPost(""bind-prefix"")]
+        public object PostBindPrefix([FromForm, Bind(Prefix = ""r"")] ProductFilter review, [FromHeader, ModelBinder(Name = ""X-Tenant"")] string tenant) => new { review.City, tenant };
+
         // The AI never sets these headers, so the tool takes no argument for them and sends the request's own.
         [HttpGet(""own-headers"")]
         public object GetOwnHeaders([FromHeader(Name = ""Authorization"")] string? auth, [FromHeader(Name = ""X-MS-CLIENT-PRINCIPAL-ID"")] string? userId, [FromHeader(Name = ""X-Forwarded-For"")] string? clientIp)
@@ -556,6 +559,7 @@ namespace TestApi
     [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}")]
     [InlineData("EchoController_GetHeaderTool", @"{}", @"{""tenant"":null,""ids"":[],""tags"":[],""status"":null}")]
     [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""  t1\t "",""tags"":["" sp "",""a, b""]}", @"{""tenant"":""t1"",""ids"":[],""tags"":[""sp"",""a, b""],""status"":null}")]
+    [InlineData("EchoController_PostBindPrefixTool", @"{""review"":{""city"":""Brno""},""tenant"":""t1""}", @"{""city"":""Brno"",""tenant"":""t1""}")]
     [InlineData("EchoController_GetOwnHeadersTool", @"{""auth"":""Bearer forged"",""userId"":""bob"",""clientIp"":""10.0.0.5""}", @"{""auth"":null,""userId"":null,""clientIp"":null}")]
     [InlineData("EchoController_GetHeaderDefaultTool", @"{""page"":3}", @"{""page"":3,""sent"":true}")]
     [InlineData("EchoController_GetHeaderDefaultTool", @"{}", @"{""page"":2,""sent"":false}")]

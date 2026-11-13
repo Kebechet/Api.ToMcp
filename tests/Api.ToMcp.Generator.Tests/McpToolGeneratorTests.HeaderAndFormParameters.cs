@@ -276,6 +276,18 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_SendsAHeaderAndAForm_UnderTheNameAnyModelNameAttributeGives()
+    {
+        // MVC binds a parameter under the first name an IModelNameProvider gives, [Bind(Prefix)] and [ModelBinder(Name)]
+        // included.
+        var tool = GenerateCompilingSimpleTypeTool(
+            "[HttpPost(\"x\")] public Task<string> Find([FromForm, Bind(Prefix = \"r\")] ProductFilter review, [FromHeader, ModelBinder(Name = \"X-Tenant\")] string tenant) => Task.FromResult(string.Empty);");
+
+        Assert.Contains($"{Formatter}.AddFormValue(formParts, \"r\", review);", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"X-Tenant\", tenant))", tool);
+    }
+
+    [Fact]
     public void Generator_MarksATool_ThatSendsHeadersOrAForm()
     {
         // AddMcpTools warns at its first call when the registered invoker cannot send them.
