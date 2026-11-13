@@ -219,6 +219,27 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_TemplateStartingWithAnIgnorableCharacter_KeepsTheControllerPrefix()
+    {
+        // MVC compares the leading "/" ordinally (AttributeRouteModel.IsOverridePattern). A culture-aware comparison
+        // ignores a soft hyphen, so it took "­/search" for an absolute template and dropped the prefix.
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/[controller]"")]
+    public class ProductsController : ControllerBase
+    {
+        [HttpGet(""­/search"")]
+        public Task<string> Search(string query) => Task.FromResult(string.Empty);
+    }
+}
+";
+        var generated = RunGenerator(Usings + AspNetStubs + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("var route = $\"/api/products/­/search\";", generated);
+    }
+
+    [Fact]
     public void Generator_UsesScopeFromMcpExpose_OverTheHttpMethodDefault()
     {
         // Query-style endpoints that take their filter as a POST body would otherwise demand Write,

@@ -957,7 +957,9 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static bool IsAbsoluteTemplate(string? template)
         {
-            return template != null && (template.StartsWith(RouteTokens.PathSeparatorText) || template.StartsWith(RouteTokens.AppRelativePrefix));
+            return template is not null &&
+                (template.StartsWith(RouteTokens.PathSeparatorText, StringComparison.Ordinal) ||
+                 template.StartsWith(RouteTokens.AppRelativePrefix, StringComparison.Ordinal));
         }
 
         private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
