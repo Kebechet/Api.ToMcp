@@ -30,7 +30,7 @@ public static class McpRequestValueFormatter
     /// </summary>
     private const string RecordCloneMethodName = "<Clone>$";
 
-    private const char PathSeparator = '/';
+    private const char PathSeparator = RouteTokens.PathSeparator;
 
     /// <summary>
     /// The path segments that URI normalization removes (RFC 3986, section 5.2.4), <c>..</c> with the segment before it.

@@ -16,7 +16,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 {
     private const string LoopPreventionHeader = McpLoopPreventionMiddleware.LoopPreventionHeader;
     private const string LoopPreventionValue = "true";
-    private const char PathSeparator = '/';
+    private const char PathSeparator = RouteTokens.PathSeparator;
 
     private readonly HttpClient _httpClient;
     private readonly ISelfBaseUrlProvider _baseUrlProvider;

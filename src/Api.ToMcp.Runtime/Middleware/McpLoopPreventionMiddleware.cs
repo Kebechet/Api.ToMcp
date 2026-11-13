@@ -18,7 +18,7 @@ public sealed class McpLoopPreventionMiddleware
     /// </summary>
     internal const string LoopPreventionHeader = "X-MCP-Internal-Call";
 
-    private static readonly PathString DefaultMcpPath = new("/" + McpExtensions.DefaultMcpPattern);
+    private static readonly PathString DefaultMcpPath = new(RouteTokens.PathSeparator + McpExtensions.DefaultMcpPattern);
 
     private readonly RequestDelegate _next;
 
