@@ -23,6 +23,12 @@ namespace Api.ToMcp.Generator
         private const string RegistrationSourceName = "McpToolsRegistration";
 
         /// <summary>
+        /// The noun MCP014's message ends its clause on the values with, for one value and for several.
+        /// </summary>
+        private const string RouteValueNoun = "value";
+        private const string RouteValuesNoun = "values";
+
+        /// <summary>
         /// Where the build targets create the config when ApiToMcpConfigPath is not set, relative to the project.
         /// </summary>
         private const string DefaultConfigPath = "Mcp/generator.json";
@@ -247,13 +253,15 @@ namespace Api.ToMcp.Generator
             diagnostics.AddRange(unbuildableRouteDiagnostics);
             ReportDuplicateToolNames(diagnostics, toolActions, config);
             ReportEndpointsWithSeveralHttpMethods(diagnostics, toolActions);
+            ReportUncalledRoutes(diagnostics, toolActions);
             ReportEndpointsLeftOut(diagnostics, controllers, config, controllerEntryNames, endpoints.LeftOutCount);
 
             var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(toolActions);
             var tools = toolActions.Select((action, i) => new ToolSourceModel
             {
                 ClassName = toolClassNames[i],
-                Action = action with { SourceLocation = null },
+                // Only diagnostics read the other controller routes, so an edit to them generates no tool again.
+                Action = action with { SourceLocation = null, OtherControllerRoutes = EquatableArray<ServedRouteModel>.Empty },
                 Naming = config.Naming,
                 StructuredOutput = config.StructuredOutput
             }).ToImmutableArray();
@@ -333,6 +341,29 @@ namespace Api.ToMcp.Generator
                     duplicate.Key,
                     duplicate.Count(),
                     producers));
+            }
+        }
+
+        /// <summary>
+        /// Informs at each action whose tool does not call a route MVC serves it at for the tool's HTTP method, where MVC
+        /// binds a value of the action from the route alone that the route the tool calls lacks (MCP014).
+        /// </summary>
+        private static void ReportUncalledRoutes(List<DiagnosticInfoModel> diagnostics, ImmutableArray<ActionInfoModel> actions)
+        {
+            foreach (var action in actions)
+            {
+                foreach (var (template, lostValues) in UncalledRouteValues.GetLostValues(action))
+                {
+                    diagnostics.Add(DiagnosticInfoModel.InSource(
+                        DiagnosticDescriptors.UncalledRoute,
+                        new[] { action.SourceLocation },
+                        action.ControllerName,
+                        action.Name,
+                        $"{action.HttpMethod} {action.RouteTemplate}",
+                        $"{action.HttpMethod} {template}",
+                        UncalledRouteValues.JoinWithAnd(lostValues),
+                        lostValues.Count == 1 ? RouteValueNoun : RouteValuesNoun));
+                }
             }
         }
 

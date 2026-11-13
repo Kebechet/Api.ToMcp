@@ -140,6 +140,12 @@ namespace Api.ToMcp.Generator.Models
         public EquatableArray<ServedRouteModel> ServedRoutes { get; init; } = EquatableArray<ServedRouteModel>.Empty;
 
         /// <summary>
+        /// The routes MVC serves a controller's action at under each route of its controller but the first, whose
+        /// template the generator can read: only to tell the values the tool cannot send (MCP014).
+        /// </summary>
+        public EquatableArray<ServedRouteModel> OtherControllerRoutes { get; init; } = EquatableArray<ServedRouteModel>.Empty;
+
+        /// <summary>
         /// Whether a call may leave out the route value that ends <see cref="RouteTemplate"/>, which the routes of the
         /// other actions decide. See <see cref="RouteEndModel"/>.
         /// </summary>
@@ -431,6 +437,13 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public bool IsCollection { get; init; }
 
+        /// <summary>
+        /// Whether MVC binds the parameter from one string, such as one route value, with a binder of MVC's: its type reads
+        /// from one string, or is an array of such or a collection of such MVC creates as a <c>List&lt;T&gt;</c>, and no
+        /// attribute of it or of its type names a binder type, whose reads the generator cannot see. Only MCP014 reads it.
+        /// </summary>
+        public bool IsReadFromOneValue { get; init; }
+
         public EquatableArray<PropertyInfoModel> Properties { get; init; } = EquatableArray<PropertyInfoModel>.Empty;
 
         /// <summary>
@@ -477,6 +490,21 @@ namespace Api.ToMcp.Generator.Models
         /// whose binding attributes <see cref="ModelName"/> and <see cref="Source"/> come from.
         /// </summary>
         public bool IsSetByConstructor { get; init; }
+
+        /// <summary>
+        /// Whether the generator is sure MVC's complex binder binds the property: MVC creates the type it is a property
+        /// of, no binding behavior makes it <c>Never</c>, every <c>[Bind]</c> include list of its parameter and of that
+        /// type names it, and a record's constructor sets it or it has a public setter. MVC fills a collection without a
+        /// setter in place as well, but only one the instance already holds, which the generator cannot see. Only MCP014
+        /// reads it; the tool sends every property as it did.
+        /// </summary>
+        public bool IsBindable { get; init; } = true;
+
+        /// <summary>
+        /// Whether MVC binds the property from one string, such as one route value, as
+        /// <see cref="ParameterInfoModel.IsReadFromOneValue"/> tells of a parameter. Only MCP014 reads it.
+        /// </summary>
+        public bool IsReadFromOneValue { get; init; }
 
         /// <summary>
         /// Whether the property's binding source keeps <c>[ApiController]</c> from reading its type from the body. MVC

@@ -13,6 +13,7 @@ internal static class KnownTypeNames
     public const string ValueTask = "System.Threading.Tasks.ValueTask";
     public const string ValueTaskOfTResult = "System.Threading.Tasks.ValueTask<TResult>";
     public const string CancellationToken = "System.Threading.CancellationToken";
+    public const string ListOfT = "System.Collections.Generic.List<T>";
     public const string ControllerBase = "Microsoft.AspNetCore.Mvc.ControllerBase";
     public const string Controller = "Microsoft.AspNetCore.Mvc.Controller";
     public const string ActionResultOfTValue = "Microsoft.AspNetCore.Mvc.ActionResult<TValue>";

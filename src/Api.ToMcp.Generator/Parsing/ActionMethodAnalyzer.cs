@@ -87,12 +87,14 @@ namespace Api.ToMcp.Generator.Parsing
         /// <param name="routePrefixProblem">
         /// Why the controller's route template cannot be read, as a clause of MCP009's message, or null when it can.
         /// </param>
+        /// <param name="otherRoutePrefixes">The templates of the controller's other routes, which MVC serves each action at too.</param>
         public static ImmutableArray<ActionInfoModel> GetActions(
             INamedTypeSymbol controller,
             string? routePrefix,
             string? routePrefixProblem,
             Compilation compilation,
-            CancellationToken ct)
+            CancellationToken ct,
+            IReadOnlyList<string>? otherRoutePrefixes = null)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
             var controllerMcpExposeAttr = FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute);
@@ -127,6 +129,17 @@ namespace Api.ToMcp.Generator.Parsing
                         Template = ResolveApiVersionInRoute(BuildFullRoute(routePrefix, x.Template, controller.Name, GetRouteActionName(method)), controller, method),
                         HttpMethods = x.HttpMethods.ToImmutableArray()
                     })
+                    .ToImmutableArray();
+
+                // MVC combines each route of the action with each of the controller's, unless the action's is absolute.
+                var otherControllerRoutes = (otherRoutePrefixes ?? Array.Empty<string>())
+                    .SelectMany(prefix => httpInfo.Value.ServedRoutes
+                        .Where(x => !IsAbsoluteTemplate(x.Template))
+                        .Select(x => new ServedRouteModel
+                        {
+                            Template = ResolveApiVersionInRoute(BuildFullRoute(prefix, x.Template, controller.Name, GetRouteActionName(method)), controller, method),
+                            HttpMethods = x.HttpMethods.ToImmutableArray()
+                        }))
                     .ToImmutableArray();
 
                 string? customToolName = null;
@@ -183,7 +196,8 @@ namespace Api.ToMcp.Generator.Parsing
                     // that inherits it, where a #pragma or an .editorconfig section can suppress them.
                     SourceLocation = SourceLocationModel.From(
                         method.Locations.FirstOrDefault(x => x.IsInSource) ?? controller.Locations.FirstOrDefault(x => x.IsInSource)),
-                    ServedRoutes = servedRoutes
+                    ServedRoutes = servedRoutes,
+                    OtherControllerRoutes = otherControllerRoutes
                 });
             }
 
@@ -468,7 +482,23 @@ namespace Api.ToMcp.Generator.Parsing
                 // the body, and which of them fill the route or the query string when it does not.
                 var properties = isSimpleType && declaredSource is not (ParameterSourceModel.Route or ParameterSourceModel.Body)
                     ? ImmutableArray<PropertyInfoModel>.Empty
-                    : ExtractProperties(param.Type, compilation);
+                    : ExtractProperties(param.Type, compilation, ct);
+                var includedPropertyNames = GetIncludedPropertyNames(modelAttributes);
+                if (includedPropertyNames is not null)
+                {
+                    properties = properties.Select(x => includedPropertyNames.Contains(x.Name) ? x : x with { IsBindable = false }).ToImmutableArray();
+                }
+
+                // A binder of the project's binds the whole parameter, so MVC binds none of its properties one by one; and
+                // MCP014 is not sure MVC binds a parameter whose own binding behavior is Never, or one it cannot follow.
+                var hasBinderType = HasBinderType(modelAttributes);
+                var parameterBindingBehavior = bindingAttributes.FirstOrDefault(IsBindingBehaviorAttribute);
+                var isMaybeNeverBound = parameterBindingBehavior is not null && IsBindingNever(parameterBindingBehavior, compilation, ct) != false;
+                if (hasBinderType || isMaybeNeverBound)
+                {
+                    properties = properties.Select(x => x with { IsBindable = false }).ToImmutableArray();
+                }
+
                 var source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties);
 
                 // The AI never chooses such a header, so it is no argument: the action gets the value the tool's request
@@ -497,6 +527,7 @@ namespace Api.ToMcp.Generator.Parsing
                     IsDefaultRefusedAsText = param.HasExplicitDefaultValue && IsRefusedAsText(param.Type, param.ExplicitDefaultValue),
                     IsSimpleType = isSimpleType,
                     IsCollection = IsCollection(param.Type),
+                    IsReadFromOneValue = !hasBinderType && !isMaybeNeverBound && IsReadFromOneValue(param.Type),
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
                     // MVC binds every parameter under the first name these give, whatever its source
@@ -777,7 +808,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// The properties MVC binds a type through, each with where its binding attribute makes MVC read it from and the
         /// name it binds it under.
         /// </summary>
-        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type, Compilation compilation)
+        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type, Compilation compilation, CancellationToken ct = default)
         {
             if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
             {
@@ -791,6 +822,7 @@ namespace Api.ToMcp.Generator.Parsing
 
             var properties = GetVisibleProperties(type);
             var constructorParameters = GetRecordConstructorParameters(type, properties);
+            var isCreatedByMvc = IsCreatedByMvc(type, constructorParameters);
 
             return properties
                 .Select(property =>
@@ -799,7 +831,8 @@ namespace Api.ToMcp.Generator.Parsing
                     // parameter's binding attributes; a [property: ...] one it ignores. After those it reads the attributes
                     // of the type (ModelAttributes), so a [ModelBinder(typeof(...))] on an id type binds every property of it.
                     var isSetByConstructor = constructorParameters.TryGetValue(property, out var constructorParameter);
-                    var attributes = (isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes())
+                    var ownAttributes = isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes();
+                    var attributes = ownAttributes
                         .Concat(GetTypeAttributes(property.Type))
                         .ToList();
 
@@ -811,10 +844,198 @@ namespace Api.ToMcp.Generator.Parsing
                                      property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
                         ModelName = attributes.Select(GetModelName).FirstOrDefault(x => x is not null),
                         Source = HasFileOrSpecialBindingSource(property.Type, compilation) ? ParameterSourceModel.Other : GetBindingSource(attributes),
-                        IsSetByConstructor = isSetByConstructor
+                        IsSetByConstructor = isSetByConstructor,
+                        IsBindable = isCreatedByMvc && IsBindable(property, ownAttributes, isSetByConstructor, type, compilation, ct),
+                        IsReadFromOneValue = !HasBinderType(attributes) && IsReadFromOneValue(property.Type)
                     };
                 })
                 .ToImmutableArray();
+        }
+
+        /// <summary>
+        /// Whether the generator is sure MVC's complex binder binds the property (<c>ComplexObjectModelBinder.CanBindItem</c>):
+        /// <list type="bullet">
+        /// <item>its binding behavior is not <c>Never</c>: its own first binding behavior attribute, else, unless a
+        /// record's constructor sets it, the first of the type it is a property of, not of its own type
+        /// (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>);</item>
+        /// <item>a record's constructor sets it, or it has a public setter, <c>init</c> included. MVC sets no new value
+        /// into a property without one; it fills a collection there in place, but only one the instance already holds
+        /// (<c>CanUpdateReadOnlyProperty</c>), which the generator cannot see.</item>
+        /// </list>
+        /// False when the generator cannot follow the constructors of its binding behavior attribute.
+        /// </summary>
+        private static bool IsBindable(
+            IPropertySymbol property,
+            ImmutableArray<AttributeData> ownAttributes,
+            bool isSetByConstructor,
+            ITypeSymbol containerType,
+            Compilation compilation,
+            CancellationToken ct)
+        {
+            var bindingBehavior = ownAttributes.FirstOrDefault(IsBindingBehaviorAttribute) ??
+                (isSetByConstructor ? null : GetTypeAttributes(containerType).FirstOrDefault(IsBindingBehaviorAttribute));
+            if (bindingBehavior is not null)
+            {
+                var isBindingNever = IsBindingNever(bindingBehavior, compilation, ct);
+                if (isBindingNever is null || isBindingNever.Value)
+                {
+                    return false;
+                }
+            }
+
+            return isSetByConstructor || property.SetMethod?.DeclaredAccessibility == Accessibility.Public;
+        }
+
+        /// <summary>
+        /// Whether MVC's complex binder creates a value of the type (<c>ComplexObjectModelBinder.CreateModel</c>): through a
+        /// record's primary constructor, else a public one without parameters of a class that is not abstract. It throws
+        /// for any other class, and for a struct without such a constructor declared on it; the generator counts no struct
+        /// as created.
+        /// </summary>
+        private static bool IsCreatedByMvc(ITypeSymbol type, Dictionary<IPropertySymbol, IParameterSymbol> constructorParameters)
+        {
+            if (constructorParameters.Count > 0)
+            {
+                return true;
+            }
+
+            var namedType = type as INamedTypeSymbol;
+            return namedType is not null &&
+                namedType.TypeKind == TypeKind.Class &&
+                !namedType.IsAbstract &&
+                namedType.InstanceConstructors.Any(x => x.DeclaredAccessibility == Accessibility.Public && x.Parameters.IsEmpty);
+        }
+
+        /// <summary>
+        /// Whether MVC binds a value of the type from one string, such as one route value: a type it reads from one string,
+        /// an array of such, or a collection of such it creates as a <c>List&lt;T&gt;</c>. Of another collection type the
+        /// generator is not sure what MVC creates, and it binds the items of a complex type, and a dictionary, from keys
+        /// such as <c>tags[0].City</c>.
+        /// </summary>
+        private static bool IsReadFromOneValue(ITypeSymbol type)
+        {
+            if (SimpleTypeClassifier.IsSimpleType(type))
+            {
+                return true;
+            }
+
+            var elementType = GetCollectionElementType(type);
+            if (elementType is null || !SimpleTypeClassifier.IsSimpleType(elementType))
+            {
+                return false;
+            }
+
+            return type.TypeKind == TypeKind.Array ||
+                type.OriginalDefinition.ToDisplayString() == KnownTypeNames.ListOfT ||
+                type.OriginalDefinition.SpecialType is SpecialType.System_Collections_Generic_IEnumerable_T
+                    or SpecialType.System_Collections_Generic_ICollection_T
+                    or SpecialType.System_Collections_Generic_IList_T
+                    or SpecialType.System_Collections_Generic_IReadOnlyCollection_T
+                    or SpecialType.System_Collections_Generic_IReadOnlyList_T;
+        }
+
+        /// <summary>
+        /// Whether an attribute of a value or of its type names a binder type (<c>BindingInfo.BinderType</c>), whatever
+        /// the binding source: MVC then binds the value with that binder, whose reads the generator cannot see.
+        /// </summary>
+        private static bool HasBinderType(IEnumerable<AttributeData> attributes)
+        {
+            return attributes.Any(x => Implements(x, BindingAttributeNames.BinderTypeProviderMetadata) && GivesBindingSource(x));
+        }
+
+        /// <summary>
+        /// The names of the properties every property filter of a parameter and of its type lets MVC's complex binder bind
+        /// (<c>CanBindItem</c>), or null when none limits them. The generator reads the include list of <c>[Bind]</c>
+        /// itself, which MVC splits at commas and matches by name, case and all; another filter lets none count.
+        /// </summary>
+        private static HashSet<string>? GetIncludedPropertyNames(IEnumerable<AttributeData> attributes)
+        {
+            HashSet<string>? includedNames = null;
+            foreach (var attribute in attributes.Where(x => Implements(x, BindingAttributeNames.PropertyFilterProvider)))
+            {
+                var includeList = GetBindIncludeList(attribute);
+                if (includeList is null)
+                {
+                    return new HashSet<string>(StringComparer.Ordinal);
+                }
+
+                // A [Bind] without an include list lets MVC bind every property.
+                if (includeList.Count == 0)
+                {
+                    continue;
+                }
+
+                if (includedNames is null)
+                {
+                    includedNames = new HashSet<string>(includeList, StringComparer.Ordinal);
+                }
+                else
+                {
+                    includedNames.IntersectWith(includeList);
+                }
+            }
+
+            return includedNames;
+        }
+
+        /// <returns>
+        /// The names the include list of a <c>[Bind]</c> gives, each item split at commas and trimmed, as its constructor
+        /// splits them; null for another property filter, a <c>[Bind]</c> of the project's included, whose list the
+        /// generator does not follow.
+        /// </returns>
+        private static List<string>? GetBindIncludeList(AttributeData attribute)
+        {
+            if (attribute.AttributeClass?.ToDisplayString() != BindingAttributeNames.Bind || attribute.ConstructorArguments.Length != 1)
+            {
+                return null;
+            }
+
+            var includeList = attribute.ConstructorArguments[0];
+            if (includeList.Kind != TypedConstantKind.Array || includeList.IsNull)
+            {
+                return null;
+            }
+
+            return includeList.Values
+                .Select(x => x.Value as string)
+                .Where(x => x is not null)
+                .SelectMany(x => x!.Split(','))
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0)
+                .ToList();
+        }
+
+        private static bool IsBindingBehaviorAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass is not null && ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, BindingAttributeNames.BindingBehavior);
+        }
+
+        /// <summary>
+        /// Whether a binding behavior attribute keeps MVC from binding, or null when the generator cannot follow its
+        /// constructors.
+        /// </summary>
+        private static bool? IsBindingNever(AttributeData bindingBehavior, Compilation compilation, CancellationToken ct)
+        {
+            // Both are sealed, and their constructors, in MVC's assembly, pass a behavior of their own.
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired))
+            {
+                return false;
+            }
+
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindNever))
+            {
+                return true;
+            }
+
+            return RouteAttributeReader.TryReadArgumentPassedTo(
+                    bindingBehavior,
+                    BindingAttributeNames.BindingBehavior,
+                    BindingAttributeNames.BindingBehaviorArgument,
+                    compilation,
+                    ct,
+                    out var behavior)
+                ? behavior is BindingAttributeNames.BindingBehaviorNever
+                : null;
         }
 
         /// <summary>
