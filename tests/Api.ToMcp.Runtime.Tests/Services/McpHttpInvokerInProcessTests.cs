@@ -4,12 +4,16 @@ using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Builder;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
+using Moq;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -121,6 +125,19 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
+    public async Task GetAsync_ForwardsNoScheme_InProcess_WhereTheRequestKeepsTheMcpRequestsOwn()
+    {
+        _accessor.HttpContext = CreateCaller();
+        var invoker = CreateInvoker(BuildEchoPipeline(), baseUrlProvider: CreateDefaultBaseUrlProvider("http://+:8080"));
+
+        var result = await invoker.GetAsync("/api/products/7");
+
+        var seen = Echoed(result);
+        Assert.Equal("https", seen.GetProperty("scheme").GetString());
+        Assert.Equal("", seen.GetProperty("forwardedProto").GetString());
+    }
+
+    [Fact]
     public async Task PostAsync_SendsTheJsonBody_InProcess()
     {
         _accessor.HttpContext = CreateCaller();
@@ -188,15 +205,31 @@ public class McpHttpInvokerInProcessTests
         Assert.Equal([$"{ProviderBaseUrl}/api/products/7"], _httpHandler.Requests);
     }
 
-    private McpHttpInvoker CreateInvoker(InProcessApiPipeline pipeline, McpScopeOptions? scopeOptions = null, HttpClient? httpClient = null)
+    private McpHttpInvoker CreateInvoker(
+        InProcessApiPipeline pipeline,
+        McpScopeOptions? scopeOptions = null,
+        HttpClient? httpClient = null,
+        ISelfBaseUrlProvider? baseUrlProvider = null)
     {
         return new McpHttpInvoker(
             httpClient ?? new HttpClient(_httpHandler),
-            new FixedBaseUrlProvider(ProviderBaseUrl),
+            baseUrlProvider ?? new FixedBaseUrlProvider(ProviderBaseUrl),
             _accessor,
             NullLogger<McpHttpInvoker>.Instance,
             Microsoft.Extensions.Options.Options.Create(scopeOptions ?? new McpScopeOptions()),
             pipeline);
+    }
+
+    private DefaultBaseUrlProvider CreateDefaultBaseUrlProvider(string boundAddress)
+    {
+        var addressesFeature = new ServerAddressesFeature();
+        addressesFeature.Addresses.Add(boundAddress);
+        var features = new FeatureCollection();
+        features.Set<IServerAddressesFeature>(addressesFeature);
+        var server = new Mock<IServer>();
+        server.Setup(x => x.Features).Returns(features);
+
+        return new DefaultBaseUrlProvider(server.Object, new ConfigurationBuilder().Build(), _accessor);
     }
 
     private static DefaultHttpContext CreateCaller()
@@ -225,6 +258,7 @@ public class McpHttpInvokerInProcessTests
                 ["query"] = context.Request.QueryString.Value,
                 ["authorization"] = context.Request.Headers.Authorization.ToString(),
                 ["internalCall"] = context.Request.Headers["X-MCP-Internal-Call"].ToString(),
+                ["forwardedProto"] = context.Request.Headers["X-Forwarded-Proto"].ToString(),
                 ["contentType"] = context.Request.ContentType,
                 ["body"] = body
             });

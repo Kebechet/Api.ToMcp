@@ -7,8 +7,11 @@ namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
 /// The address the tools call the API at: <c>McpTools:BaseUrl</c> as given when it is set, else an address the server
-/// is bound to. An <c>http://</c> binding follows a request that came in over <c>https://</c> to that request's own
-/// address, as a TLS-terminating reverse proxy sends it; a configured address never does.
+/// is bound to. No header of the MCP request decides it: <c>Host</c> and <c>X-Forwarded-Host</c> are the client's to set,
+/// so following them sent the tool's request to any server the app can reach
+/// (https://github.com/Kebechet/Api.ToMcp/issues/48). A request at an <c>http://</c> binding for an MCP request that came
+/// in over <c>https://</c>, as a TLS-terminating reverse proxy sends it, carries that scheme instead; see
+/// <see cref="GetForwardedScheme"/>.
 /// </summary>
 public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
 {
@@ -22,7 +25,7 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
     private readonly object _lock = new();
 
     /// <summary>
-    /// A provider that never follows a request to <c>https://</c>, as it cannot see the request.
+    /// A provider that never forwards the scheme of the request, as it cannot see the request.
     /// </summary>
     public DefaultBaseUrlProvider(IServer server, IConfiguration configuration)
     {
@@ -38,19 +41,23 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
 
     public string GetBaseUrl()
     {
-        var baseUrl = GetConfiguredOrBoundUrl();
-        if (!baseUrl.IsHttpBinding)
-        {
-            return baseUrl.Url;
-        }
+        return GetConfiguredOrBoundUrl().Url;
+    }
 
+    /// <summary>
+    /// The scheme a request at <see cref="GetBaseUrl"/> sends in <c>X-Forwarded-Proto</c>: <c>https</c> when the address
+    /// is an <c>http://</c> binding and the MCP request came in over <c>https://</c>, else null.
+    /// </summary>
+    internal string? GetForwardedScheme()
+    {
         // When behind a reverse proxy, Kestrel only listens on HTTP but UseHttpsRedirection()
-        // redirects internal self-calls to HTTPS which doesn't exist locally.
-        // Derive the correct HTTPS base URL from the incoming request instead.
+        // redirects internal self-calls to HTTPS which doesn't exist locally. The app trusts the
+        // proxy's X-Forwarded-Proto, and ForwardedHeadersOptions trusts loopback, where the call
+        // comes from, by default, so the header keeps the call on HTTPS as its MCP request was.
         var request = _httpContextAccessor?.HttpContext?.Request;
-        return request is { IsHttps: true }
-            ? HttpsAddressPrefix + request.Host.ToUriComponent()
-            : baseUrl.Url;
+        return request?.IsHttps == true && GetConfiguredOrBoundUrl().IsHttpBinding
+            ? Uri.UriSchemeHttps
+            : null;
     }
 
     private ResolvedBaseUrl GetConfiguredOrBoundUrl()
@@ -155,8 +162,8 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
     }
 
     /// <summary>
-    /// The configured or bound address, and whether it is an <c>http://</c> binding, which may follow the request to
-    /// <c>https://</c>.
+    /// The configured or bound address, and whether it is an <c>http://</c> binding, which may forward the scheme of the
+    /// request.
     /// </summary>
     private sealed record ResolvedBaseUrl(string Url, bool IsHttpBinding);
 }

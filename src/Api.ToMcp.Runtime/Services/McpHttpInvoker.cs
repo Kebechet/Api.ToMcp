@@ -7,6 +7,7 @@ using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -92,6 +93,10 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 
         using var request = new HttpRequestMessage(method, url);
         ConfigureRequest(request);
+        if (inProcessPipeline is null)
+        {
+            ForwardTheScheme(request);
+        }
 
         if (jsonBody is not null)
         {
@@ -168,8 +173,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     }
 
     /// <summary>
-    /// The route at the provider's address, used as given: <see cref="DefaultBaseUrlProvider"/> decides itself when an
-    /// address it took from the server bindings has to follow the request to <c>https://</c>.
+    /// The route at the provider's address, used as given, whatever host the MCP request names.
     /// </summary>
     private string BuildUrl(string route)
     {
@@ -184,6 +188,21 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private static string BuildInProcessUrl(HttpRequest caller, string route)
     {
         return caller.Scheme + Uri.SchemeDelimiter + caller.Host.ToUriComponent() + caller.PathBase.ToUriComponent() + NormalizeRoute(route);
+    }
+
+    /// <summary>
+    /// Tells the app that a request at the server's own <c>http://</c> binding stands for an MCP request that came in over
+    /// <c>https://</c>, as <see cref="DefaultBaseUrlProvider.GetForwardedScheme"/> decides. The address of a provider of
+    /// the app's own is used as it is.
+    /// </summary>
+    private void ForwardTheScheme(HttpRequestMessage request)
+    {
+        var defaultBaseUrlProvider = _baseUrlProvider as DefaultBaseUrlProvider;
+        var forwardedScheme = defaultBaseUrlProvider?.GetForwardedScheme();
+        if (forwardedScheme is not null)
+        {
+            request.Headers.Add(ForwardedHeadersDefaults.XForwardedProtoHeaderName, forwardedScheme);
+        }
     }
 
     private static string NormalizeRoute(string route)
