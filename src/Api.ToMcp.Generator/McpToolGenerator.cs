@@ -172,7 +172,8 @@ namespace Api.ToMcp.Generator
 
         /// <summary>
         /// The config at the configured path, else at that path in another case, else the first named generator.json,
-        /// else the default config.
+        /// else the default config. The files named generator.json elsewhere that the configured one wins over are
+        /// recorded for MCP015.
         /// </summary>
         private static GeneratorConfigModel SelectConfig(
             ImmutableArray<(ConfigFileMatch Match, GeneratorConfigModel Config)> configs,
@@ -181,7 +182,16 @@ namespace Api.ToMcp.Generator
             if (configs.IsEmpty)
                 return new GeneratorConfigModel { ConfiguredFilePath = configPath };
 
-            return configs.OrderBy(x => x.Match).First().Config with { ConfiguredFilePath = configPath };
+            var selected = configs.OrderBy(x => x.Match).First();
+            var passedOver = selected.Match == ConfigFileMatch.FileName
+                ? ImmutableArray<string>.Empty
+                : configs.Where(x => x.Match == ConfigFileMatch.FileName).Select(x => x.Config.FilePath!).ToImmutableArray();
+
+            return selected.Config with
+            {
+                ConfiguredFilePath = configPath,
+                PassedOverFilePaths = passedOver
+            };
         }
 
         /// <summary>
@@ -219,6 +229,8 @@ namespace Api.ToMcp.Generator
                 ReportNoToolsGenerated(diagnostics, controllers, config, entryNames, selectedActions, controllerEntryNames);
             }
 
+            ReportPassedOverConfigFiles(diagnostics, config);
+
             // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
             ReportUnmatchedEntries(diagnostics, controllers, config, entryNames);
             ReportIncludeEntriesNamingControllerAndEndpoints(diagnostics, config, controllerEntryNames, endpointClasses);
@@ -241,6 +253,24 @@ namespace Api.ToMcp.Generator
                 Tools = tools.ToImmutableArray(),
                 Diagnostics = diagnostics.ToImmutableArray()
             };
+        }
+
+        /// <summary>
+        /// Warns at each additional file named generator.json that the generator passes over for the file at
+        /// ApiToMcpConfigPath (MCP015): it read such a file before the build passed that path, so a project that lists its
+        /// config elsewhere by hand now reads another one, such as the starter the build wrote at the default path.
+        /// </summary>
+        private static void ReportPassedOverConfigFiles(List<DiagnosticInfoModel> diagnostics, GeneratorConfigModel config)
+        {
+            foreach (var passedOverFilePath in config.PassedOverFilePaths)
+            {
+                diagnostics.Add(DiagnosticInfoModel.InFile(
+                    DiagnosticDescriptors.PassedOverConfigFile,
+                    passedOverFilePath,
+                    default,
+                    config.FilePath,
+                    passedOverFilePath));
+            }
         }
 
         /// <summary>

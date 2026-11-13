@@ -23,6 +23,8 @@ public partial class McpToolGeneratorTests
     /// </summary>
     private const string ConfigPathBuildProperty = "build_property._McpConfigFullPath";
 
+    private const string PassedOverConfigId = "MCP015";
+
     private const string GetAllConfig = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""ProductsController.GetAll""] }";
     private const string GetByIdConfig = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""ProductsController.GetById""] }";
     private const string OpenApiGeneratorConfig = @"{ ""generatorName"": ""csharp"", ""outputDir"": ""client"" }";
@@ -143,6 +145,47 @@ public partial class McpToolGeneratorTests
         Assert.Equal(
             $"No MCP tools are generated: SelectedOnly mode selects none of the project's HTTP actions. No config is at ApiToMcpConfigPath, so the default config applies, whose include list is empty: create {configPath} and list controllers such as 'ProductsController' or actions such as 'ProductsController.GetById' in its include.",
             diagnostic.GetMessage());
+    }
+
+    [Fact]
+    public void Generator_WarnsThatItPassesOverAGeneratorJsonListedByHand_ForTheConfigAtTheConfiguredPath()
+    {
+        // Such a file was read before the build passed the configured path, and the configured file can be the starter
+        // the build wrote beside it, which selects nothing.
+        var configPath = Path.Combine(ProjectDirectory, "Mcp", "generator.json");
+        var legacyPath = Path.Combine(ProjectDirectory, "Legacy", "generator.json");
+
+        var diagnostics = RunGeneratorWithConfigPath(
+            configPath,
+            out var generated,
+            new InMemoryAdditionalText(legacyPath, GetAllConfig),
+            new InMemoryAdditionalText(configPath, StarterConfig));
+
+        var diagnostic = Assert.Single(diagnostics, x => x.Id == PassedOverConfigId);
+        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        Assert.Equal(
+            $"The generator reads its config from '{configPath}', the file at ApiToMcpConfigPath, and not from '{legacyPath}', which the project also lists among its AdditionalFiles: to read that file, set ApiToMcpConfigPath to it, or else remove it from the AdditionalFiles",
+            diagnostic.GetMessage());
+        Assert.Equal(legacyPath, diagnostic.Location.GetLineSpan().Path);
+        Assert.Contains(diagnostics, x => x.Id == NoToolsGeneratedId);
+        Assert.DoesNotContain("class ProductsController_GetAllTool", generated);
+    }
+
+    [Fact]
+    public void Generator_DoesNotWarnOfTheConfiguredFileInAnotherCase_NorOfAFileNamedOtherwise()
+    {
+        // On a case-insensitive file system an item listed by hand in another case is the configured file itself, which
+        // the build adds once more under its own path.
+        var configPath = Path.Combine(ProjectDirectory, "Mcp", "generator.json");
+
+        var diagnostics = RunGeneratorWithConfigPath(
+            configPath,
+            out _,
+            new InMemoryAdditionalText(Path.Combine(ProjectDirectory, "mcp", "GENERATOR.json"), GetAllConfig),
+            new InMemoryAdditionalText(Path.Combine(ProjectDirectory, "openapi-generator.json"), OpenApiGeneratorConfig),
+            new InMemoryAdditionalText(configPath, GetAllConfig));
+
+        Assert.Empty(diagnostics);
     }
 
     private static string RunGeneratorWithConfigPath(string? configPath, params AdditionalText[] additionalFiles)

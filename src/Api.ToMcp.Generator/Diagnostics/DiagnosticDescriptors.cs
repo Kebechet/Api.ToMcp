@@ -146,5 +146,20 @@ namespace Api.ToMcp.Generator.Diagnostics
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Info,
             isEnabledByDefault: true);
+
+        /// <summary>
+        /// The generator reads the config at ApiToMcpConfigPath and passes over another additional file named
+        /// generator.json. Before https://github.com/Kebechet/Api.ToMcp/issues/55 the build added the configured file only
+        /// when no item's name ended in generator.json, so the generator read such a file. A warning, not an info: a
+        /// project that lists its config elsewhere by hand now reads another one, often the starter the build wrote at the
+        /// default path, which selects nothing, and an info is missing from the build output and most CI logs.
+        /// </summary>
+        public static readonly DiagnosticDescriptor PassedOverConfigFile = new DiagnosticDescriptor(
+            id: "MCP015",
+            title: "Another generator.json is not read",
+            messageFormat: "The generator reads its config from '{0}', the file at ApiToMcpConfigPath, and not from '{1}', which the project also lists among its AdditionalFiles: to read that file, set ApiToMcpConfigPath to it, or else remove it from the AdditionalFiles",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
     }
 }
