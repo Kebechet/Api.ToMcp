@@ -1201,12 +1201,42 @@ namespace TestApi
         Assert.Contains("public static async Task<CallToolResult> InvokeAsync(", tool);
     }
 
-    [Fact]
-    public void Endpoint_UnderAnMcpRoute_IsNeverExposed()
+    [Theory]
+    [InlineData(@"app.MapGet(""/mcp"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGet(""/mcp/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGet(""MCP/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGroup(""/Mcp"").MapGet(""/status"", [McpExpose] () => 1);")]
+    public void Endpoint_AtTheMcpRouteOrUnderIt_IsNeverExposed(string statement)
     {
-        var source = MinimalApi(@"app.MapGet(""/api/mcp-status"", [McpExpose] () => 1);");
+        var source = MinimalApi(statement);
 
         Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, MinimalApisConfig));
+    }
+
+    [Theory]
+    [InlineData(@"app.MapGet(""/api/mcp-status"", [McpExpose] () => 1);", "/api/mcp-status")]
+    [InlineData(@"app.MapGet(""/api/mcp"", [McpExpose] () => 1);", "/api/mcp")]
+    [InlineData(@"app.MapGet(""/mcpservers"", [McpExpose] () => 1);", "/mcpservers")]
+    [InlineData(@"app.MapGroup(""/api"").MapGet(""/mcp"", [McpExpose] () => 1);", "/api/mcp")]
+    public void Endpoint_WhoseRouteOnlyHoldsMcp_GetsItsTool(string statement, string route)
+    {
+        var generated = RunGenerator(MinimalApi(statement), MinimalApisConfig);
+
+        Assert.Contains("[McpServerTool(", generated);
+        Assert.Contains($"var route = $\"{route}\";", generated);
+    }
+
+    [Fact]
+    public void AllExceptExcluded_WithoutTheOptIn_CountsAnEndpointWhoseRouteOnlyHoldsMcp_ButNoneUnderMcp()
+    {
+        var source = MinimalApi(@"
+            app.MapGet(""/mcp/health"", () => 1);
+            app.MapGet(""/api/mcp-status"", () => 2);") + ControllerNextToEndpoints;
+
+        var info = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig));
+
+        Assert.Equal(EndpointsLeftOutId, info.Id);
+        Assert.StartsWith("AllExceptExcluded mode selects none of the project's 1 Minimal API endpoint,", info.GetMessage());
     }
 
     [Fact]

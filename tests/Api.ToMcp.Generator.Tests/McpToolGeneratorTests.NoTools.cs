@@ -73,9 +73,9 @@ namespace TestApi
     }
 
     [Theory]
-    [InlineData(@"""Admin""", "'Admin' names no [Http*] action without [McpIgnore] or '/mcp' in its route")]
-    [InlineData(@"""Admin"", ""Health"", ""Products.Delete""", "'Admin', 'Health' and 'Products.Delete' name no [Http*] action without [McpIgnore] or '/mcp' in its route")]
-    [InlineData(@"""Admin"", ""Prodcts""", "'Admin' names no [Http*] action without [McpIgnore] or '/mcp' in its route, and 'Prodcts' names no controller or action of the project, as MCP008 reports")]
+    [InlineData(@"""Admin""", "'Admin' names no [Http*] action without [McpIgnore] or a route under '/mcp'")]
+    [InlineData(@"""Admin"", ""Health"", ""Products.Delete""", "'Admin', 'Health' and 'Products.Delete' name no [Http*] action without [McpIgnore] or a route under '/mcp'")]
+    [InlineData(@"""Admin"", ""Prodcts""", "'Admin' names no [Http*] action without [McpIgnore] or a route under '/mcp', and 'Prodcts' names no controller or action of the project, as MCP008 reports")]
     public void Generator_WarnsThatNoToolsAreGenerated_WhenTheIncludeEntriesNameOnlyActionsKeptFromMcp(string entries, string reason)
     {
         // These entries name a controller or action, so they get no MCP008, and MCP006 says why they still select nothing.

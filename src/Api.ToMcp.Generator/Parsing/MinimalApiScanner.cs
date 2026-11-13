@@ -216,8 +216,9 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether the route pattern of the call holds <c>/mcp</c>, which no tool ever calls, so it counts for no endpoint
-        /// left out. Only arguments written as strings are read: the constant value of a lambda would bind its body.
+        /// Whether the route pattern of the call is <c>/mcp</c> or under it, which no tool ever calls, so it counts for no
+        /// endpoint left out. Only arguments written as strings are read: the constant value of a lambda would bind its
+        /// body. The groups the call is mapped in are not followed, which would cost the analysis this count avoids.
         /// </summary>
         private static bool IsMcpPattern(InvocationExpressionSyntax invocation, SemanticModel semanticModel, CancellationToken ct)
         {
@@ -226,7 +227,7 @@ namespace Api.ToMcp.Generator.Parsing
                 .Select(x => semanticModel.GetConstantValue(x.Expression, ct).Value as string)
                 .FirstOrDefault(x => x is not null);
 
-            return pattern is not null && pattern.IndexOf(MinimalApiNames.McpRouteSegment, StringComparison.OrdinalIgnoreCase) >= 0;
+            return pattern is not null && McpEndpointRoute.Covers(pattern);
         }
 
         /// <summary>
