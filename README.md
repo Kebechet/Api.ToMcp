@@ -715,11 +715,21 @@ A tool calls your API at a base URL when it calls over HTTP, which it does only 
 
 1. The `McpTools:BaseUrl` configuration value, if set (e.g. in `appsettings.json`), used as given: an `http://` address stays `http://`.
 2. The first `https://` address the server is bound to.
-3. The first address of any scheme, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`. When that is an `http://` address and the MCP request came in over `https://`, the tool calls the request's own `https://` address, with its host and port, instead. The server then sits behind a reverse proxy that terminates TLS, and `UseHttpsRedirection` would send a call to the `http://` binding to an HTTPS port nothing listens on locally. The call goes out through the proxy, and the request's host is whatever its `Host` header (or the proxy's `X-Forwarded-Host`) says, so restrict `AllowedHosts`, or pin `McpTools:BaseUrl` to keep the calls on an address you chose.
+3. The first address of any scheme, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`: a container bound to `http://+:8080` is called at `http://localhost:8080`. Under IIS in process, the server's addresses are the site's bindings.
 
-The configured or bound address is cached after the first resolution; whether a call follows its request to `https://` is decided for each call. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
+No header of the MCP request decides the address. `Host`, and `X-Forwarded-Host` where the app reads it, are the client's to set, so a client could otherwise send the tool's request, with its `Authorization` header, to any server the app can reach (https://github.com/Kebechet/Api.ToMcp/issues/48).
 
-The invoker calls whatever address `ISelfBaseUrlProvider` returns, so the address of a provider of your own is used as given too. An `http://` address in an app that redirects HTTP to HTTPS is redirected like any other request, so pin an address the app serves without a redirect.
+Behind a reverse proxy that terminates TLS, the server listens only on HTTP, and the MCP request counts as HTTPS because the app trusts the proxy's `X-Forwarded-Proto`. `UseHttpsRedirection` would then send the tool's request to the `http://` binding on to an HTTPS port nothing listens on locally. So when the address is an `http://` binding and the MCP request came in over `https://`, the tool's request carries `X-Forwarded-Proto: https`, and the app serves it as HTTPS too. It comes from the server itself, over loopback, which `ForwardedHeadersOptions` trusts by default. These setups need more:
+
+- **Known proxies of your own.** When you replaced `KnownProxies` and `KnownNetworks` (`KnownIPNetworks` from .NET 10) with your proxy's addresses, add `IPAddress.Loopback` and `IPAddress.IPv6Loopback` to `KnownProxies`. Otherwise the app takes the tool's request for HTTP and redirects it. Clearing both lists, which trusts every address, needs nothing.
+- **A restricted `AllowedHosts`.** The tool's request names the bound address in its `Host`, such as `localhost:8080`, so add its host, `localhost`, or host filtering answers `400`.
+- **IIS out of process.** The app there refuses a request that did not come through IIS, which pairs each one with a token, so the bound address answers `400`.
+
+In each of them you can set `McpTools:BaseUrl` instead.
+
+The configured or bound address is cached after the first resolution; whether a call carries `X-Forwarded-Proto` is decided for each call. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
+
+The invoker calls whatever address `ISelfBaseUrlProvider` returns, so the address of a provider of your own is used as given too, without `X-Forwarded-Proto`. An `http://` address in an app that redirects HTTP to HTTPS is redirected like any other request, so pin an address the app serves without a redirect.
 
 **Pinning the base URL** (recommended behind a reverse proxy or in containers):
 
@@ -782,10 +792,11 @@ A tool call reaches your API as two requests: the MCP client's `POST /mcp`, and 
 |---|---|
 | `Authorization` | Copied from the MCP request, when it parses as an authentication header |
 | `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` a request that targets the MCP endpoint, or any path under `/mcp`, is refused |
+| `X-Forwarded-Proto: https` | Over HTTP only: added by the invoker when it calls the `http://` address the server is bound to for an MCP request that came in over HTTPS, so the app serves it as HTTPS too; see [Base URL Resolution](#base-url-resolution) |
 
-No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent` or `X-Forwarded-For`. The request still carries the MCP request's connection, so `HttpContext.Connection.RemoteIpAddress` is the client's address; see [How Tools Call Your API](#how-tools-call-your-api). If your API logs a correlation ID taken from a header of its own, the tool's request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it in both requests.
+No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent`, `X-Forwarded-For` or `X-Forwarded-Host`. The request still carries the MCP request's connection, so `HttpContext.Connection.RemoteIpAddress` is the client's address; see [How Tools Call Your API](#how-tools-call-your-api). If your API logs a correlation ID taken from a header of its own, the tool's request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it in both requests.
 
-Over HTTP (with `AreApiCallsInProcess` off), .NET's `HttpClient` also sends the current `Activity` as a `traceparent` header, with `tracestate` and `baggage` (`Correlation-Context` on .NET 8 and 9) when the MCP request has them, and ASP.NET Core continues that trace for the request. The request comes from the server itself, or from the proxy it went out through, not from the client.
+Over HTTP (with `AreApiCallsInProcess` off), .NET's `HttpClient` also sends the current `Activity` as a `traceparent` header, with `tracestate` and `baggage` (`Correlation-Context` on .NET 8 and 9) when the MCP request has them, and ASP.NET Core continues that trace for the request. The request comes from the server itself, or from a proxy when `McpTools:BaseUrl` leads through one, not from the client.
 
 `X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only the MCP endpoint and paths under `/mcp` refuse it), so never let it skip authentication or authorization. The refusal comes from the endpoint `MapMcpEndpoint` maps, at whatever pattern it is given, route parameters included, and wherever `UseRouting` sits in the pipeline. `UseMcpLoopPrevention` itself also refuses it on any path under `/mcp`, as it always has, which covers an endpoint mapped there with the SDK's `MapMcp` directly.
 
@@ -976,7 +987,7 @@ To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerG
 
 ### A call fails
 
-`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. In process, the cause is your API: it aborted the tool's request, or its response failed after it started; an exception it lets escape before then comes back as `HTTP 500: ...` instead. Over HTTP (with `AreApiCallsInProcess` off), the usual cause is the call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, or behind a TLS-terminating proxy the MCP request's own `https://` address, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
+`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. In process, the cause is your API: it aborted the tool's request, or its response failed after it started; an exception it lets escape before then comes back as `HTTP 500: ...` instead. Over HTTP (with `AreApiCallsInProcess` off), the usual cause is the call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
 
 `HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation.
 
@@ -1062,7 +1073,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 
 **Self-calls fail or redirect to HTTPS behind a reverse proxy.**
 - In process, which is the default, the tool's request takes the MCP request's scheme and host, so the app neither redirects it nor sends it anywhere; see [How Tools Call Your API](#how-tools-call-your-api).
-- With `AreApiCallsInProcess` off and without `McpTools:BaseUrl`, a server that listens only on HTTP has its tools call the MCP request's own `https://` address when the request came in over HTTPS; see [Base URL Resolution](#base-url-resolution). The most reliable fix is to pin `McpTools:BaseUrl` to an address the app serves without a redirect. It is used as given, `http://` included.
+- With `AreApiCallsInProcess` off and without `McpTools:BaseUrl`, a server that listens only on HTTP has its tools call that `http://` address, never the host the MCP request names. When the MCP request came in over HTTPS, the tool's request carries `X-Forwarded-Proto: https`, so the app does not redirect it; see [Base URL Resolution](#base-url-resolution). It is still redirected when the app's `KnownProxies` and `KnownNetworks` leave out loopback, and answered `400` when `AllowedHosts` leaves out the bound address, or behind IIS out of process. The most reliable fix is to pin `McpTools:BaseUrl` to an address the app serves without a redirect. It is used as given, `http://` included.
 
 **`MissingMethodException` on `AddMcpTools` at startup** (e.g. `Method not found: '...McpServerServiceCollectionExtensions.AddMcpServer(...)'`).
 - Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
