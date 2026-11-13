@@ -652,7 +652,7 @@ namespace Api.ToMcp.Generator.Parsing
                 SymbolEqualityComparer.Default.Equals(definition.ReturnType, receiverType);
         }
 
-        private static bool IsWebApplication(ITypeSymbol type)
+        internal static bool IsWebApplication(ITypeSymbol type)
         {
             return ResponseTypeResolver.IsOrImplements(type, MinimalApiNames.WebApplication);
         }

@@ -18,17 +18,15 @@ namespace Api.ToMcp.Generator.Parsing
         private const string PathSeparator = RouteTokens.PathSeparatorText;
 
         /// <summary>
-        /// Whether <paramref name="route"/> is <c>/mcp</c> or a path under it, with or without its leading slash and in any
-        /// letter case, comparing whole segments as the loop prevention middleware does. A route that only holds the
-        /// letters, such as <c>/api/mcp</c>, <c>/mcpservers</c> or <c>/api/settings/mcp-status</c>, is the app's own. See
-        /// https://github.com/Kebechet/Api.ToMcp/issues/53.
+        /// Whether <paramref name="route"/>, as the generator builds a route, from a slash and without "~/", is <c>/mcp</c>
+        /// or a path under it, in any letter case, comparing whole segments as the loop prevention middleware does. A
+        /// route that only holds the letters, such as <c>/api/mcp</c>, <c>/mcpservers</c> or
+        /// <c>/api/settings/mcp-status</c>, is the app's own. See https://github.com/Kebechet/Api.ToMcp/issues/53.
         /// </summary>
         public static bool Covers(string route)
         {
-            var path = route.StartsWith(PathSeparator, StringComparison.Ordinal) ? route : PathSeparator + route;
-
-            return path.Equals(Route, StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith(Route + PathSeparator, StringComparison.OrdinalIgnoreCase);
+            return route.Equals(Route, StringComparison.OrdinalIgnoreCase) ||
+                route.StartsWith(Route + PathSeparator, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

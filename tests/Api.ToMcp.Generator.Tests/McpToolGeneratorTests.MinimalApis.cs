@@ -1255,6 +1255,25 @@ namespace TestApi
         Assert.StartsWith("AllExceptExcluded mode selects none of the project's 1 Minimal API endpoint,", info.GetMessage());
     }
 
+    [Theory]
+    [InlineData(@"app.MapGet(""mcp/health"", () => 1);", 0)]
+    [InlineData(@"app.MapGet(""~/mcp/health"", () => 1);", 0)]
+    [InlineData(@"app.MapGet(""/MCP"", () => 1);", 0)]
+    [InlineData(@"app.MapGroup(""/api"").MapGet(""/mcp"", () => 1);", 1)]
+    [InlineData(@"var api = app.MapGroup(""/api""); api.MapGet(""mcp/health"", () => 1);", 1)]
+    [InlineData(@"app.MapGroup(""/mcp"").MapGet(""/health"", () => 1);", 1)]
+    public void AllExceptExcluded_WithoutTheOptIn_LeavesOutOfItsCount_OnlyAnEndpointMappedOnTheAppUnderMcp(string statement, int count)
+    {
+        // The count reads only the Map* call's own pattern, as following its groups would cost the analysis it avoids.
+        // So it leaves out only a pattern mapped on the app itself; one mapped on a group counts, also when the group
+        // puts it under /mcp, where the opt-in would give it no tool.
+        var source = MinimalApi(statement) + ControllerNextToEndpoints;
+
+        var diagnostics = GetGeneratorDiagnostics(source, AllExceptExcludedConfig);
+
+        Assert.Equal(count, diagnostics.Count(x => x.Id == EndpointsLeftOutId));
+    }
+
     [Fact]
     public void Generator_GeneratesAnEndpointsToolAgain_AfterAnEditToTheFileThatGivesItsPrefix()
     {
