@@ -63,7 +63,8 @@ namespace Api.ToMcp.Generator.Emitting
         /// (<c>InferParameterBindingInfoConvention</c>);</item>
         /// <item>a property with <c>[FromRoute]</c> of a parameter MVC binds property by property, and a property without
         /// a binding attribute of a <c>[FromRoute]</c> one, under the key MVC builds for it: the property's own name, or
-        /// after the parameter's own name, <c>key.Version</c>, when a binding attribute gives the parameter one.</item>
+        /// after the parameter's own name, <c>key.Version</c>, when a binding attribute gives the parameter one. A
+        /// property MVC's complex binder never binds is none (<see cref="PropertyInfoModel.IsBindable"/>).</item>
         /// </list>
         /// </summary>
         private static List<(string Key, string Value)> GetRouteValueReaders(ActionInfoModel action, List<RouteTemplate> routes)
@@ -92,6 +93,7 @@ namespace Api.ToMcp.Generator.Emitting
                 }
 
                 readers.AddRange(parameter.Properties
+                    .Where(x => x.IsBindable)
                     .Where(x => x.Source == ParameterSourceModel.Route || (x.Source == ParameterSourceModel.Auto && parameter.Source == ParameterSourceModel.Route))
                     .Select(x => (ToolClassEmitter.GetPropertyModelName(parameter, x), $"the property {x.Name} of '{parameter.Name}'")));
             }

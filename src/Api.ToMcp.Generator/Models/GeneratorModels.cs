@@ -485,6 +485,13 @@ namespace Api.ToMcp.Generator.Models
         public bool IsSetByConstructor { get; init; }
 
         /// <summary>
+        /// Whether MVC's complex binder binds the property: no binding behavior makes it <c>Never</c>, and it has a public
+        /// setter, a record's constructor sets it, or MVC can update it in place. Only MCP014 reads it; the tool sends
+        /// every property as it did.
+        /// </summary>
+        public bool IsBindable { get; init; } = true;
+
+        /// <summary>
         /// Whether the property's binding source keeps <c>[ApiController]</c> from reading its type from the body. MVC
         /// leaves the properties a record's constructor sets out of that check (<c>ModelMetadata.BoundProperties</c>).
         /// </summary>

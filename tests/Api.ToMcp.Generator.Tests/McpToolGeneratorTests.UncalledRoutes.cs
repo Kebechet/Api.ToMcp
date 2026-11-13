@@ -205,6 +205,114 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UncalledRouteId);
     }
 
+    /// <summary>
+    /// Types with a [FromRoute] property Slug or Tags that MVC's complex binder binds or never binds.
+    /// </summary>
+    private const string BindingEligibilityTypes = @"
+    public sealed class NoBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public NoBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Never)
+        {
+        }
+    }
+
+    public sealed class NeverSlug
+    {
+        [FromRoute]
+        [Microsoft.AspNetCore.Mvc.ModelBinding.BindNever]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class CustomNeverSlug
+    {
+        [FromRoute]
+        [NoBind]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Microsoft.AspNetCore.Mvc.ModelBinding.BindNever]
+    public sealed class NeverTypeSlug
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Microsoft.AspNetCore.Mvc.ModelBinding.BindNever]
+    public sealed class OptionalSlugOfNeverType
+    {
+        [FromRoute]
+        [Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Optional)]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class ReadOnlySlug
+    {
+        [FromRoute]
+        public string? Slug { get; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class PrivateSetSlug
+    {
+        [FromRoute]
+        public string? Slug { get; private set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class InitSlug
+    {
+        [FromRoute]
+        public string? Slug { get; init; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class ReadOnlyTags
+    {
+        [FromRoute]
+        public List<string> Tags { get; } = new List<string>();
+
+        public int Page { get; set; }
+    }
+
+    public sealed record SlugRecord([FromRoute] string? Slug, int Page);
+";
+
+    [Theory]
+    // MVC never binds a property with [BindNever], or a binding behavior attribute of the project's that passes Never,
+    // nor one whose type has [BindNever] and the property no binding behavior of its own.
+    [InlineData("{id}/{slug}", "NeverSlug", false)]
+    [InlineData("{id}/{slug}", "CustomNeverSlug", false)]
+    [InlineData("{id}/{slug}", "NeverTypeSlug", false)]
+    [InlineData("{id}/{slug}", "OptionalSlugOfNeverType", true)]
+    // Nor a string or a struct without a public setter, which it cannot update in place, unless a record's constructor
+    // sets it; a collection it can.
+    [InlineData("{id}/{slug}", "ReadOnlySlug", false)]
+    [InlineData("{id}/{slug}", "PrivateSetSlug", false)]
+    [InlineData("{id}/{slug}", "InitSlug", true)]
+    [InlineData("{id}/{tags}", "ReadOnlyTags", true)]
+    [InlineData("{id}/{slug}", "SlugRecord", true)]
+    public void Generator_ReportsAPropertyOfARouteValue_OnlyWhereMvcBindsIt(string uncalledRoute, string type, bool isReported)
+    {
+        var source = UncalledRoutesSource(
+            PlainControllerDeclaration,
+            $"[HttpGet(\"{{id}}\")] [HttpGet(\"{uncalledRoute}\")] public Task<string> Find(int id, {type} f) => Task.FromResult(string.Empty);",
+            BindingEligibilityTypes);
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.Equal(isReported, GetGeneratorDiagnostics(source, AllExceptExcludedConfig).Any(x => x.Id == UncalledRouteId));
+    }
+
     [Theory]
     // MVC reads the [FromQuery] Version from the query string, where the tool sends it.
     [InlineData("[HttpGet(\"{id}\")] [HttpGet(\"{id}/v/{version}\")]", "[FromRoute] VersionedKey key")]

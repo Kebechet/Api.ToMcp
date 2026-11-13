@@ -625,6 +625,152 @@ namespace TestApi
         public object Get([FromQuery] int? id, [FromRoute] Mcp014Key key) => new { id, keyId = key.Id };
     }
 
+    // MVC's complex binder binds a [FromRoute] property only where its binding behavior and setter let it. A type's
+    // [BindNever] keeps every property without a binding behavior of its own from binding, Page as well.
+    public sealed class Mcp014NeverSlug
+    {
+        [FromRoute]
+        [Microsoft.AspNetCore.Mvc.ModelBinding.BindNever]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+    public sealed class Mcp014NoBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public Mcp014NoBindAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Never)
+        {
+        }
+    }
+
+    public sealed class Mcp014CustomNeverSlug
+    {
+        [FromRoute]
+        [Mcp014NoBind]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+    [Microsoft.AspNetCore.Mvc.ModelBinding.BindNever]
+    public sealed class Mcp014NeverTypeSlug
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+    [Microsoft.AspNetCore.Mvc.ModelBinding.BindNever]
+    public sealed class Mcp014OptionalSlugOfNeverType
+    {
+        [FromRoute]
+        [Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Optional)]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+    public sealed class Mcp014ReadOnlySlug
+    {
+        [FromRoute]
+        public string? Slug { get; }
+
+        public int Page { get; set; }
+    }
+    public sealed class Mcp014PrivateSetSlug
+    {
+        [FromRoute]
+        public string? Slug { get; private set; }
+
+        public int Page { get; set; }
+    }
+    public sealed class Mcp014InitSlug
+    {
+        [FromRoute]
+        public string? Slug { get; init; }
+
+        public int Page { get; set; }
+    }
+    public sealed record Mcp014SlugRecord([FromRoute] string? Slug, int Page);
+
+    [Route(""plain/mcp014-neverslug"")]
+    public class Mcp014NeverSlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014NeverSlug f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-customneverslug"")]
+    public class Mcp014CustomNeverSlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014CustomNeverSlug f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-nevertypeslug"")]
+    public class Mcp014NeverTypeSlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014NeverTypeSlug f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-optionalslugofnevertype"")]
+    public class Mcp014OptionalSlugOfNeverTypeController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014OptionalSlugOfNeverType f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-readonlyslug"")]
+    public class Mcp014ReadOnlySlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014ReadOnlySlug f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-privatesetslug"")]
+    public class Mcp014PrivateSetSlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014PrivateSetSlug f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-initslug"")]
+    public class Mcp014InitSlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014InitSlug f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-slugrecord"")]
+    public class Mcp014SlugRecordController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014SlugRecord f) => new { id, f.Slug, f.Page };
+    }
+
+    public sealed class Mcp014ReadOnlyTags
+    {
+        [FromRoute]
+        public List<string> Tags { get; } = new List<string>();
+
+        public int Page { get; set; }
+    }
+
+    // MVC binds a collection without a setter in place.
+    [Route(""plain/mcp014-readonlytags"")]
+    public class Mcp014ReadOnlyTagsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{tags}"")]
+        public object Get(int id, Mcp014ReadOnlyTags f) => new { id, f.Tags, f.Page };
+    }
+
     // MVC binds key's properties under key.Version, which {version} is not.
     [ApiController]
     [Route(""api/mcp014-named-key"")]
@@ -1072,6 +1218,15 @@ namespace TestApi
     [InlineData("Mcp014TagsController_GetTool", @"{""id"":7,""tags"":[""a"",""b""]}", @"{""id"":7,""tags"":[]}", "/plain/mcp014-tags/7/a", @"{""id"":7,""tags"":[""a""]}", true)]
     [InlineData("Mcp014KeyController_GetTool", @"{""id"":7,""key"":{""id"":7}}", @"{""id"":7,""keyId"":0}", "/api/mcp014-key/7", @"{""id"":null,""keyId"":7}", true)]
     [InlineData("Mcp014NamedKeyController_GetTool", @"{""key"":{""version"":3}}", @"{""version"":0}", "/api/mcp014-named-key/3", @"{""version"":0}", false)]
+    [InlineData("Mcp014NeverSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-neverslug/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014CustomNeverSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-customneverslug/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014NeverTypeSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":0}", "/plain/mcp014-nevertypeslug/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014OptionalSlugOfNeverTypeController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":0}", "/plain/mcp014-optionalslugofnevertype/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014ReadOnlySlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-readonlyslug/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014PrivateSetSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-privatesetslug/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014InitSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-initslug/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014SlugRecordController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-slugrecord/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014ReadOnlyTagsController_GetTool", @"{""id"":7,""f"":{""tags"":[""a""],""page"":2}}", @"{""id"":7,""tags"":[],""page"":2}", "/plain/mcp014-readonlytags/7/a", @"{""id"":7,""tags"":[""a""],""page"":0}", true)]
     public async Task Mcp014_IsReportedExactly_WhereTheToolLosesAValueThatARouteItDoesNotCallCarries(
         string toolClassName, string arguments, string expectedToolEcho, string uncalledRoute, string expectedRouteEcho, bool isReported)
     {

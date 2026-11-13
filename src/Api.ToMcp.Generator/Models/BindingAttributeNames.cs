@@ -42,6 +42,11 @@ internal static class BindingAttributeNames
     /// </summary>
     public const int BindingBehaviorRequired = 2;
 
+    /// <summary>
+    /// <c>BindingBehavior.Never</c>, as Roslyn gives an enum argument: its number.
+    /// </summary>
+    public const int BindingBehaviorNever = 1;
+
     public const string Required = "System.ComponentModel.DataAnnotations.RequiredAttribute";
 
     /// <summary>

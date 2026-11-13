@@ -482,7 +482,7 @@ namespace Api.ToMcp.Generator.Parsing
                 // the body, and which of them fill the route or the query string when it does not.
                 var properties = isSimpleType && declaredSource is not (ParameterSourceModel.Route or ParameterSourceModel.Body)
                     ? ImmutableArray<PropertyInfoModel>.Empty
-                    : ExtractProperties(param.Type, compilation);
+                    : ExtractProperties(param.Type, compilation, ct);
                 var source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties);
 
                 // The AI never chooses such a header, so it is no argument: the action gets the value the tool's request
@@ -791,7 +791,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// The properties MVC binds a type through, each with where its binding attribute makes MVC read it from and the
         /// name it binds it under.
         /// </summary>
-        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type, Compilation compilation)
+        private static ImmutableArray<PropertyInfoModel> ExtractProperties(ITypeSymbol type, Compilation compilation, CancellationToken ct = default)
         {
             if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
             {
@@ -813,7 +813,8 @@ namespace Api.ToMcp.Generator.Parsing
                     // parameter's binding attributes; a [property: ...] one it ignores. After those it reads the attributes
                     // of the type (ModelAttributes), so a [ModelBinder(typeof(...))] on an id type binds every property of it.
                     var isSetByConstructor = constructorParameters.TryGetValue(property, out var constructorParameter);
-                    var attributes = (isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes())
+                    var ownAttributes = isSetByConstructor ? constructorParameter!.GetAttributes() : property.GetAttributes();
+                    var attributes = ownAttributes
                         .Concat(GetTypeAttributes(property.Type))
                         .ToList();
 
@@ -825,10 +826,81 @@ namespace Api.ToMcp.Generator.Parsing
                                      property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T,
                         ModelName = attributes.Select(GetModelName).FirstOrDefault(x => x is not null),
                         Source = HasFileOrSpecialBindingSource(property.Type, compilation) ? ParameterSourceModel.Other : GetBindingSource(attributes),
-                        IsSetByConstructor = isSetByConstructor
+                        IsSetByConstructor = isSetByConstructor,
+                        IsBindable = IsBindable(property, ownAttributes, isSetByConstructor, type, compilation, ct)
                     };
                 })
                 .ToImmutableArray();
+        }
+
+        /// <summary>
+        /// Whether MVC's complex binder binds the property (<c>ComplexObjectModelBinder.CanBindProperty</c>):
+        /// <list type="bullet">
+        /// <item>its binding behavior is not <c>Never</c>: its own first binding behavior attribute, else, unless a
+        /// record's constructor sets it, the first of the type it is a property of, not of its own type
+        /// (<c>DefaultBindingMetadataProvider.FindBindingBehavior</c>);</item>
+        /// <item>a record's constructor sets it, or it has a public setter, <c>init</c> included, or MVC can update it in
+        /// place: a reference type, but a string or an array (<c>CanUpdateReadOnlyProperty</c>).</item>
+        /// </list>
+        /// False when the generator cannot follow the constructors of its binding behavior attribute.
+        /// </summary>
+        private static bool IsBindable(
+            IPropertySymbol property,
+            ImmutableArray<AttributeData> ownAttributes,
+            bool isSetByConstructor,
+            ITypeSymbol containerType,
+            Compilation compilation,
+            CancellationToken ct)
+        {
+            var bindingBehavior = ownAttributes.FirstOrDefault(IsBindingBehaviorAttribute) ??
+                (isSetByConstructor ? null : GetTypeAttributes(containerType).FirstOrDefault(IsBindingBehaviorAttribute));
+            if (bindingBehavior is not null)
+            {
+                var isBindingNever = IsBindingNever(bindingBehavior, compilation, ct);
+                if (isBindingNever is null || isBindingNever.Value)
+                {
+                    return false;
+                }
+            }
+
+            var canUpdateInPlace = !property.Type.IsValueType &&
+                property.Type.TypeKind != TypeKind.Array &&
+                property.Type.SpecialType != SpecialType.System_String;
+
+            return isSetByConstructor || property.SetMethod?.DeclaredAccessibility == Accessibility.Public || canUpdateInPlace;
+        }
+
+        private static bool IsBindingBehaviorAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass is not null && ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, BindingAttributeNames.BindingBehavior);
+        }
+
+        /// <summary>
+        /// Whether a binding behavior attribute keeps MVC from binding, or null when the generator cannot follow its
+        /// constructors.
+        /// </summary>
+        private static bool? IsBindingNever(AttributeData bindingBehavior, Compilation compilation, CancellationToken ct)
+        {
+            // Both are sealed, and their constructors, in MVC's assembly, pass a behavior of their own.
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindRequired))
+            {
+                return false;
+            }
+
+            if (ResponseTypeResolver.IsOrImplements(bindingBehavior.AttributeClass!, BindingAttributeNames.BindNever))
+            {
+                return true;
+            }
+
+            return RouteAttributeReader.TryReadArgumentPassedTo(
+                    bindingBehavior,
+                    BindingAttributeNames.BindingBehavior,
+                    BindingAttributeNames.BindingBehaviorArgument,
+                    compilation,
+                    ct,
+                    out var behavior)
+                ? behavior is BindingAttributeNames.BindingBehaviorNever
+                : null;
         }
 
         /// <summary>
