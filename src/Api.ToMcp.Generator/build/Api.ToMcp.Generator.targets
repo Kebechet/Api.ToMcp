@@ -8,12 +8,24 @@
     <_McpConfigFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(ApiToMcpConfigPath)'))</_McpConfigFullPath>
   </PropertyGroup>
 
-  <!-- The generator reads its config from the AdditionalFiles item at this path, whatever the file is named. Set at
-       evaluation: the compiler-visible properties are written out before the targets below run.
+  <!-- The generator reads its config from the AdditionalFiles item at this path, whatever the file is named.
        See https://github.com/Kebechet/Api.ToMcp/issues/55 -->
   <ItemGroup>
     <CompilerVisibleProperty Include="_McpConfigFullPath" />
   </ItemGroup>
+
+  <!-- ApiToMcpConfigPath can be set after this file is imported, as in Directory.Build.targets, so the paths above are
+       worked out again from its final value. Before GenerateMSBuildEditorConfigFileCore, which writes the
+       compiler-visible properties out before BeforeCompile, and before the targets below, which use them. -->
+  <Target Name="ResolveMcpGeneratorConfigPath"
+          BeforeTargets="GenerateMSBuildEditorConfigFileCore;FindMcpGeneratorConfigCaseVariant">
+
+    <PropertyGroup>
+      <ApiToMcpConfigDirectory>$([System.IO.Path]::GetDirectoryName('$(ApiToMcpConfigPath)'))</ApiToMcpConfigDirectory>
+      <_McpConfigFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(ApiToMcpConfigPath)'))</_McpConfigFullPath>
+    </PropertyGroup>
+
+  </Target>
 
   <!-- On a case-sensitive file system the config can sit at a path that differs only in case, such as mcp/ for the
        default Mcp/, and Exists() misses it. Conditions compare case-insensitively, so this finds it, if the difference
