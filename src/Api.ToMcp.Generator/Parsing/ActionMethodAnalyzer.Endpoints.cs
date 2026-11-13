@@ -685,7 +685,7 @@ namespace Api.ToMcp.Generator.Parsing
             var type = input.Type;
 
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromRouteMetadata)))
-                return (EndpointBinding.Route, null, null);
+                return (EndpointBinding.Route, GetMetadataName(attributes, MinimalApiNames.FromRouteMetadata), null);
 
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromQueryMetadata)))
                 return (EndpointBinding.Query, GetMetadataName(attributes, MinimalApiNames.FromQueryMetadata), null);

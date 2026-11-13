@@ -99,4 +99,24 @@ namespace TestApi
         Assert.Contains($"var routeq_Order = System.Uri.EscapeDataString({Formatter}.Format(q.Order));", tool);
         Assert.Contains("AddQueryValue(queryParts, \"o.c\", q.City);", tool);
     }
+
+    [Theory]
+    [InlineData(@"([FromRoute(Name = ""orderId"")] int id) => id", "id")]
+    [InlineData(@"([AsParameters] OrderRoute route) => route.Id", "Id")]
+    public void EndpointParameter_FillsTheRouteValue_ItsFromRouteNameNames(string handler, string argumentName)
+    {
+        var source = MinimalApi($@"app.MapGet(""/orders/{{orderId}}"", {handler}).WithName(""Tool"");") + @"
+namespace TestApi
+{
+    public sealed record OrderRoute([FromRoute(Name = ""orderId"")] int Id);
+}
+";
+        var diagnostics = GetGeneratorDiagnostics(source, MinimalApisConfig);
+
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_ToolTool");
+
+        Assert.DoesNotContain(diagnostics, x => x.Id == UnbuildableEndpointId);
+        Assert.Contains($"var route = $\"/orders/{{route{argumentName}}}\";", tool);
+        Assert.Contains($"The argument '{argumentName}' fills the route value {{orderId}} of the API's URL", tool);
+    }
 }

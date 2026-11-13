@@ -396,7 +396,7 @@ namespace Api.ToMcp.Generator.Models
         /// attributes, then of its type's, implementing <c>IModelNameProvider</c> gives, such as <c>[FromQuery(Name = "q")]</c>,
         /// <c>[FromRoute(Name = "productId")]</c>, <c>[ModelBinder(Name = "q")]</c> or <c>[Bind(Prefix = "f")]</c>. It is the
         /// query key, the route value the parameter fills and the prefix of its properties; the tool's argument keeps the
-        /// parameter's own name. Of a Minimal API endpoint, the <c>Name</c> of its <c>[FromQuery]</c>.
+        /// parameter's own name. Of a Minimal API endpoint, the <c>Name</c> of its <c>[FromQuery]</c> or <c>[FromRoute]</c>.
         /// </summary>
         public string? ModelName { get; init; }
     }
