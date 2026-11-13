@@ -24,7 +24,7 @@ internal sealed class InProcessApiPipeline
     /// <summary>
     /// The default of <see cref="HttpClientHandler.MaxAutomaticRedirections"/>.
     /// </summary>
-    private const int MaxAutomaticRedirections = 50;
+    internal const int MaxAutomaticRedirections = 50;
 
     private readonly IHttpContextFactory _httpContextFactory;
     private readonly ILogger<InProcessApiPipeline> _logger;
@@ -131,7 +131,7 @@ internal sealed class InProcessApiPipeline
     /// request. Any other redirect is left to the caller, so a <c>Location</c> the app built from a <c>Host</c> header
     /// sends nothing anywhere.
     /// </summary>
-    private static Uri? GetRedirectTarget(HttpResponseMessage response, Uri requestUri, PathString forwardedPathBase)
+    internal static Uri? GetRedirectTarget(HttpResponseMessage response, Uri requestUri, PathString forwardedPathBase)
     {
         var location = response.Headers.Location;
         if (!IsRedirect((int)response.StatusCode) || location is null)
@@ -164,7 +164,7 @@ internal sealed class InProcessApiPipeline
     /// Whether <see cref="HttpClientHandler"/> sends the redirected request as a GET without a body: after a 303 any
     /// request but a GET or HEAD, and after a 300, 301 or 302 a POST. A 307 or 308 keeps the method and the body.
     /// </summary>
-    private static bool IsRedirectedAsGet(int statusCode, HttpMethod method)
+    internal static bool IsRedirectedAsGet(int statusCode, HttpMethod method)
     {
         return statusCode switch
         {

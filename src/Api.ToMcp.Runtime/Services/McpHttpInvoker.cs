@@ -7,6 +7,7 @@ using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -24,6 +25,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private readonly ILogger<McpHttpInvoker> _logger;
     private readonly McpScopeOptions _scopeOptions;
     private readonly InProcessApiPipeline? _inProcessPipeline;
+    private readonly string _forwardedProtoHeaderName;
 
     /// <summary>
     /// An invoker that sends every request over HTTP. Only the invoker <c>AddMcpTools</c> registers is handed the app's
@@ -45,7 +47,8 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         IHttpContextAccessor httpContextAccessor,
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions,
-        InProcessApiPipeline? inProcessPipeline)
+        InProcessApiPipeline? inProcessPipeline,
+        string? forwardedProtoHeaderName = null)
     {
         _httpClient = httpClient;
         _baseUrlProvider = baseUrlProvider;
@@ -53,6 +56,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         _logger = logger;
         _scopeOptions = scopeOptions.Value;
         _inProcessPipeline = inProcessPipeline;
+        _forwardedProtoHeaderName = forwardedProtoHeaderName ?? ForwardedHeadersDefaults.XForwardedProtoHeaderName;
     }
 
     public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
@@ -92,18 +96,73 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 
         using var request = new HttpRequestMessage(method, url);
         ConfigureRequest(request);
+        if (inProcessPipeline is null)
+        {
+            ForwardTheScheme(request, caller);
+        }
 
         if (jsonBody is not null)
         {
-            request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
+            request.Content = CreateJsonContent(jsonBody);
         }
 
         _logger.LogDebug("MCP invoking {Method} {Url}", method.Method, url);
 
         using var response = inProcessPipeline is not null
             ? await SendInProcessAsync(inProcessPipeline, request, caller, ct)
-            : await _httpClient.SendAsync(request, ct);
+            : await SendOverHttpAsync(request, jsonBody, ct);
         return await HandleResponse(response, ct);
+    }
+
+    /// <summary>
+    /// Sends the request over HTTP and follows a redirect as <see cref="InProcessApiPipeline"/> does: only back to the
+    /// scheme, host and port the tool called, so an action that redirects to a URL from its input cannot send the tool's
+    /// request to another server. Any other redirect comes back as it is. The invoker's client follows none itself,
+    /// unless the app gave it a handler of its own that does.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendOverHttpAsync(HttpRequestMessage request, string? jsonBody, CancellationToken ct)
+    {
+        var sent = request;
+        var body = jsonBody;
+        var response = await _httpClient.SendAsync(sent, ct);
+        for (var redirections = 0; redirections < InProcessApiPipeline.MaxAutomaticRedirections; redirections++)
+        {
+            var target = InProcessApiPipeline.GetRedirectTarget(response, sent.RequestUri!, PathString.Empty);
+            if (target is null)
+            {
+                return response;
+            }
+
+            var isRedirectedAsGet = InProcessApiPipeline.IsRedirectedAsGet((int)response.StatusCode, sent.Method);
+            if (isRedirectedAsGet)
+            {
+                body = null;
+            }
+
+            // HttpClient sends a request only once, so each hop is a new one. The hop leads back to the address the tool
+            // called, so it keeps Authorization, as in process.
+            var next = new HttpRequestMessage(isRedirectedAsGet ? HttpMethod.Get : sent.Method, target);
+            foreach (var header in sent.Headers)
+            {
+                next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            if (body is not null)
+            {
+                next.Content = CreateJsonContent(body);
+            }
+
+            response.Dispose();
+            if (sent != request)
+            {
+                sent.Dispose();
+            }
+
+            sent = next;
+            response = await _httpClient.SendAsync(sent, ct);
+        }
+
+        return response;
     }
 
     /// <summary>
@@ -168,8 +227,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     }
 
     /// <summary>
-    /// The route at the provider's address, used as given: <see cref="DefaultBaseUrlProvider"/> decides itself when an
-    /// address it took from the server bindings has to follow the request to <c>https://</c>.
+    /// The route at the provider's address, used as given, whatever host the MCP request names.
     /// </summary>
     private string BuildUrl(string route)
     {
@@ -184,6 +242,29 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private static string BuildInProcessUrl(HttpRequest caller, string route)
     {
         return caller.Scheme + Uri.SchemeDelimiter + caller.Host.ToUriComponent() + caller.PathBase.ToUriComponent() + NormalizeRoute(route);
+    }
+
+    /// <summary>
+    /// Tells the app that a request at an <c>http://</c> address on loopback stands for an MCP request that came in over
+    /// <c>https://</c>, whatever provider gave the address.
+    /// </summary>
+    private void ForwardTheScheme(HttpRequestMessage request, HttpContext? caller)
+    {
+        // When behind a reverse proxy, Kestrel only listens on HTTP but UseHttpsRedirection()
+        // redirects internal self-calls to HTTPS which doesn't exist locally. The app trusts the
+        // proxy's X-Forwarded-Proto, and ForwardedHeadersOptions trusts loopback, where a call to
+        // a loopback address comes from, by default, so the header keeps the call on HTTPS as its
+        // MCP request was. Off loopback the app would not trust it.
+        var url = request.RequestUri!;
+        if (caller is not null && caller.Request.IsHttps && url.Scheme == Uri.UriSchemeHttp && url.IsLoopback)
+        {
+            request.Headers.Add(_forwardedProtoHeaderName, Uri.UriSchemeHttps);
+        }
+    }
+
+    private static StringContent CreateJsonContent(string jsonBody)
+    {
+        return new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
     }
 
     private static string NormalizeRoute(string route)
