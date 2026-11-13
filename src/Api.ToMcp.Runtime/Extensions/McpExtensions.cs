@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -57,7 +58,8 @@ public static class McpExtensions
             serviceProvider.GetRequiredService<IHttpContextAccessor>(),
             serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
             serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
-            serviceProvider.GetRequiredService<InProcessApiPipeline>()));
+            serviceProvider.GetRequiredService<InProcessApiPipeline>(),
+            serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value.ForwardedProtoHeaderName));
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
         services.TryAddSingleton<McpOutputSchemaBuilder>();

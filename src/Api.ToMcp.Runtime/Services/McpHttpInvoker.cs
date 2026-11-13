@@ -25,6 +25,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private readonly ILogger<McpHttpInvoker> _logger;
     private readonly McpScopeOptions _scopeOptions;
     private readonly InProcessApiPipeline? _inProcessPipeline;
+    private readonly string _forwardedProtoHeaderName;
 
     /// <summary>
     /// An invoker that sends every request over HTTP. Only the invoker <c>AddMcpTools</c> registers is handed the app's
@@ -46,7 +47,8 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         IHttpContextAccessor httpContextAccessor,
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions,
-        InProcessApiPipeline? inProcessPipeline)
+        InProcessApiPipeline? inProcessPipeline,
+        string? forwardedProtoHeaderName = null)
     {
         _httpClient = httpClient;
         _baseUrlProvider = baseUrlProvider;
@@ -54,6 +56,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         _logger = logger;
         _scopeOptions = scopeOptions.Value;
         _inProcessPipeline = inProcessPipeline;
+        _forwardedProtoHeaderName = forwardedProtoHeaderName ?? ForwardedHeadersDefaults.XForwardedProtoHeaderName;
     }
 
     public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
@@ -95,7 +98,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         ConfigureRequest(request);
         if (inProcessPipeline is null)
         {
-            ForwardTheScheme(request);
+            ForwardTheScheme(request, caller);
         }
 
         if (jsonBody is not null)
@@ -191,17 +194,20 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     }
 
     /// <summary>
-    /// Tells the app that a request at the server's own <c>http://</c> binding stands for an MCP request that came in over
-    /// <c>https://</c>, as <see cref="DefaultBaseUrlProvider.GetForwardedScheme"/> decides. The address of a provider of
-    /// the app's own is used as it is.
+    /// Tells the app that a request at an <c>http://</c> address on loopback stands for an MCP request that came in over
+    /// <c>https://</c>, whatever provider gave the address.
     /// </summary>
-    private void ForwardTheScheme(HttpRequestMessage request)
+    private void ForwardTheScheme(HttpRequestMessage request, HttpContext? caller)
     {
-        var defaultBaseUrlProvider = _baseUrlProvider as DefaultBaseUrlProvider;
-        var forwardedScheme = defaultBaseUrlProvider?.GetForwardedScheme();
-        if (forwardedScheme is not null)
+        // When behind a reverse proxy, Kestrel only listens on HTTP but UseHttpsRedirection()
+        // redirects internal self-calls to HTTPS which doesn't exist locally. The app trusts the
+        // proxy's X-Forwarded-Proto, and ForwardedHeadersOptions trusts loopback, where a call to
+        // a loopback address comes from, by default, so the header keeps the call on HTTPS as its
+        // MCP request was. Off loopback the app would not trust it.
+        var url = request.RequestUri!;
+        if (caller is not null && caller.Request.IsHttps && url.Scheme == Uri.UriSchemeHttp && url.IsLoopback)
         {
-            request.Headers.Add(ForwardedHeadersDefaults.XForwardedProtoHeaderName, forwardedScheme);
+            request.Headers.Add(_forwardedProtoHeaderName, Uri.UriSchemeHttps);
         }
     }
 

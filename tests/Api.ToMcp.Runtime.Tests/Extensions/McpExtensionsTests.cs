@@ -251,10 +251,10 @@ public class McpExtensionsTests
     [Fact]
     public void AddMcpTools_RegistersABaseUrlProvider_ThatSeesTheRequest()
     {
-        // A call to an http binding forwards the scheme of a request that came in over https, which the provider can tell
-        // only from the request; the request's host it never follows.
+        // An https request may not go to an http binding off loopback, which the provider can tell only from the request;
+        // the request's host it never follows.
         var addresses = new ServerAddressesFeature();
-        addresses.Addresses.Add("http://+:8080");
+        addresses.Addresses.Add("http://10.0.0.5:8080");
         var features = new FeatureCollection();
         features.Set<IServerAddressesFeature>(addresses);
         var server = new Mock<IServer>();
@@ -272,10 +272,9 @@ public class McpExtensionsTests
         httpContext.Request.Host = new HostString("api.example.com");
         provider.GetRequiredService<IHttpContextAccessor>().HttpContext = httpContext;
 
-        var baseUrlProvider = Assert.IsType<DefaultBaseUrlProvider>(provider.GetRequiredService<ISelfBaseUrlProvider>());
+        var baseUrlProvider = provider.GetRequiredService<ISelfBaseUrlProvider>();
 
-        Assert.Equal("http://localhost:8080", baseUrlProvider.GetBaseUrl());
-        Assert.Equal("https", baseUrlProvider.GetForwardedScheme());
+        Assert.Throws<InvalidOperationException>(() => baseUrlProvider.GetBaseUrl());
     }
 
     [Fact]

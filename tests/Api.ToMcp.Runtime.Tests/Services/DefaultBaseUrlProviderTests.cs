@@ -32,53 +32,86 @@ public class DefaultBaseUrlProviderTests
         Assert.Equal("http://localhost:8080", provider.GetBaseUrl());
     }
 
-    [Fact]
-    public void GetForwardedScheme_IsHttps_ForAnHttpsRequest_AtAnHttpBinding()
+    [Theory]
+    [InlineData("http://unix:/run/app.sock", "http://localhost:5000", "http://localhost:5000")]
+    [InlineData("http://pipe:/app", "http://+:8080", "http://localhost:8080")]
+    public void GetBaseUrl_SkipsAUnixSocketAndANamedPipe(string nonTcpAddress, string tcpAddress, string expected)
     {
-        // Behind a TLS-terminating proxy UseHttpsRedirection would redirect a call to the http binding to an https
-        // port nothing listens on locally, unless the call says it stands for an https request.
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, request: ("https", "api.example.com"));
+        // An HTTP client takes "unix" or "pipe" for the host, so a call there fails.
+        var provider = CreateProvider([nonTcpAddress, tcpAddress], configuredBaseUrl: null, request: ("https", "api.example.com"));
 
-        Assert.Equal("https", provider.GetForwardedScheme());
+        Assert.Equal(expected, provider.GetBaseUrl());
+    }
+
+    [Theory]
+    [InlineData("http://unix:/run/app.sock")]
+    [InlineData(@"http://unix:C:\temp\app.sock")]
+    [InlineData("http://pipe:/app")]
+    public void GetBaseUrl_SaysToSetTheBaseUrl_WhenTheServerIsBoundOnlyToAUnixSocketOrANamedPipe(string address)
+    {
+        var provider = CreateProvider([address], configuredBaseUrl: null, request: ("https", "api.example.com"));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => provider.GetBaseUrl());
+
+        Assert.Contains("unix socket or a named pipe", exception.Message);
+        Assert.Contains("McpTools:BaseUrl", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("http://10.0.0.5:8080", "http://127.0.0.1:8081", "http://127.0.0.1:8081")]
+    [InlineData("http://api.corp.example", "http://*:8080", "http://localhost:8080")]
+    [InlineData("http://api.corp.example", "http://localhost:8080", "http://localhost:8080")]
+    public void GetBaseUrl_PrefersAnHttpBindingOnLoopback_OverOneOffIt(string offLoopback, string onLoopback, string expected)
+    {
+        // The app's forwarded headers trust loopback by default, where a call to a loopback address comes from.
+        var provider = CreateProvider([offLoopback, onLoopback], configuredBaseUrl: null, request: ("https", "api.example.com"));
+
+        Assert.Equal(expected, provider.GetBaseUrl());
+    }
+
+    [Theory]
+    [InlineData("http://10.0.0.5:8080")]
+    [InlineData("http://api.corp.example")]
+    public void GetBaseUrl_RefusesAnHttpsRequest_WhenTheOnlyBindingIsAnHttpOneOffLoopback(string address)
+    {
+        // The caller's token would go in clear text off the machine, and the app would take the call for HTTP.
+        var provider = CreateProvider([address], configuredBaseUrl: null, request: ("https", "api.example.com"));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => provider.GetBaseUrl());
+
+        Assert.Contains(address, exception.Message);
+        Assert.Contains("McpTools:BaseUrl", exception.Message);
     }
 
     [Fact]
-    public void GetForwardedScheme_IsNull_ForAnHttpRequest()
+    public void GetBaseUrl_CallsAnHttpBindingOffLoopback_ForAnHttpRequest()
     {
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, request: ("http", "localhost:8080"));
+        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: null, request: ("http", "10.0.0.5:8080"));
 
-        Assert.Null(provider.GetForwardedScheme());
+        Assert.Equal("http://10.0.0.5:8080", provider.GetBaseUrl());
     }
 
     [Fact]
-    public void GetForwardedScheme_IsNull_OutsideARequest()
+    public void GetBaseUrl_CallsAnHttpBindingOffLoopback_OutsideARequest()
     {
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, request: null);
+        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: null, request: null);
 
-        Assert.Null(provider.GetForwardedScheme());
+        Assert.Equal("http://10.0.0.5:8080", provider.GetBaseUrl());
     }
 
     [Fact]
-    public void GetForwardedScheme_IsNull_ForTheConfiguredHttpAddress()
+    public void GetBaseUrl_UsesTheConfiguredHttpAddressOffLoopbackAsGiven_ForAnHttpsRequest()
     {
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: "http://localhost:5080", request: ("https", "api.example.com"));
+        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: "http://api.internal:8080", request: ("https", "api.example.com"));
 
-        Assert.Null(provider.GetForwardedScheme());
+        Assert.Equal("http://api.internal:8080", provider.GetBaseUrl());
     }
 
     [Fact]
-    public void GetForwardedScheme_IsNull_AtAnHttpsBinding()
-    {
-        var provider = CreateProvider(["http://+:8080", "https://+:8443"], configuredBaseUrl: null, request: ("https", "api.example.com"));
-
-        Assert.Null(provider.GetForwardedScheme());
-    }
-
-    [Fact]
-    public void GetForwardedScheme_IsNull_ForAProviderThatCannotSeeTheRequest()
+    public void GetBaseUrl_CallsAnHttpBindingOffLoopback_ForAProviderThatCannotSeeTheRequest()
     {
         var addressesFeature = new ServerAddressesFeature();
-        addressesFeature.Addresses.Add("http://+:8080");
+        addressesFeature.Addresses.Add("http://10.0.0.5:8080");
         var features = new FeatureCollection();
         features.Set<IServerAddressesFeature>(addressesFeature);
         var server = new Mock<IServer>();
@@ -86,7 +119,7 @@ public class DefaultBaseUrlProviderTests
 
         var provider = new DefaultBaseUrlProvider(server.Object, new ConfigurationBuilder().Build());
 
-        Assert.Null(provider.GetForwardedScheme());
+        Assert.Equal("http://10.0.0.5:8080", provider.GetBaseUrl());
     }
 
     [Fact]
@@ -114,18 +147,17 @@ public class DefaultBaseUrlProviderTests
     }
 
     [Fact]
-    public void GetForwardedScheme_IsDecidedForEachRequest()
+    public void GetBaseUrl_DecidesTheRefusalForEachRequest()
     {
         var httpContextAccessor = new HttpContextAccessor();
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, httpContextAccessor);
+        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: null, httpContextAccessor);
 
+        httpContextAccessor.HttpContext = CreateHttpContext("http", "10.0.0.5:8080");
+        var direct = provider.GetBaseUrl();
         httpContextAccessor.HttpContext = CreateHttpContext("https", "api.example.com");
-        var throughProxy = (provider.GetBaseUrl(), provider.GetForwardedScheme());
-        httpContextAccessor.HttpContext = CreateHttpContext("http", "localhost:8080");
-        var direct = (provider.GetBaseUrl(), provider.GetForwardedScheme());
 
-        Assert.Equal(("http://localhost:8080", "https"), throughProxy);
-        Assert.Equal(("http://localhost:8080", (string?)null), direct);
+        Assert.Equal("http://10.0.0.5:8080", direct);
+        Assert.Throws<InvalidOperationException>(() => provider.GetBaseUrl());
     }
 
     private static DefaultBaseUrlProvider CreateProvider(string[] boundAddresses, string? configuredBaseUrl, (string Scheme, string Host)? request)
