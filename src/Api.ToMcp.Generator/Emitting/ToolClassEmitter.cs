@@ -21,7 +21,7 @@ namespace Api.ToMcp.Generator.Emitting
         private const string RequiredScopeAttribute = "global::Api.ToMcp.Runtime.McpRequiredScope";
         private const string NullLiteral = "null";
         private const string RouteVariablePrefix = "route";
-        private const string PathSeparator = "/";
+        private const string PathSeparator = RouteTokens.PathSeparatorText;
         private const string ComplexSegmentSeparator = ".";
         private const char NextLine = (char)0x0085;
         private const char LineSeparator = (char)0x2028;

@@ -74,7 +74,7 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
         var configuredUrl = _configuration[BaseUrlConfigurationKey];
         if (!string.IsNullOrEmpty(configuredUrl))
         {
-            return new ResolvedBaseUrl(configuredUrl.TrimEnd('/'), IsHttpBinding: false);
+            return new ResolvedBaseUrl(configuredUrl.TrimEnd(RouteTokens.PathSeparator), IsHttpBinding: false);
         }
 
         // Prefer HTTPS addresses from IServerAddressesFeature for direct localhost self-calls.
@@ -108,7 +108,7 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
     /// </summary>
     internal static string NormalizeBindingAddress(string address)
     {
-        var trimmed = address.TrimEnd('/');
+        var trimmed = address.TrimEnd(RouteTokens.PathSeparator);
 
         var schemeEnd = trimmed.IndexOf(Uri.SchemeDelimiter, StringComparison.Ordinal);
         if (schemeEnd < 0)

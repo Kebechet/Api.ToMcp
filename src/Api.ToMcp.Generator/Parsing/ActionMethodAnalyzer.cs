@@ -957,23 +957,28 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         private static bool IsAbsoluteTemplate(string? template)
         {
-            return template != null && (template.StartsWith("/") || template.StartsWith("~/"));
+            return template is not null &&
+                (template.StartsWith(RouteTokens.PathSeparatorText, StringComparison.Ordinal) ||
+                 template.StartsWith(RouteTokens.AppRelativePrefix, StringComparison.Ordinal));
         }
 
         private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
         {
             if (IsAbsoluteTemplate(template))
-                return ReplaceRouteTokens($"/{template!.TrimStart('~').TrimStart('/').TrimEnd('/')}", controllerName, actionName);
+            {
+                var path = template!.TrimStart(RouteTokens.AppRelativeMarker).TrimStart(RouteTokens.PathSeparator).TrimEnd(RouteTokens.PathSeparator);
+                return ReplaceRouteTokens($"{RouteTokens.PathSeparator}{path}", controllerName, actionName);
+            }
 
             var parts = new List<string>();
 
             if (!string.IsNullOrEmpty(prefix))
-                parts.Add(prefix!.TrimStart('/').TrimEnd('/'));
+                parts.Add(prefix!.TrimStart(RouteTokens.PathSeparator).TrimEnd(RouteTokens.PathSeparator));
 
             if (!string.IsNullOrEmpty(template))
-                parts.Add(template!.TrimStart('/').TrimEnd('/'));
+                parts.Add(template!.TrimStart(RouteTokens.PathSeparator).TrimEnd(RouteTokens.PathSeparator));
 
-            return ReplaceRouteTokens($"/{string.Join("/", parts)}", controllerName, actionName);
+            return ReplaceRouteTokens($"{RouteTokens.PathSeparator}{string.Join(RouteTokens.PathSeparatorText, parts)}", controllerName, actionName);
         }
 
         /// <summary>

@@ -74,7 +74,7 @@ namespace Api.ToMcp.Generator.Parsing
     /// </summary>
     internal static class RouteGroupResolver
     {
-        private const char PathSeparator = '/';
+        private const char PathSeparator = RouteTokens.PathSeparator;
 
         /// <summary>
         /// How many steps deep the generator follows a builder through the app's methods, and how many routes one endpoint

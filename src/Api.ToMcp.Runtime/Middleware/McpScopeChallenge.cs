@@ -30,7 +30,7 @@ internal sealed class McpScopeChallenge
     /// </summary>
     private const string DefaultResourceMetadataPath = "/.well-known/oauth-protected-resource";
 
-    private const char PathSeparator = '/';
+    private const char PathSeparator = RouteTokens.PathSeparator;
     private const string BearerScheme = "Bearer";
     private const string InsufficientScopeError = "insufficient_scope";
     private const string ScopeSeparator = " ";
