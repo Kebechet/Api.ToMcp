@@ -19,7 +19,7 @@ namespace Api.ToMcp.Generator.Emitting
     /// </summary>
     internal static class RouteEndResolver
     {
-        private const char PathSeparator = '/';
+        private const char PathSeparator = RouteTokens.PathSeparator;
         private const string ComplexSegmentSeparator = ".";
 
         private enum SegmentKind
