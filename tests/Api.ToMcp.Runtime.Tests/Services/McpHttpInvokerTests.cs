@@ -1035,4 +1035,98 @@ public class McpHttpInvokerTests
     }
 
     #endregion
+
+    #region SendAsync Tests
+
+    [Fact]
+    public async Task SendAsync_SendsTheHeadersAndTheForm_NextToTheInvokersOwnHeaders()
+    {
+        SetupHttpContext("Bearer caller-token");
+        string? tenants = null;
+        string? authorization = null;
+        string? internalCall = null;
+        string? contentType = null;
+        string? form = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", request =>
+        {
+            tenants = string.Join("|", request.Headers.GetValues("X-Tenant"));
+            authorization = request.Headers.Authorization?.ToString();
+            internalCall = string.Join("|", request.Headers.GetValues(LoopPreventionHeader));
+            contentType = request.Content?.Headers.ContentType?.ToString();
+            form = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+        });
+
+        var result = await CreateInvoker().SendAsync(new McpHttpRequest(HttpMethod.Put, "/api/reviews")
+        {
+            Headers = [new("X-Tenant", "t1"), new("X-Tenant", "t2")],
+            FormBody = "rating=5&comment=Fast%20and%20quiet"
+        });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal("t1|t2", tenants);
+        Assert.Equal("Bearer caller-token", authorization);
+        Assert.Equal("true", internalCall);
+        Assert.Equal("application/x-www-form-urlencoded; charset=utf-8", contentType);
+        Assert.Equal("rating=5&comment=Fast%20and%20quiet", form);
+    }
+
+    [Fact]
+    public async Task SendAsync_SendsAHeaderNextToAJsonBody()
+    {
+        string? key = null;
+        string? body = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", request =>
+        {
+            key = string.Join("|", request.Headers.GetValues("Idempotency-Key"));
+            body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+        });
+
+        await CreateInvoker().SendAsync(new McpHttpRequest(HttpMethod.Post, "/api/reviews")
+        {
+            JsonBody = "{\"rating\":5}",
+            Headers = [new("Idempotency-Key", "k-1")]
+        });
+
+        Assert.Equal("k-1", key);
+        Assert.Equal("{\"rating\":5}", body);
+    }
+
+    [Theory]
+    [InlineData("Authorization")]
+    [InlineData("cookie")]
+    [InlineData("HOST")]
+    [InlineData("x-mcp-internal-call")]
+    [InlineData("Transfer-Encoding")]
+    [InlineData("traceparent")]
+    [InlineData("Content-Type")]
+    [InlineData("Content-Language")]
+    [InlineData("X Tenant")]
+    public async Task SendAsync_RefusesAHeaderTheToolsRequestNeverTakesFromATool(string name)
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var request = new McpHttpRequest(HttpMethod.Get, "/api/x") { Headers = [new(name, "value")] };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateInvoker().SendAsync(request));
+        Assert.Null(capturedRequest);
+    }
+
+    [Fact]
+    public async Task SendAsync_RefusesAHeaderValueAnHttpHeaderCannotCarry()
+    {
+        var request = new McpHttpRequest(HttpMethod.Get, "/api/x") { Headers = [new("X-Tenant", "a\r\nX-Injected: 1")] };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateInvoker().SendAsync(request));
+    }
+
+    [Fact]
+    public async Task SendAsync_RefusesARequestWithAJsonBodyAndAForm()
+    {
+        var request = new McpHttpRequest(HttpMethod.Post, "/api/x") { JsonBody = "{}", FormBody = "a=1" };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateInvoker().SendAsync(request));
+    }
+
+    #endregion
 }

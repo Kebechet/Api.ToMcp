@@ -152,6 +152,26 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
+    public async Task SendAsync_SendsTheHeadersAndTheForm_InProcess()
+    {
+        _accessor.HttpContext = CreateCaller();
+        var invoker = CreateInvoker(BuildEchoPipeline());
+
+        var result = await invoker.SendAsync(new McpHttpRequest(HttpMethod.Post, "/api/products/7/reviews")
+        {
+            Headers = [new("X-Tenant", "t1"), new("X-Tenant", "t2")],
+            FormBody = "rating=5&comment=Fast%20and%20quiet"
+        });
+
+        var seen = Echoed(result);
+        Assert.Equal(["t1", "t2"], seen.GetProperty("tenants").EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal("Bearer caller-token", seen.GetProperty("authorization").GetString());
+        Assert.Equal("application/x-www-form-urlencoded; charset=utf-8", seen.GetProperty("contentType").GetString());
+        Assert.Equal("rating=5&comment=Fast%20and%20quiet", seen.GetProperty("body").GetString());
+        Assert.Empty(_httpHandler.Requests);
+    }
+
+    [Fact]
     public async Task GetAsync_ServesTheRequestInProcess_AtTheProvidersAddress_OutsideAnMcpRequest()
     {
         var invoker = CreateInvoker(BuildEchoPipeline());
@@ -260,6 +280,7 @@ public class McpHttpInvokerInProcessTests
                 ["internalCall"] = context.Request.Headers["X-MCP-Internal-Call"].ToString(),
                 ["forwardedProto"] = context.Request.Headers["X-Forwarded-Proto"].ToString(),
                 ["contentType"] = context.Request.ContentType,
+                ["tenants"] = context.Request.Headers["X-Tenant"].ToArray(),
                 ["body"] = body
             });
         }));

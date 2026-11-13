@@ -10,7 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
-/// Writes tool arguments into route segments and query strings in the form ASP.NET Core model binding
+/// Writes tool arguments into route segments, query strings, forms and headers in the form ASP.NET Core model binding
 /// reads them back. Route and query values are bound with the invariant culture, so a plain
 /// <c>ToString()</c> breaks as soon as the server runs under any real culture: a <see cref="DateOnly"/>
 /// becomes "9/28/2026" and the endpoint answers 400.
@@ -71,6 +71,34 @@ public static class McpRequestValueFormatter
         BindingSource.Special
     ];
 
+    /// <summary>
+    /// The sources an attribute such as <c>[FromQuery]</c> names that the fields of an
+    /// <c>application/x-www-form-urlencoded</c> form never fill.
+    /// </summary>
+    private static readonly BindingSource[] SourcesNotFilledByTheForm =
+    [
+        BindingSource.Header,
+        BindingSource.Query,
+        BindingSource.Path,
+        BindingSource.FormFile,
+        BindingSource.Services,
+        BindingSource.Body,
+        BindingSource.Special
+    ];
+
+    /// <summary>
+    /// The characters besides visible ASCII ones that an HTTP header value may hold (RFC 9110, section 5.5); Kestrel
+    /// refuses a request with any other, and <c>HttpClient</c> sends none.
+    /// </summary>
+    private const string HeaderWhitespace = " \t";
+
+    /// <summary>
+    /// The separator MVC splits a header's value at to read an array (<c>GetCommaSeparatedValues</c>), and the quote
+    /// that keeps an item holding it whole.
+    /// </summary>
+    private const char HeaderValueSeparator = ',';
+    private const char HeaderValueQuote = '"';
+
     private static readonly ConcurrentDictionary<Type, bool> IsScalarByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasModelBinderByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
@@ -78,10 +106,12 @@ public static class McpRequestValueFormatter
     private static readonly ConcurrentDictionary<Type, bool> IsNotBoundFromTheQueryByType = new();
 
     /// <summary>
-    /// What MVC reads of each type's properties from the query string, decided on the type's first call, so that a call
-    /// only reads the values. Like the caches above, it holds one entry per type a tool sends, not per call.
+    /// The query string and the form, each with what MVC reads of each type's properties from it, decided on the type's
+    /// first call, so that a call only reads the values. Like the caches above, each holds one entry per type a tool
+    /// sends, not per call.
     /// </summary>
-    private static readonly ConcurrentDictionary<Type, QueryProperty[]> QueryPropertiesByType = new();
+    private static readonly RequestPart Query = new(SourcesNotFilledByTheQuery);
+    private static readonly RequestPart Form = new(SourcesNotFilledByTheForm);
 
     /// <summary>
     /// Whether a route value, as a tool writes it into the URL, sends the request to another path: empty where the route
@@ -141,10 +171,62 @@ public static class McpRequestValueFormatter
     /// </summary>
     public static void AddQueryValue(List<string> queryParts, string name, object? value)
     {
-        AddValue(queryParts, name, value, depth: 0);
+        AddValue(queryParts, name, value, depth: 0, Query);
     }
 
-    private static void AddValue(List<string> queryParts, string key, object? value, int depth)
+    /// <summary>
+    /// Adds a field of an <c>application/x-www-form-urlencoded</c> form, in the form <see cref="AddQueryValue"/> adds a
+    /// query parameter, which is the form's encoding too, so the parts joined with <c>&amp;</c> are the form. An object
+    /// adds each property MVC reads from the form, under the <c>name.Property</c> keys its form binding reads: not one
+    /// that a binding attribute such as <c>[FromQuery]</c> or <c>[FromHeader]</c> binds from elsewhere, nor a form file.
+    /// </summary>
+    public static void AddFormValue(List<string> formParts, string name, object? value)
+    {
+        AddValue(formParts, name, value, depth: 0, Form);
+    }
+
+    /// <summary>
+    /// Adds a request header, its value written as a query value is. A null value adds nothing, and a collection one
+    /// value per item, which MVC reads back as the items of an array once it splits the header at its commas; an item
+    /// that holds a comma goes in quotes, which MVC removes. False, and nothing added, when a value holds a character an
+    /// HTTP header cannot carry: only visible ASCII characters, spaces and tabs.
+    /// </summary>
+    public static bool TryAddHeaderValue(List<KeyValuePair<string, string>> headers, string name, object? value)
+    {
+        if (value is null)
+        {
+            return true;
+        }
+
+        var items = value as IEnumerable;
+        var values = items is not null && !IsScalar(value.GetType())
+            ? items.Cast<object?>().Where(x => x is not null).Select(x => QuoteHeaderItem(Format(x))).ToList()
+            : [Format(value)];
+        if (!values.All(IsHeaderValue))
+        {
+            return false;
+        }
+
+        headers.AddRange(values.Select(x => new KeyValuePair<string, string>(name, x)));
+        return true;
+    }
+
+    /// <summary>
+    /// Whether HTTP lets a header carry the value: visible ASCII characters, spaces and tabs only.
+    /// </summary>
+    internal static bool IsHeaderValue(string value)
+    {
+        return value.All(x => x is >= '!' and <= '~' || HeaderWhitespace.Contains(x));
+    }
+
+    private static string QuoteHeaderItem(string item)
+    {
+        return item.Contains(HeaderValueSeparator) && !item.Contains(HeaderValueQuote)
+            ? HeaderValueQuote + item + HeaderValueQuote
+            : item;
+    }
+
+    private static void AddValue(List<string> queryParts, string key, object? value, int depth, RequestPart part)
     {
         if (value is null || IsNotBoundFromTheQuery(value.GetType()))
         {
@@ -183,14 +265,14 @@ public static class McpRequestValueFormatter
 
                 if (IsScalar(item.GetType()) || HasModelBinder(item.GetType()))
                 {
-                    AddValue(queryParts, key, item, depth + 1);
+                    AddValue(queryParts, key, item, depth + 1, part);
                     continue;
                 }
 
                 // An object item expands into Items[0].Property keys, a nested collection repeats Items[0] per value.
                 // An item that adds nothing (only null properties, an empty collection) takes no index.
                 var queryPartCountBeforeItem = queryParts.Count;
-                AddValue(queryParts, $"{key}[{index}]", item, depth + 1);
+                AddValue(queryParts, $"{key}[{index}]", item, depth + 1, part);
                 if (queryParts.Count > queryPartCountBeforeItem)
                 {
                     index++;
@@ -200,7 +282,7 @@ public static class McpRequestValueFormatter
             return;
         }
 
-        AddProperties(queryParts, key, value, depth + 1);
+        AddProperties(queryParts, key, value, depth + 1, part);
     }
 
     private static void AddWholeValue(List<string> queryParts, string key, object value)
@@ -229,9 +311,9 @@ public static class McpRequestValueFormatter
         }
     }
 
-    private static void AddProperties(List<string> queryParts, string prefix, object value, int depth)
+    private static void AddProperties(List<string> queryParts, string prefix, object value, int depth, RequestPart part)
     {
-        foreach (var property in GetQueryProperties(value.GetType()))
+        foreach (var property in GetQueryProperties(value.GetType(), part))
         {
             // An empty name adds no segment to the key, as MVC joins it (ModelNames.CreatePropertyModelName).
             var key = property.Key.Length == 0 ? prefix : $"{prefix}.{property.Key}";
@@ -242,20 +324,20 @@ public static class McpRequestValueFormatter
                 continue;
             }
 
-            AddValue(queryParts, key, propertyValue, depth);
+            AddValue(queryParts, key, propertyValue, depth, part);
         }
     }
 
-    private static QueryProperty[] GetQueryProperties(Type type)
+    private static QueryProperty[] GetQueryProperties(Type type, RequestPart part)
     {
-        return QueryPropertiesByType.GetOrAdd(type, FindQueryProperties);
+        return part.PropertiesByType.GetOrAdd(type, static (x, unfilledSources) => FindQueryProperties(x, unfilledSources), part.UnfilledSources);
     }
 
     /// <summary>
-    /// The properties of the type MVC can read from the query string, in the order the type gives them, each with the key
-    /// it reads it under and whether a model binder of its own reads it.
+    /// The properties of the type MVC can read from the query string, or from the form, in the order the type gives them,
+    /// each with the key it reads it under and whether a model binder of its own reads it.
     /// </summary>
-    private static QueryProperty[] FindQueryProperties(Type type)
+    private static QueryProperty[] FindQueryProperties(Type type, BindingSource[] unfilledSources)
     {
         var queryProperties = new List<QueryProperty>();
         foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -269,7 +351,7 @@ public static class McpRequestValueFormatter
 
             // Decided before the property is read, so a value that is not sent is never read into either.
             var (attributes, isConstructorParameter) = GetBindingAttributes(type, property);
-            if (!IsBoundFromTheQuery(type, property.PropertyType, attributes, isConstructorParameter))
+            if (!IsBoundFrom(type, property.PropertyType, attributes, isConstructorParameter, unfilledSources))
             {
                 continue;
             }
@@ -296,12 +378,13 @@ public static class McpRequestValueFormatter
     }
 
     /// <summary>
-    /// Whether MVC can read the property from the query string: not when its type is bound from a source of its own,
-    /// when <c>[BindNever]</c> on it or on its class excludes it, or when a binding attribute names a source the query
-    /// string never fills, <c>[FromHeader]</c>, <c>[FromForm]</c>, <c>[FromServices]</c>, <c>[FromKeyedServices]</c> or
-    /// <c>[FromBody]</c>. A property with a model binder of its own reads its key from the query string as well.
+    /// Whether MVC can read the property from the query string, or from the form: not when its type is bound from a
+    /// source of its own, when <c>[BindNever]</c> on it or on its class excludes it, or when a binding attribute names a
+    /// source of <paramref name="unfilledSources"/> or <c>[FromKeyedServices]</c>: for the query string
+    /// <c>[FromHeader]</c>, <c>[FromForm]</c>, <c>[FromServices]</c> or <c>[FromBody]</c>. A property with a model binder of
+    /// its own reads its key from the query string and the form as well.
     /// </summary>
-    private static bool IsBoundFromTheQuery(Type type, Type propertyType, object[] attributes, bool isConstructorParameter)
+    private static bool IsBoundFrom(Type type, Type propertyType, object[] attributes, bool isConstructorParameter, BindingSource[] unfilledSources)
     {
         if (IsNotBoundFromTheQuery(propertyType))
         {
@@ -324,7 +407,7 @@ public static class McpRequestValueFormatter
 
         var bindingSource = attributes.OfType<IBindingSourceMetadata>().Select(x => x.BindingSource).FirstOrDefault(x => x is not null);
 
-        return bindingSource is null || !SourcesNotFilledByTheQuery.Contains(bindingSource);
+        return bindingSource is null || !unfilledSources.Contains(bindingSource);
     }
 
     /// <summary>
@@ -477,10 +560,21 @@ public static class McpRequestValueFormatter
     }
 
     /// <summary>
-    /// A property MVC can read from the query string.
+    /// A property MVC can read from the query string, or from the form.
     /// </summary>
     /// <param name="Property">The property, read on each call.</param>
     /// <param name="Key">The key MVC reads it under after the prefix: the name a binding attribute gives it, else its own.</param>
     /// <param name="HasModelBinder">Whether a model binder of its own reads it, which takes its value whole.</param>
     private sealed record QueryProperty(PropertyInfo Property, string Key, bool HasModelBinder);
+
+    /// <summary>
+    /// A part of the request a value goes into, by the binding sources that never fill it, with what MVC reads of each
+    /// type's properties from it.
+    /// </summary>
+    private sealed class RequestPart(BindingSource[] unfilledSources)
+    {
+        public BindingSource[] UnfilledSources { get; } = unfilledSources;
+
+        public ConcurrentDictionary<Type, QueryProperty[]> PropertiesByType { get; } = new();
+    }
 }
