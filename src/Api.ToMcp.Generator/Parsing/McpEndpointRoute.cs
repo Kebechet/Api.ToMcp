@@ -1,4 +1,5 @@
 using System;
+using Api.ToMcp.Generator.Models;
 
 namespace Api.ToMcp.Generator.Parsing
 {
@@ -14,7 +15,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         public const string Route = "/mcp";
 
-        private const string PathSeparator = "/";
+        private const string PathSeparator = RouteTokens.PathSeparatorText;
 
         /// <summary>
         /// Whether <paramref name="route"/> is <c>/mcp</c> or a path under it, with or without its leading slash and in any
