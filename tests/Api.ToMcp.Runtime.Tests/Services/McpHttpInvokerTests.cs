@@ -3,10 +3,12 @@ using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using ModelContextProtocol.Protocol;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -1155,6 +1157,79 @@ public class McpHttpInvokerTests
         var request = new McpHttpRequest(HttpMethod.Post, "/api/x") { JsonBody = "{}", FormBody = "a=1" };
 
         await Assert.ThrowsAsync<ArgumentException>(() => CreateInvoker().SendAsync(request));
+    }
+
+    [Theory]
+    [InlineData("X-Azure-ClientIP")]
+    [InlineData("x-gateway-cert")]
+    public async Task SendAsync_ReturnsAnErrorResultNamingTheArgument_ForAHeaderTheAppTrustsFromItsProxy(string headerName)
+    {
+        // UseForwardedHeaders would take the client's address from the AI's value, and UseCertificateForwarding the
+        // client certificate, which certificate authentication signs the user in with.
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+        var invoker = CreateInvokerTrustingProxyHeaders(
+            new ForwardedHeadersOptions { ForwardedForHeaderName = "X-Azure-ClientIP" },
+            new CertificateForwardingOptions { CertificateHeader = "X-Gateway-Cert" });
+        var request = new McpHttpRequest(HttpMethod.Get, "/api/x")
+        {
+            Headers = [new("X-Tenant", "t1"), new(headerName, "value")],
+            HeaderArguments = new Dictionary<string, string> { ["X-Tenant"] = "tenant", [headerName] = "client" }
+        };
+
+        var result = await invoker.SendAsync(request);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            $"The argument 'client' is sent as the request header '{headerName}', which the app trusts from its proxy: its ForwardedHeadersOptions " +
+            "or CertificateForwardingOptions name it, and its value would become the client's address, scheme, host or certificate. Call the tool without 'client'.",
+            ((TextContentBlock)Assert.Single(result.Content)).Text);
+        Assert.Null(capturedRequest);
+    }
+
+    [Fact]
+    public async Task SendAsync_NamesTheHeaderTheAppTrustsFromItsProxy_WhenTheRequestNamesNoArgumentForIt()
+    {
+        var invoker = CreateInvokerTrustingProxyHeaders(new ForwardedHeadersOptions { ForwardedHostHeaderName = "X-Host" }, new CertificateForwardingOptions());
+
+        var result = await invoker.SendAsync(new McpHttpRequest(HttpMethod.Get, "/api/x") { Headers = [new("X-Host", "evil.example")] });
+
+        Assert.True(result.IsError);
+        Assert.StartsWith("The tool's request would carry the header 'X-Host', which the app trusts from its proxy:", ((TextContentBlock)Assert.Single(result.Content)).Text);
+    }
+
+    [Fact]
+    public void GetProxyHeaderNames_HoldsEveryHeaderNameTheForwardingOptionsGive()
+    {
+        var forwardedHeaders = new ForwardedHeadersOptions
+        {
+            ForwardedForHeaderName = "A-For",
+            ForwardedHostHeaderName = "A-Host",
+            ForwardedProtoHeaderName = "A-Proto",
+            ForwardedPrefixHeaderName = "A-Prefix",
+            OriginalForHeaderName = "B-For",
+            OriginalHostHeaderName = "B-Host",
+            OriginalProtoHeaderName = "B-Proto",
+            OriginalPrefixHeaderName = "B-Prefix"
+        };
+
+        var names = ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, new CertificateForwardingOptions { CertificateHeader = "C-Cert" });
+
+        Assert.Equal(
+            ["A-For", "A-Host", "A-Prefix", "A-Proto", "B-For", "B-Host", "B-Prefix", "B-Proto", "C-Cert"],
+            names.Order(StringComparer.Ordinal));
+    }
+
+    private McpHttpInvoker CreateInvokerTrustingProxyHeaders(ForwardedHeadersOptions forwardedHeaders, CertificateForwardingOptions certificateForwarding)
+    {
+        return new McpHttpInvoker(
+            new HttpClient(_httpMessageHandlerMock.Object),
+            _baseUrlProviderMock.Object,
+            _httpContextAccessorMock.Object,
+            _loggerMock.Object,
+            _scopeOptionsMock.Object,
+            inProcessPipeline: null,
+            proxyHeaderNames: ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
     }
 
     #endregion

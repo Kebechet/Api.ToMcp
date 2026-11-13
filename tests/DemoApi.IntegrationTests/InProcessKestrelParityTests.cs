@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Api.ToMcp.Runtime;
@@ -7,6 +9,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -29,6 +32,8 @@ public sealed class InProcessKestrelParityTests
     private const string Route = "/api/kestrel-parity";
     private const string LateHeaderRoute = Route + "/late-header";
     private const string MapPrefix = "/sub";
+    private const string ClientIpHeader = "X-Azure-ClientIP";
+    private const string ClientCertificateHeader = "X-Gateway-Cert";
 
     [Fact]
     public async Task AToolsRequest_GetsTheStatusOfAnEscapedRequestSizeLimitRefusal_AsOneSentToTheServer()
@@ -177,6 +182,55 @@ public sealed class InProcessKestrelParityTests
         Assert.Equal(directBody, tool.Text);
     }
 
+    [Theory]
+    [InlineData(true, ClientIpHeader)]
+    [InlineData(false, ClientIpHeader)]
+    [InlineData(true, ClientCertificateHeader)]
+    [InlineData(false, ClientCertificateHeader)]
+    public async Task AToolsRequest_CarriesNoHeaderTheAppTrustsFromItsProxy_UnderANameTheAppConfigured(bool areApiCallsInProcess, string header)
+    {
+        // The app trusts these from a request of its loopback proxy, which a request sent straight to it shows: with them
+        // the AI would choose the client's address an allow list sees, or the certificate the user is signed in with.
+        using var certificateKey = RSA.Create(2048);
+        using var certificate = new CertificateRequest("CN=forged-bob", certificateKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+            .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var value = header == ClientIpHeader ? "10.9.9.9" : Convert.ToBase64String(certificate.Export(X509ContentType.Cert));
+        await using var app = await StartAsync(
+            app =>
+            {
+                app.UseForwardedHeaders();
+                app.UseCertificateForwarding();
+            },
+            areApiCallsInProcess,
+            services =>
+            {
+                services.Configure<ForwardedHeadersOptions>(options =>
+                {
+                    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+                    options.ForwardedForHeaderName = ClientIpHeader;
+                });
+                services.AddCertificateForwarding(options => options.CertificateHeader = ClientCertificateHeader);
+            });
+        using var client = new HttpClient();
+        using var direct = new HttpRequestMessage(HttpMethod.Get, app.Urls.Single() + Route + "/client");
+        direct.Headers.Add(header, value);
+        using var directResponse = await client.SendAsync(direct);
+
+        var tool = await CallToolAsync(app.Urls.Single(), "parity_header", new Dictionary<string, object?>
+        {
+            ["route"] = Route + "/client",
+            ["header"] = header,
+            ["value"] = value
+        });
+
+        Assert.Contains(header == ClientIpHeader ? "\"address\":\"10.9.9.9\"" : "\"certificate\":\"CN=forged-bob\"", await directResponse.Content.ReadAsStringAsync());
+        Assert.True(tool.IsError, tool.Text);
+        Assert.Equal(
+            $"The argument 'value' is sent as the request header '{header}', which the app trusts from its proxy: its ForwardedHeadersOptions " +
+            "or CertificateForwardingOptions name it, and its value would become the client's address, scheme, host or certificate. Call the tool without 'value'.",
+            tool.Text);
+    }
+
     [Fact]
     public async Task AToolsRequest_ReachesTheMapBranchOfItsMcpRequest_AsOneSentToTheServer()
     {
@@ -218,12 +272,16 @@ public sealed class InProcessKestrelParityTests
         }
     }
 
-    private static async Task<WebApplication> StartAsync(Action<WebApplication>? configure = null, bool areApiCallsInProcess = true)
+    private static async Task<WebApplication> StartAsync(
+        Action<WebApplication>? configure = null,
+        bool areApiCallsInProcess = true,
+        Action<IServiceCollection>? configureServices = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
         ConfigureServices(builder.Services, areApiCallsInProcess);
+        configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
         configure?.Invoke(app);
@@ -404,6 +462,12 @@ public sealed class KestrelParityController : ControllerBase
     public IActionResult FormRedirect()
     {
         return RedirectPreserveMethod("/api/kestrel-parity/headers-form");
+    }
+
+    [HttpGet("client")]
+    public IActionResult Client()
+    {
+        return Ok(new { address = HttpContext.Connection.RemoteIpAddress?.ToString(), certificate = HttpContext.Connection.ClientCertificate?.Subject });
     }
 
     [HttpGet("target")]

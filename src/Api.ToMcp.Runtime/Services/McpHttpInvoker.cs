@@ -26,6 +26,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     private readonly McpScopeOptions _scopeOptions;
     private readonly InProcessApiPipeline? _inProcessPipeline;
     private readonly string _forwardedProtoHeaderName;
+    private readonly HashSet<string> _proxyHeaderNames;
 
     /// <summary>
     /// An invoker that sends every request over HTTP. Only the invoker <c>AddMcpTools</c> registers is handed the app's
@@ -48,7 +49,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions,
         InProcessApiPipeline? inProcessPipeline,
-        string? forwardedProtoHeaderName = null)
+        string? forwardedProtoHeaderName = null,
+        IEnumerable<string>? proxyHeaderNames = null)
     {
         _httpClient = httpClient;
         _baseUrlProvider = baseUrlProvider;
@@ -57,6 +59,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         _scopeOptions = scopeOptions.Value;
         _inProcessPipeline = inProcessPipeline;
         _forwardedProtoHeaderName = forwardedProtoHeaderName ?? ForwardedHeadersDefaults.XForwardedProtoHeaderName;
+        _proxyHeaderNames = new HashSet<string>(proxyHeaderNames ?? [], StringComparer.OrdinalIgnoreCase);
     }
 
     public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
@@ -91,6 +94,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
 
     /// <summary>
     /// Sends the request as the other methods do, with its headers next to the invoker's own and its JSON body or form.
+    /// A request with a header that the app's middleware trusts from its proxy, under a name the app configured for
+    /// <c>UseForwardedHeaders</c> or <c>UseCertificateForwarding</c>, gets an error result instead, and is not sent.
     /// </summary>
     /// <exception cref="ArgumentException">
     /// The request has a JSON body and a form, or a header the invoker sets itself, a content header such as
@@ -99,6 +104,12 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     public async Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        var proxyHeader = request.Headers.FirstOrDefault(x => _proxyHeaderNames.Contains(x.Key)).Key;
+        if (proxyHeader is not null)
+        {
+            return RefuseProxyHeader(request, proxyHeader);
+        }
 
         var caller = _httpContextAccessor.HttpContext;
         var inProcessPipeline = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured
@@ -124,6 +135,26 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
             ? await SendInProcessAsync(inProcessPipeline, message, caller, ct)
             : await SendOverHttpAsync(message, request, ct);
         return await HandleResponse(response, ct);
+    }
+
+    /// <summary>
+    /// The error result for a header the app takes the client's address, scheme, host or certificate from, which would
+    /// let the AI choose them.
+    /// </summary>
+    private CallToolResult RefuseProxyHeader(McpHttpRequest request, string headerName)
+    {
+        _logger.LogWarning(
+            "MCP tool call refused: its request would carry the header {Header}, which the app trusts from its proxy through ForwardedHeadersOptions or CertificateForwardingOptions.",
+            headerName);
+
+        const string Reason = "which the app trusts from its proxy: its ForwardedHeadersOptions or CertificateForwardingOptions name it, " +
+            "and its value would become the client's address, scheme, host or certificate";
+        var argument = request.FindHeaderArgument(headerName);
+        var text = argument is null
+            ? $"The tool's request would carry the header '{headerName}', {Reason}."
+            : $"The argument '{argument}' is sent as the request header '{headerName}', {Reason}. Call the tool without '{argument}'.";
+
+        return ToResult(text, isError: true);
     }
 
     private static void AddHeaders(HttpRequestMessage message, IReadOnlyList<KeyValuePair<string, string>> headers)

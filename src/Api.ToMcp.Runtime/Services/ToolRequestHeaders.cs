@@ -1,4 +1,6 @@
 using Api.ToMcp.Runtime.Middleware;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Net.Http.Headers;
 
 namespace Api.ToMcp.Runtime.Services;
@@ -102,5 +104,29 @@ internal static class ToolRequestHeaders
     public static bool IsNeverSetFromArguments(string headerName)
     {
         return Names.Contains(headerName) || Prefixes.Any(x => headerName.StartsWith(x, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The headers that ASP.NET Core's own middleware trusts from the app's proxy, under the names the app gave them in
+    /// its options: those <c>UseForwardedHeaders</c> takes the client's address, scheme, host and path base from and keeps
+    /// the request's own ones in, and the client certificate of <c>UseCertificateForwarding</c>, which trusts it from any
+    /// request. No list of fixed names can hold them, and the generator cannot see the app's options.
+    /// </summary>
+    public static IReadOnlyCollection<string> GetProxyHeaderNames(ForwardedHeadersOptions forwardedHeaders, CertificateForwardingOptions certificateForwarding)
+    {
+        string?[] names =
+        [
+            forwardedHeaders.ForwardedForHeaderName,
+            forwardedHeaders.ForwardedHostHeaderName,
+            forwardedHeaders.ForwardedProtoHeaderName,
+            forwardedHeaders.ForwardedPrefixHeaderName,
+            forwardedHeaders.OriginalForHeaderName,
+            forwardedHeaders.OriginalHostHeaderName,
+            forwardedHeaders.OriginalProtoHeaderName,
+            forwardedHeaders.OriginalPrefixHeaderName,
+            certificateForwarding.CertificateHeader
+        ];
+
+        return names.OfType<string>().Where(x => x.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 }

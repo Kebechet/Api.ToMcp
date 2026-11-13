@@ -25,20 +25,22 @@ public partial class McpToolGeneratorTests
     private const string McpHttpRequestType = "global::Api.ToMcp.Runtime.McpHttpRequest";
 
     [Theory]
-    [InlineData("[FromHeader] string tenant", "\"tenant\", tenant")]
-    [InlineData("[FromHeader(Name = \"X-Tenant\")] string? tenant", "\"X-Tenant\", tenant")]
-    [InlineData("[FromHeader(Name = \"X-Ids\")] int[] ids", "\"X-Ids\", ids")]
-    [InlineData("[FromHeader(Name = \"X-Statuses\")] List<OrderStatus>? statuses", "\"X-Statuses\", statuses")]
-    [InlineData("[FromHeader(Name = \"X-Order\")] OrderId order", "\"X-Order\", order")]
-    [InlineData("[FromHeader(Name = \"If-Match\")] string? etag", "\"If-Match\", etag")]
-    [InlineData("[FromHeader] int page = 2", "\"page\", page == 2 ? null : page")]
-    public void Generator_SendsAFromHeaderParameter_AsARequestHeader(string parameter, string expectedArguments)
+    [InlineData("[FromHeader] string tenant", "\"tenant\", tenant", "[\"tenant\"] = \"tenant\"")]
+    [InlineData("[FromHeader(Name = \"X-Tenant\")] string? tenant", "\"X-Tenant\", tenant", "[\"X-Tenant\"] = \"tenant\"")]
+    [InlineData("[FromHeader(Name = \"X-Ids\")] int[] ids", "\"X-Ids\", ids", "[\"X-Ids\"] = \"ids\"")]
+    [InlineData("[FromHeader(Name = \"X-Statuses\")] List<OrderStatus>? statuses", "\"X-Statuses\", statuses", "[\"X-Statuses\"] = \"statuses\"")]
+    [InlineData("[FromHeader(Name = \"X-Order\")] OrderId order", "\"X-Order\", order", "[\"X-Order\"] = \"order\"")]
+    [InlineData("[FromHeader(Name = \"If-Match\")] string? etag", "\"If-Match\", etag", "[\"If-Match\"] = \"etag\"")]
+    [InlineData("[FromHeader] int page = 2", "\"page\", page == 2 ? null : page", "[\"page\"] = \"page\"")]
+    public void Generator_SendsAFromHeaderParameter_AsARequestHeader(string parameter, string expectedArguments, string expectedHeaderArgument)
     {
         var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
 
         Assert.Contains("var headers = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, string>>();", tool);
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, {expectedArguments}))", tool);
-        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Get, route) {{ Headers = headers }};", tool);
+        Assert.Contains(
+            $"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Get, route) {{ Headers = headers, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ {expectedHeaderArgument} }} }};",
+            tool);
         Assert.Contains("return await request.SendAsync(invoker, cancellationToken);", tool);
         Assert.DoesNotContain("queryParts", tool);
         Assert.DoesNotContain("invoker.GetAsync", tool);
@@ -65,7 +67,9 @@ public partial class McpToolGeneratorTests
 
         Assert.Contains("var bodyJson = JsonSerializer.Serialize(filter);", tool);
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"Idempotency-Key\", key))", tool);
-        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ JsonBody = bodyJson, Headers = headers }};", tool);
+        Assert.Contains(
+            $"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ JsonBody = bodyJson, Headers = headers, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"Idempotency-Key\"] = \"key\" }} }};",
+            tool);
     }
 
     [Theory]
@@ -115,7 +119,9 @@ public partial class McpToolGeneratorTests
         Assert.Contains("var route = $\"/api/orders/x/{routeid}\";", tool);
         Assert.Contains($"{Formatter}.AddQueryValue(queryParts, \"sort\", sort);", tool);
         Assert.Contains($"{Formatter}.AddFormValue(formParts, \"filter\", filter);", tool);
-        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers, FormBody = string.Join(\"&\", formParts) }};", tool);
+        Assert.Contains(
+            $"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-Tenant\"] = \"tenant\" }}, FormBody = string.Join(\"&\", formParts) }};",
+            tool);
     }
 
     [Fact]
@@ -126,7 +132,9 @@ public partial class McpToolGeneratorTests
 
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers2, \"X-A\", headers))", tool);
         Assert.Contains($"{Formatter}.AddFormValue(formParts2, \"formParts\", formParts);", tool);
-        Assert.Contains($"var request2 = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers2, FormBody = string.Join(\"&\", formParts2) }};", tool);
+        Assert.Contains(
+            $"var request2 = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers2, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-A\"] = \"headers\" }}, FormBody = string.Join(\"&\", formParts2) }};",
+            tool);
         Assert.Contains("return await request2.SendAsync(invoker, cancellationToken);", tool);
     }
 
@@ -430,7 +438,9 @@ namespace TestApi
         Assert.Contains("[Description(\"Parameter: page\")] int? page = null,", tool);
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"X-Tenant\", tenant))", tool);
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"page\", page))", tool);
-        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Get, route) {{ Headers = headers }};", tool);
+        Assert.Contains(
+            $"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Get, route) {{ Headers = headers, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-Tenant\"] = \"tenant\", [\"page\"] = \"page\" }} }};",
+            tool);
         Assert.DoesNotContain("queryParts", tool);
     }
 

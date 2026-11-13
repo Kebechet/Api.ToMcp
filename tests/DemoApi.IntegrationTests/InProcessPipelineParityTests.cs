@@ -388,6 +388,23 @@ public static class ParityProbeTools
 
         return new McpHttpRequest(HttpMethod.Post, route) { Headers = headers, FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
     }
+
+    /// <summary>
+    /// Sends the header the call names from the argument <c>value</c>, as a generated tool of a <c>[FromHeader]</c>
+    /// parameter does.
+    /// </summary>
+    [McpServerTool(Name = "parity_header")]
+    public static Task<CallToolResult> SendHeader(IMcpHttpInvoker invoker, string route, string header, string value, CancellationToken cancellationToken)
+    {
+        var headers = new List<KeyValuePair<string, string>>();
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, header, value));
+
+        return new McpHttpRequest(HttpMethod.Get, route)
+        {
+            Headers = headers,
+            HeaderArguments = new Dictionary<string, string> { [header] = nameof(value) }
+        }.SendAsync(invoker, cancellationToken);
+    }
 }
 
 public sealed record ParityItem([System.ComponentModel.DataAnnotations.StringLength(10)] string Name, int Count);

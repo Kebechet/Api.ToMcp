@@ -795,7 +795,13 @@ namespace Api.ToMcp.Generator.Emitting
 
                 if (hasHeaders)
                 {
+                    // The invoker refuses a header the app trusts from its proxy under a name only the app's options give,
+                    // and its error result names the argument the AI gave.
+                    var headerArguments = parameters
+                        .Where(x => x.Source == ParameterSourceModel.Header)
+                        .Select(x => $"[{SymbolDisplay.FormatLiteral(GetBinderModelName(x), quote: true)}] = {SymbolDisplay.FormatLiteral(x.Name, quote: true)}");
                     initializers.Add($"Headers = {names.Headers}");
+                    initializers.Add($"HeaderArguments = new {names.SystemNamespace}.Collections.Generic.Dictionary<string, string> {{ {string.Join(", ", headerArguments)} }}");
                 }
 
                 if (hasForm)

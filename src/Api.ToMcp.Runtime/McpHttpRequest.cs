@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using ModelContextProtocol.Protocol;
 
 namespace Api.ToMcp.Runtime;
@@ -39,6 +40,21 @@ public sealed class McpHttpRequest
     /// The request headers, each value under its header's name; a name may come several times, once per value.
     /// </summary>
     public IReadOnlyList<KeyValuePair<string, string>> Headers { get; init; } = [];
+
+    /// <summary>
+    /// The tool argument each header's value comes from, under the header's name, for an error result about a header to
+    /// name the argument the AI gave. A generated tool gives one for each of its headers.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> HeaderArguments { get; init; } = ReadOnlyDictionary<string, string>.Empty;
+
+    /// <summary>
+    /// The argument the header's value comes from, its name compared ignoring case, as HTTP compares header names, or
+    /// null when <see cref="HeaderArguments"/> does not say.
+    /// </summary>
+    internal string? FindHeaderArgument(string headerName)
+    {
+        return HeaderArguments.FirstOrDefault(x => string.Equals(x.Key, headerName, StringComparison.OrdinalIgnoreCase)).Value;
+    }
 
     /// <summary>
     /// Sends the request through the invoker: through <see cref="IMcpHttpRequestInvoker.SendAsync"/> when it implements
