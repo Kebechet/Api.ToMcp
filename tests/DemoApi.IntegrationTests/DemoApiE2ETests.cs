@@ -370,6 +370,43 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
             Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
     }
 
+    [Fact]
+    public async Task McpProtocol_ToolsCall_WarnsOnce_WhenTheRegisteredInvokerCannotSendTheToolsHeadersOrForm()
+    {
+        // A decorator of the app's own that implements only IMcpHttpInvoker cannot send them, and its error result would
+        // reach only the AI client.
+        var logs = new List<(LogLevel Level, string Message)>();
+        await using var client = await ConnectMcpClientAsync(configureServices: services =>
+        {
+            services.AddTransient<IMcpHttpInvoker, HeaderlessInvoker>();
+            services.AddSingleton<ILoggerProvider>(new ListLoggerProvider(logs));
+        });
+        var arguments = new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 5, ["comment"] = "Fine" }
+        };
+
+        var first = await CallToolRawAsync(client, "Products_AddReview", arguments);
+        var second = await CallToolRawAsync(client, "Products_AddReview", arguments.DeepClone().AsObject());
+        var plain = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+
+        List<(LogLevel Level, string Message)> warnings;
+        lock (logs)
+        {
+            warnings = logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("IMcpHttpRequestInvoker")).ToList();
+        }
+
+        Assert.True(first["isError"]!.GetValue<bool>());
+        Assert.Contains("implement IMcpHttpRequestInvoker as well", first["content"]![0]!["text"]!.GetValue<string>());
+        Assert.True(second["isError"]!.GetValue<bool>());
+        Assert.NotEqual(true, plain["isError"]?.GetValue<bool>());
+        var warning = Assert.Single(warnings);
+        Assert.Equal(
+            $"The tool Products_AddReview sends request headers or a form, which the registered IMcpHttpInvoker, {typeof(HeaderlessInvoker).FullName}, cannot send, so its calls with any get an error result. Implement IMcpHttpRequestInvoker as well.",
+            warning.Message);
+    }
+
     [Theory]
     [InlineData(null, "User is not authenticated. Scope validation requires authentication.")]
     [InlineData("write", "Insufficient scope. Required: Read, Granted: Write")]
@@ -833,6 +870,22 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
                 next(app);
             };
         }
+    }
+
+    /// <summary>
+    /// An invoker of the app's own that implements only <see cref="IMcpHttpInvoker"/>, and answers every call with an
+    /// empty object.
+    /// </summary>
+    private sealed class HeaderlessInvoker : IMcpHttpInvoker
+    {
+        public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default) => Answer();
+        public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
+
+        private static Task<CallToolResult> Answer() => Task.FromResult(new CallToolResult { Content = { new TextContentBlock { Text = "{}" } } });
     }
 
     private sealed class RefusingHandler : HttpMessageHandler

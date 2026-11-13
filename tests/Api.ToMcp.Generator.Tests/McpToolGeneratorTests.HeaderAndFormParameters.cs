@@ -275,6 +275,17 @@ namespace TestApi
             tool);
     }
 
+    [Fact]
+    public void Generator_MarksATool_ThatSendsHeadersOrAForm()
+    {
+        // AddMcpTools warns at its first call when the registered invoker cannot send them.
+        var tool = GenerateCompilingSimpleTypeTool("[HttpPost(\"x\")] public Task<string> Find([FromForm] string name) => Task.FromResult(string.Empty);");
+        var plain = GenerateCompilingSimpleTypeTool("[HttpPost(\"x\")] public Task<string> Find([FromQuery] string name) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("[global::Api.ToMcp.Runtime.McpGeneratedTool(SendsHeadersOrForm = true)]", tool);
+        Assert.DoesNotContain("McpGeneratedTool", plain);
+    }
+
     [Theory]
     [InlineData("[Consumes(\"multipart/form-data\")]", "", "it reads 'name' from a form, which its [Consumes] does not accept: a tool sends application/x-www-form-urlencoded")]
     [InlineData("", "[Consumes(\"application/json\", \"text/plain\")]", "it reads 'name' from a form, which its [Consumes] does not accept: a tool sends application/x-www-form-urlencoded")]

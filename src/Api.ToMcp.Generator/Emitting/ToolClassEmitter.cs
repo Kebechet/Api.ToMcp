@@ -18,6 +18,7 @@ namespace Api.ToMcp.Generator.Emitting
 
         private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
         private const string HttpRequestType = "global::Api.ToMcp.Runtime.McpHttpRequest";
+        private const string SendsHeadersOrFormArgument = "SendsHeadersOrForm = true";
         private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
         private const string RequiredScopeAttribute = "global::Api.ToMcp.Runtime.McpRequiredScope";
         private const string NullLiteral = "null";
@@ -113,14 +114,22 @@ namespace Api.ToMcp.Generator.Emitting
 
             // A ToolName or a toolNameFormat is any string, so the name is written as an escaped C# literal.
             var toolNameLiteral = SymbolDisplay.FormatLiteral(toolName, quote: true);
+
+            // AddMcpTools warns when such a tool is called through an invoker that cannot send headers or a form.
+            var sendsHeadersOrForm = parameters.Any(x => x.Source is ParameterSourceModel.Header or ParameterSourceModel.Form);
             if (hasOutputSchema)
             {
+                var sendsHeadersOrFormArgument = sendsHeadersOrForm ? ", " + SendsHeadersOrFormArgument : "";
                 sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
-                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
+                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)}{sendsHeadersOrFormArgument})]");
             }
             else
             {
                 sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, {annotations})]");
+                if (sendsHeadersOrForm)
+                {
+                    sb.AppendLine($"        [{GeneratedToolAttribute}({SendsHeadersOrFormArgument})]");
+                }
             }
             sb.AppendLine($"        [{RequiredScopeAttribute}({GetScopeExpression(action.RequiredScope, names.McpScope)})]");
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
