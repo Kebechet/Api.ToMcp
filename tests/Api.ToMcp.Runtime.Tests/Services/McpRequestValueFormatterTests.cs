@@ -514,15 +514,27 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
-    public void AddQueryValue_DecidesTheSentPropertiesOfAValuesOwnType_NotOfTheTypeItIsPassedAs()
+    public void AddQueryValue_SendsTheOwnPropertiesOfANestedValue_WhoseTypeDerivesFromThePropertysType()
     {
-        // The decision is kept per type: a derived value sent after its base type was decided sends its own properties.
+        // The properties are decided for the value's own type, not for the type the property declares, also after the
+        // declared type was decided for an earlier value under the same key.
         var queryParts = new List<string>();
 
-        McpRequestValueFormatter.AddQueryValue(queryParts, "base", new BaseFilter { City = "Brno" });
-        McpRequestValueFormatter.AddQueryValue(queryParts, "derived", (BaseFilter)new DerivedFilter { City = "Praha", Page = 2 });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "x", new FilterHolder { Filter = new BaseFilter { City = "Brno" } });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "x", new FilterHolder { Filter = new DerivedFilter { City = "Praha", Page = 2 } });
 
-        Assert.Equal(new[] { "base.City=Brno", "derived.Page=2", "derived.City=Praha" }, queryParts);
+        Assert.Equal(new[] { "x.Filter.City=Brno", "x.Filter.Page=2", "x.Filter.City=Praha" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsThePropertiesOfANestedNullableStruct_NotThoseOfNullable()
+    {
+        // A boxed T? is a T, which MVC binds under x.Range.From; Nullable<T>'s own HasValue and Value it binds nothing from.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "x", new DayRangeHolder { Range = new DayRange { From = 1, To = 5 } });
+
+        Assert.Equal(new[] { "x.Range.From=1", "x.Range.To=5" }, queryParts);
     }
 
     private sealed class CountedFilter
@@ -559,6 +571,22 @@ public class McpRequestValueFormatterTests
     private sealed class DerivedFilter : BaseFilter
     {
         public int Page { get; set; }
+    }
+
+    private sealed class FilterHolder
+    {
+        public BaseFilter? Filter { get; set; }
+    }
+
+    private struct DayRange
+    {
+        public int From { get; set; }
+        public int To { get; set; }
+    }
+
+    private sealed class DayRangeHolder
+    {
+        public DayRange? Range { get; set; }
     }
 
     [BindNever]
