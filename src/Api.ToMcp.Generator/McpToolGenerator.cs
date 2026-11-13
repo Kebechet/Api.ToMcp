@@ -536,7 +536,7 @@ namespace Api.ToMcp.Generator
             var reasons = new List<string>();
 
             if (keptFromMcp.Count > 0)
-                reasons.Add($"{QuoteAll(keptFromMcp)} {(keptFromMcp.Count == 1 ? "names" : "name")} no [Http*] action without [McpIgnore] or a route under '{McpEndpointRoute.Route}'");
+                reasons.Add($"{QuoteAll(keptFromMcp)} {(keptFromMcp.Count == 1 ? "names" : "name")} no [Http*] action without [McpIgnore] or a route at or under '{McpEndpointRoute.Route}'");
 
             if (unmatched.Count > 0)
                 reasons.Add($"{QuoteAll(unmatched)} {(unmatched.Count == 1 ? "names" : "name")} no controller or action of the project, as {DiagnosticDescriptors.UnmatchedConfigEntry.Id} reports");
