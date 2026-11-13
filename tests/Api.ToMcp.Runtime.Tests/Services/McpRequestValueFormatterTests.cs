@@ -310,6 +310,24 @@ public class McpRequestValueFormatterTests
     }
 
     [Fact]
+    public void AddQueryValue_KeysANestedProperty_ByTheNameItsTypeGives_AfterItsOwn()
+    {
+        // MVC reads a property's model name from its own attributes, then its type's, and an empty one adds no segment:
+        // w.pf.City and w.n.City bind, w.Prefixed.City and w.Named.City would not.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "w", new NestedNamesFilter
+        {
+            Prefixed = new PrefixedInner { City = "Brno" },
+            Named = new NamedInner { City = "Praha" },
+            Own = new PrefixedInner { City = "Ostrava" },
+            Unprefixed = new UnprefixedInner { City = "Plzen" }
+        });
+
+        Assert.Equal(new[] { "w.pf.City=Brno", "w.n.City=Praha", "w.own.City=Ostrava", "w.City=Plzen" }, queryParts);
+    }
+
+    [Fact]
     public void AddQueryValue_LeavesOutAPropertyWhoseGetterIsNotPublic()
     {
         // MVC binds only the properties with a public getter, as the generator sends them; a value under the prefix that
@@ -815,6 +833,36 @@ public class McpRequestValueFormatterTests
         public string? Secret { private get; set; }
 
         public string? Code { internal get; set; }
+    }
+
+    private sealed class NestedNamesFilter
+    {
+        public PrefixedInner? Prefixed { get; set; }
+
+        public NamedInner? Named { get; set; }
+
+        [FromQuery(Name = "own")]
+        public PrefixedInner? Own { get; set; }
+
+        public UnprefixedInner? Unprefixed { get; set; }
+    }
+
+    [Bind(Prefix = "pf")]
+    private sealed class PrefixedInner
+    {
+        public string? City { get; set; }
+    }
+
+    [ModelBinder(Name = "n")]
+    private sealed class NamedInner
+    {
+        public string? City { get; set; }
+    }
+
+    [Bind(Prefix = "")]
+    private sealed class UnprefixedInner
+    {
+        public string? City { get; set; }
     }
 
     private sealed class AliasedFilter

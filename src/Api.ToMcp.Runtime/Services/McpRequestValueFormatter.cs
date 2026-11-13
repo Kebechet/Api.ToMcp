@@ -233,7 +233,8 @@ public static class McpRequestValueFormatter
     {
         foreach (var property in GetQueryProperties(value.GetType()))
         {
-            var key = $"{prefix}.{property.Key}";
+            // An empty name adds no segment to the key, as MVC joins it (ModelNames.CreatePropertyModelName).
+            var key = property.Key.Length == 0 ? prefix : $"{prefix}.{property.Key}";
             var propertyValue = property.Property.GetValue(value);
             if (propertyValue is not null && property.HasModelBinder)
             {
@@ -327,15 +328,18 @@ public static class McpRequestValueFormatter
     }
 
     /// <summary>
-    /// The key the binder reads a property under: the name a binding attribute such as <c>[FromQuery(Name = "q")]</c>
-    /// gives it, else its own name.
+    /// The name the binder reads a property under: the one a binding attribute such as <c>[FromQuery(Name = "q")]</c>
+    /// gives it, else the one an attribute of its type gives, such as <c>[Bind(Prefix = "pf")]</c>, else its own. MVC
+    /// reads the type's attributes after the property's, and takes the first name that is not null, an empty one
+    /// included (<c>ModelAttributes.GetAttributesForProperty</c>, <c>DefaultBindingMetadataProvider</c>).
     /// </summary>
     private static string GetBinderModelName(object[] attributes, PropertyInfo property)
     {
         return attributes
+            .Concat(property.PropertyType.GetCustomAttributes(inherit: true))
             .OfType<IModelNameProvider>()
             .Select(x => x.Name)
-            .FirstOrDefault(x => !string.IsNullOrEmpty(x)) ?? property.Name;
+            .FirstOrDefault(x => x is not null) ?? property.Name;
     }
 
     internal static bool IsNotBoundFromTheQuery(Type type)
