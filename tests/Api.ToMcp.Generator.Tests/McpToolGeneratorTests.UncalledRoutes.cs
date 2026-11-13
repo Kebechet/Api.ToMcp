@@ -206,7 +206,8 @@ public partial class McpToolGeneratorTests
     }
 
     /// <summary>
-    /// Types with a [FromRoute] property Slug or Tags that MVC's complex binder binds or never binds.
+    /// Types with a [FromRoute] property Slug or Tags that MVC's complex binder binds or never binds, or that MCP014
+    /// cannot be sure it binds from one route value.
     /// </summary>
     private const string BindingEligibilityTypes = @"
     public sealed class NoBindAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
@@ -286,6 +287,152 @@ public partial class McpToolGeneratorTests
     }
 
     public sealed record SlugRecord([FromRoute] string? Slug, int Page);
+
+    public sealed class ReadOnlyUri
+    {
+        [FromRoute]
+        public Uri? Slug { get; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class SetTags
+    {
+        [FromRoute]
+        public List<string>? Tags { get; set; }
+    }
+
+    public sealed class ArrayTags
+    {
+        [FromRoute]
+        public string[]? Tags { get; set; }
+    }
+
+    public sealed class ReadOnlyListTags
+    {
+        [FromRoute]
+        public IReadOnlyList<int>? Tags { get; set; }
+    }
+
+    public sealed class HashSetTags
+    {
+        [FromRoute]
+        public HashSet<string>? Tags { get; set; }
+    }
+
+    public sealed class Address
+    {
+        public string? City { get; set; }
+    }
+
+    public sealed class AddressSlug
+    {
+        [FromRoute]
+        public Address? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class AddressesSlug
+    {
+        [FromRoute]
+        public List<Address>? Slug { get; set; }
+    }
+
+    public sealed class CtorSlug
+    {
+        public CtorSlug(int page)
+        {
+            Page = page;
+        }
+
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class TwoCtorsSlug
+    {
+        public TwoCtorsSlug()
+        {
+        }
+
+        public TwoCtorsSlug(int page)
+        {
+            Page = page;
+        }
+
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public abstract class AbstractSlug
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+    }
+
+    public struct SlugStruct
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Bind(""Page"")]
+    public sealed class PageOnlyFilter
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Bind(""Slug"")]
+    public sealed class SlugOnlyFilter
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Bind(""Page"")]
+    public class PageOnlyBase
+    {
+    }
+
+    public sealed class SlugOfPageOnlyBase : PageOnlyBase
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    public sealed class AllPropertiesAttribute : Attribute, Microsoft.AspNetCore.Mvc.ModelBinding.IPropertyFilterProvider
+    {
+        public Func<Microsoft.AspNetCore.Mvc.ModelBinding.ModelMetadata, bool> PropertyFilter => _ => true;
+    }
+
+    public sealed class PageAndSlugBindAttribute : BindAttribute
+    {
+        public PageAndSlugBindAttribute() : base(""Page"", ""Slug"")
+        {
+        }
+    }
+
+    public sealed class BinderIdSlug
+    {
+        [FromRoute]
+        public BinderId? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
 ";
 
     [Theory]
@@ -295,14 +442,33 @@ public partial class McpToolGeneratorTests
     [InlineData("{id}/{slug}", "CustomNeverSlug", false)]
     [InlineData("{id}/{slug}", "NeverTypeSlug", false)]
     [InlineData("{id}/{slug}", "OptionalSlugOfNeverType", true)]
-    // Nor a string or a struct without a public setter, which it cannot update in place, unless a record's constructor
-    // sets it; a collection it can.
+    // Nor one without a public setter, unless a record's constructor sets it: MVC sets no new value into it, and fills
+    // in place only a collection the instance already holds, which the generator cannot see.
     [InlineData("{id}/{slug}", "ReadOnlySlug", false)]
     [InlineData("{id}/{slug}", "PrivateSetSlug", false)]
     [InlineData("{id}/{slug}", "InitSlug", true)]
-    [InlineData("{id}/{tags}", "ReadOnlyTags", true)]
     [InlineData("{id}/{slug}", "SlugRecord", true)]
-    public void Generator_ReportsAPropertyOfARouteValue_OnlyWhereMvcBindsIt(string uncalledRoute, string type, bool isReported)
+    [InlineData("{id}/{tags}", "ReadOnlyTags", false)]
+    [InlineData("{id}/{slug}", "ReadOnlyUri", false)]
+    // One route value fills a simple value, an array of such, or a collection MVC creates as a List<T> of such; a
+    // complex value MVC binds from keys such as Slug.City.
+    [InlineData("{id}/{tags}", "SetTags", true)]
+    [InlineData("{id}/{tags}", "ArrayTags", true)]
+    [InlineData("{id}/{tags}", "ReadOnlyListTags", true)]
+    [InlineData("{id}/{tags}", "HashSetTags", false)]
+    [InlineData("{id}/{slug}", "AddressSlug", false)]
+    [InlineData("{id}/{slug}", "AddressesSlug", false)]
+    // MVC creates a complex value through a public constructor without parameters, or a record's primary one; it
+    // creates no abstract class or struct.
+    [InlineData("{id}/{slug}", "CtorSlug", false)]
+    [InlineData("{id}/{slug}", "TwoCtorsSlug", true)]
+    [InlineData("{id}/{slug}", "AbstractSlug", false)]
+    [InlineData("{id}/{slug}", "SlugStruct", false)]
+    // The [Bind] include list of the type, or of a type it derives from, names the properties MVC binds.
+    [InlineData("{id}/{slug}", "PageOnlyFilter", false)]
+    [InlineData("{id}/{slug}", "SlugOnlyFilter", true)]
+    [InlineData("{id}/{slug}", "SlugOfPageOnlyBase", false)]
+    public void Generator_ReportsAPropertyOfARouteValue_OnlyWhereItIsSureMvcBindsIt(string uncalledRoute, string type, bool isReported)
     {
         var source = UncalledRoutesSource(
             PlainControllerDeclaration,
@@ -311,6 +477,95 @@ public partial class McpToolGeneratorTests
 
         Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
         Assert.Equal(isReported, GetGeneratorDiagnostics(source, AllExceptExcludedConfig).Any(x => x.Id == UncalledRouteId));
+    }
+
+    [Theory]
+    [InlineData("[Bind(\"Page\")] RouteSlugFilter f", false)]
+    [InlineData("[Bind(\"slug\")] RouteSlugFilter f", false)]
+    [InlineData("[Bind(\"Page\")] SlugRecord f", false)]
+    [InlineData("[Bind(\"Page, Slug\")] RouteSlugFilter f", true)]
+    [InlineData("[Bind(\"Page\", \"Slug\")] RouteSlugFilter f", true)]
+    [InlineData("[Bind(\"Slug\")] SlugRecord f", true)]
+    [InlineData("[Bind] RouteSlugFilter f", true)]
+    // The list of the parameter and the list of its type each have to name it.
+    [InlineData("[Bind(\"Page, Slug\")] PageOnlyFilter f", false)]
+    [InlineData("[Bind(\"Page\")] SlugOnlyFilter f", false)]
+    [InlineData("[Bind(\"Slug\")] SlugOnlyFilter f", true)]
+    // The generator cannot read what another property filter, or a [Bind] of the project's, lets MVC bind.
+    [InlineData("[AllProperties] RouteSlugFilter f", false)]
+    [InlineData("[PageAndSlugBind] RouteSlugFilter f", false)]
+    public void Generator_ReportsAPropertyOfARouteValue_OnlyWhereEveryBindIncludeListNamesIt(string parameter, bool isReported)
+    {
+        // MVC's complex binder binds only the properties every [Bind] include list of the parameter and its type names,
+        // each item split at commas, by the property's name, case and all.
+        var source = UncalledRoutesSource(
+            PlainControllerDeclaration,
+            $"[HttpGet(\"{{id}}\")] [HttpGet(\"{{id}}/{{slug}}\")] public Task<string> Find(int id, {parameter}) => Task.FromResult(string.Empty);",
+            RouteValueTypes + BindingEligibilityTypes);
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.Equal(isReported, GetGeneratorDiagnostics(source, AllExceptExcludedConfig).Any(x => x.Id == UncalledRouteId));
+    }
+
+    [Theory]
+    // [ApiController] reads a type from the body when no property of it names a binding source, whatever the HTTP
+    // method, and a property the record's constructor sets counts for none (ModelMetadata.BoundProperties).
+    [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "int id, SlugRecord f", false)]
+    [InlineData(ApiControllerDeclaration, "[HttpPost(\"{id}\")] [HttpPost(\"{id}/{slug}\")]", "int id, SlugRecord f", false)]
+    [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "int id, RouteSlugFilter f", true)]
+    // A binding attribute of the parameter, or a controller without [ApiController], makes MVC bind it property by
+    // property.
+    [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "int id, [FromQuery] SlugRecord f", true)]
+    [InlineData(PlainControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "int id, SlugRecord f", true)]
+    public void Generator_ReportsARouteValueOfARecordsConstructor_OnlyWhereMvcBindsTheRecordPropertyByProperty(
+        string controllerDeclaration, string httpAttributes, string parameters, bool isReported)
+    {
+        var source = UncalledRoutesSource(
+            controllerDeclaration,
+            $"{httpAttributes} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);",
+            RouteValueTypes + BindingEligibilityTypes);
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.Equal(isReported, GetGeneratorDiagnostics(source, AllExceptExcludedConfig).Any(x => x.Id == UncalledRouteId));
+    }
+
+    [Theory]
+    [InlineData("[FromRoute] int[]? tags", true)]
+    [InlineData("[FromRoute] List<string>? tags", true)]
+    [InlineData("[FromRoute] IEnumerable<int>? tags", true)]
+    [InlineData("[FromRoute] IReadOnlyList<string>? tags", true)]
+    // MVC binds the items of a complex type, and a dictionary, from keys such as tags[0].City; MCP014 is not sure what
+    // a collection MVC does not create as a List<T> holds.
+    [InlineData("[FromRoute] Address[]? tags", false)]
+    [InlineData("[FromRoute] List<Address>? tags", false)]
+    [InlineData("[FromRoute] Dictionary<string, string>? tags", false)]
+    [InlineData("[FromRoute] HashSet<string>? tags", false)]
+    public void Generator_ReportsACollection_OnlyWhereMvcFillsItFromOneRouteValue(string parameter, bool isReported)
+    {
+        var source = UncalledRoutesSource(
+            PlainControllerDeclaration,
+            $"[HttpGet(\"{{id}}\")] [HttpGet(\"{{id}}/{{tags}}\")] public Task<string> Find(int id, {parameter}) => Task.FromResult(string.Empty);",
+            BindingEligibilityTypes);
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.Equal(isReported, GetGeneratorDiagnostics(source, AllExceptExcludedConfig).Any(x => x.Id == UncalledRouteId));
+    }
+
+    [Theory]
+    [InlineData("{id}/{other}", "[FromRoute] BinderId? other")]
+    [InlineData("{id}/{slug}", "[FromRoute, ModelBinder(typeof(PlainCodeBinder))] string? slug")]
+    [InlineData("{id}/{slug}", "BinderIdSlug f")]
+    public void Generator_ReportsNothing_ForAValueThatABinderOfTheProjectsBinds(string uncalledRoute, string parameter)
+    {
+        // A binder type of the value or of its type binds it, with the route values of [FromRoute] to read, and the
+        // generator cannot see what it reads.
+        var source = UncalledRoutesSource(
+            PlainControllerDeclaration,
+            $"[HttpGet(\"{{id}}\")] [HttpGet(\"{uncalledRoute}\")] public Task<string> Find(int id, {parameter}) => Task.FromResult(string.Empty);",
+            BindingEligibilityTypes);
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UncalledRouteId);
     }
 
     [Theory]

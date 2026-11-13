@@ -8,7 +8,8 @@ namespace Api.ToMcp.Generator.Emitting
 {
     /// <summary>
     /// The values of an action that MVC binds from the route alone, at a route its tool does not call and the route it
-    /// calls lacks: the tool calls <see cref="ActionInfoModel.RouteTemplate"/> alone. See
+    /// calls lacks: the tool calls <see cref="ActionInfoModel.RouteTemplate"/> alone. A value counts only where the
+    /// generator is sure MVC binds it from that one route value; where it cannot be sure, MCP014 stays quiet. See
     /// https://github.com/Kebechet/Api.ToMcp/issues/61.
     /// </summary>
     internal static class UncalledRouteValues
@@ -55,16 +56,19 @@ namespace Api.ToMcp.Generator.Emitting
 
         /// <summary>
         /// The values of the action MVC binds from route values alone, each with the key it reads them under and how a
-        /// message names it:
+        /// message names it. Each is a value MVC binds from one route value (<see cref="ParameterInfoModel.IsReadFromOneValue"/>):
         /// <list type="bullet">
-        /// <item>a simple value or a collection with <c>[FromRoute]</c>, under the name it binds under;</item>
-        /// <item>a simple value without a binding attribute in an <c>[ApiController]</c>, which infers <c>[FromRoute]</c>
+        /// <item>a parameter with <c>[FromRoute]</c>, under the name it binds under;</item>
+        /// <item>a simple parameter without a binding attribute in an <c>[ApiController]</c>, which infers <c>[FromRoute]</c>
         /// for it when a route of the action names the parameter by its own name, whatever name it binds under
         /// (<c>InferParameterBindingInfoConvention</c>);</item>
         /// <item>a property with <c>[FromRoute]</c> of a parameter MVC binds property by property, and a property without
         /// a binding attribute of a <c>[FromRoute]</c> one, under the key MVC builds for it: the property's own name, or
-        /// after the parameter's own name, <c>key.Version</c>, when a binding attribute gives the parameter one. A
-        /// property MVC's complex binder never binds is none (<see cref="PropertyInfoModel.IsBindable"/>).</item>
+        /// after the parameter's own name, <c>key.Version</c>, when a binding attribute gives the parameter one. Only a
+        /// property the generator is sure MVC's complex binder binds counts (<see cref="PropertyInfoModel.IsBindable"/>).
+        /// Of a parameter without a binding attribute in an <c>[ApiController]</c>, a property a record's constructor sets
+        /// does not: MVC reads such a parameter from the body unless a property outside the constructor names a binding
+        /// source (<c>ModelMetadata.BoundProperties</c>), and the generator does not tell the two apart.</item>
         /// </list>
         /// </summary>
         private static List<(string Key, string Value)> GetRouteValueReaders(ActionInfoModel action, List<RouteTemplate> routes)
@@ -72,14 +76,13 @@ namespace Api.ToMcp.Generator.Emitting
             var readers = new List<(string Key, string Value)>();
             foreach (var parameter in action.Parameters)
             {
-                var isOneValue = parameter.IsSimpleType || parameter.IsCollection;
-                if (isOneValue)
+                if (parameter.IsSimpleType || parameter.IsCollection)
                 {
                     var isInferredFromRoute = parameter.Source == ParameterSourceModel.Auto &&
                         action.IsApiController &&
                         parameter.IsSimpleType &&
                         routes.Any(x => x.HasParameter(parameter.Name));
-                    if (parameter.Source == ParameterSourceModel.Route || isInferredFromRoute)
+                    if (parameter.IsReadFromOneValue && (parameter.Source == ParameterSourceModel.Route || isInferredFromRoute))
                     {
                         readers.Add((ToolClassEmitter.GetBinderModelName(parameter), $"'{parameter.Name}'"));
                     }
@@ -92,8 +95,10 @@ namespace Api.ToMcp.Generator.Emitting
                     continue;
                 }
 
+                var isFromBodyUnlessAPropertyNamesASource = action.IsApiController && parameter.Source == ParameterSourceModel.Auto;
                 readers.AddRange(parameter.Properties
-                    .Where(x => x.IsBindable)
+                    .Where(x => x.IsBindable && x.IsReadFromOneValue)
+                    .Where(x => !(isFromBodyUnlessAPropertyNamesASource && x.IsSetByConstructor))
                     .Where(x => x.Source == ParameterSourceModel.Route || (x.Source == ParameterSourceModel.Auto && parameter.Source == ParameterSourceModel.Route))
                     .Select(x => (ToolClassEmitter.GetPropertyModelName(parameter, x), $"the property {x.Name} of '{parameter.Name}'")));
             }

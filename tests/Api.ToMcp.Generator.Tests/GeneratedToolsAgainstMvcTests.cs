@@ -780,6 +780,132 @@ namespace TestApi
         [HttpGet(""{version}"")]
         public object Get([FromRoute(Name = ""key"")] Mcp014Key key) => new { key.Version };
     }
+
+    // [ApiController] reads a type from the body when no property of it names a binding source, whatever the HTTP method,
+    // and a property the record's constructor sets counts for none (ModelMetadata.BoundProperties).
+    [ApiController]
+    [Route(""api/mcp014-slugrecord"")]
+    public class Mcp014ApiSlugRecordController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014SlugRecord f) => new { id, f.Slug, f.Page };
+    }
+
+    // A binding attribute of the parameter makes MVC bind the record through its constructor, Slug from the route.
+    [ApiController]
+    [Route(""api/mcp014-queryslugrecord"")]
+    public class Mcp014ApiQuerySlugRecordController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, [FromQuery] Mcp014SlugRecord f) => new { id, f.Slug, f.Page };
+    }
+
+    // MVC's complex binder binds only the properties every [Bind] include list of the parameter and its type names.
+    [Route(""plain/mcp014-bindparameter"")]
+    public class Mcp014BindParameterController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, [Bind(""Page"")] Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    [Bind(""Page"")]
+    public sealed class Mcp014PageOnlyFilter
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Route(""plain/mcp014-bindtype"")]
+    public class Mcp014BindTypeController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014PageOnlyFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    // [Bind] splits each item of its include list at commas.
+    [Route(""plain/mcp014-bindincluded"")]
+    public class Mcp014BindIncludedController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, [Bind(""Page, Slug"")] Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    public sealed class Mcp014Address
+    {
+        public string? City { get; set; }
+    }
+
+    public sealed class Mcp014AddressFilter
+    {
+        [FromRoute]
+        public Mcp014Address? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    // MVC binds a complex property from keys such as Slug.City, which one route value is not.
+    [Route(""plain/mcp014-address"")]
+    public class Mcp014AddressController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014AddressFilter f) => new { id, city = f.Slug?.City, f.Page };
+    }
+
+    [Route(""plain/mcp014-addresses"")]
+    public class Mcp014AddressesController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, [FromRoute] List<Mcp014Address>? slug) => new { id, count = slug?.Count ?? 0 };
+    }
+
+    [ApiController]
+    [Route(""api/mcp014-queryfilter"")]
+    public class Mcp014QueryFilterController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, [FromQuery] Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    [ApiController]
+    [Route(""api/mcp014-formfilter"")]
+    public class Mcp014FormFilterController : ControllerBase
+    {
+        [HttpPost(""{id}"")]
+        [HttpPost(""{id}/{slug}"")]
+        public object Post(int id, [FromForm] Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    // MVC creates a complex value through a public constructor without parameters, or a record's primary one.
+    public sealed class Mcp014CtorSlug
+    {
+        public Mcp014CtorSlug(int page)
+        {
+            Page = page;
+        }
+
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Route(""plain/mcp014-ctorslug"")]
+    public class Mcp014CtorSlugController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014CtorSlug f) => new { id, f.Slug, f.Page };
+    }
 }
 ";
 
@@ -1226,7 +1352,16 @@ namespace TestApi
     [InlineData("Mcp014PrivateSetSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-privatesetslug/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
     [InlineData("Mcp014InitSlugController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-initslug/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
     [InlineData("Mcp014SlugRecordController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-slugrecord/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
-    [InlineData("Mcp014ReadOnlyTagsController_GetTool", @"{""id"":7,""f"":{""tags"":[""a""],""page"":2}}", @"{""id"":7,""tags"":[],""page"":2}", "/plain/mcp014-readonlytags/7/a", @"{""id"":7,""tags"":[""a""],""page"":0}", true)]
+    // MVC fills a collection without a setter in place, but only one the instance already holds, which the generator
+    // cannot see: MCP014 stays quiet.
+    [InlineData("Mcp014ReadOnlyTagsController_GetTool", @"{""id"":7,""f"":{""tags"":[""a""],""page"":2}}", @"{""id"":7,""tags"":[],""page"":2}", "/plain/mcp014-readonlytags/7/a", @"{""id"":7,""tags"":[""a""],""page"":0}", false)]
+    [InlineData("Mcp014BindParameterController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-bindparameter/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014BindTypeController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-bindtype/7/red", @"{""id"":7,""slug"":null,""page"":0}", false)]
+    [InlineData("Mcp014BindIncludedController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-bindincluded/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014AddressController_GetTool", @"{""id"":7,""f"":{""slug"":{""city"":""Oslo""},""page"":2}}", @"{""id"":7,""city"":null,""page"":2}", "/plain/mcp014-address/7/red", @"{""id"":7,""city"":null,""page"":0}", false)]
+    [InlineData("Mcp014AddressesController_GetTool", @"{""id"":7}", @"{""id"":7,""count"":0}", "/plain/mcp014-addresses/7/red", @"{""id"":7,""count"":0}", false)]
+    [InlineData("Mcp014ApiQuerySlugRecordController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/api/mcp014-queryslugrecord/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014QueryFilterController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/api/mcp014-queryfilter/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
     public async Task Mcp014_IsReportedExactly_WhereTheToolLosesAValueThatARouteItDoesNotCallCarries(
         string toolClassName, string arguments, string expectedToolEcho, string uncalledRoute, string expectedRouteEcho, bool isReported)
     {
@@ -1241,6 +1376,34 @@ namespace TestApi
         Assert.Equal(StatusCodes.Status200OK, statusCode);
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedRouteEcho), JsonNode.Parse(routeEcho)), $"{uncalledRoute}: expected {expectedRouteEcho}, MVC bound {routeEcho}");
         Assert.Equal(isReported, _host.GeneratorDiagnostics.Any(x => x.Id == "MCP014" && x.GetMessage().Contains($"'{toolClassName.Replace("_GetTool", "")}.Get'", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("Mcp014ApiSlugRecordController_GetTool", "/api/mcp014-slugrecord/7/red", StatusCodes.Status415UnsupportedMediaType)]
+    [InlineData("Mcp014CtorSlugController_GetTool", "/plain/mcp014-ctorslug/7/red", StatusCodes.Status500InternalServerError)]
+    public async Task Mcp014_IsNotReported_WhereMvcBindsNoValueAtTheRouteTheToolDoesNotCall(string toolClassName, string uncalledRoute, int expectedStatusCode)
+    {
+        // MVC reads the value from the body, or cannot create it, so the route the tool does not call carries nothing it
+        // binds.
+        var (statusCode, _) = await _host.GetAsync(uncalledRoute);
+
+        Assert.Equal(expectedStatusCode, statusCode);
+        Assert.DoesNotContain(_host.GeneratorDiagnostics, x => x.Id == "MCP014" && x.GetMessage().Contains($"'{toolClassName.Replace("_GetTool", "")}.Get'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Mcp014_IsReported_ForARoutePropertyOfAFormParameter()
+    {
+        // MVC binds a [FromRoute] property from the route alone, whatever its parameter's source.
+        var result = await _host.CallToolAsync("Mcp014FormFilterController_PostTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}");
+        var toolEcho = _host.LastResponse.Body;
+        var (statusCode, routeEcho) = await _host.PostFormAsync("/api/mcp014-formfilter/7/red");
+
+        Assert.True(result.IsError != true, GetText(result));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(@"{""id"":7,""slug"":null,""page"":2}"), JsonNode.Parse(toolEcho)), $"MVC bound {toolEcho}");
+        Assert.Equal(StatusCodes.Status200OK, statusCode);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(@"{""id"":7,""slug"":""red"",""page"":0}"), JsonNode.Parse(routeEcho)), $"MVC bound {routeEcho}");
+        Assert.Contains(_host.GeneratorDiagnostics, x => x.Id == "MCP014" && x.GetMessage().Contains("'Mcp014FormFilterController.Post'", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1483,6 +1646,13 @@ namespace TestApi
         public async Task<(int StatusCode, string Body)> GetAsync(string path)
         {
             using var response = await _client.GetAsync(path);
+            return ((int)response.StatusCode, await response.Content.ReadAsStringAsync());
+        }
+
+        public async Task<(int StatusCode, string Body)> PostFormAsync(string path)
+        {
+            using var content = new FormUrlEncodedContent([]);
+            using var response = await _client.PostAsync(path, content);
             return ((int)response.StatusCode, await response.Content.ReadAsStringAsync());
         }
 

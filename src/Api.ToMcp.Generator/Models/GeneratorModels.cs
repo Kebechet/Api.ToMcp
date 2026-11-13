@@ -437,6 +437,13 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public bool IsCollection { get; init; }
 
+        /// <summary>
+        /// Whether MVC binds the parameter from one string, such as one route value, with a binder of MVC's: its type reads
+        /// from one string, or is an array of such or a collection of such MVC creates as a <c>List&lt;T&gt;</c>, and no
+        /// attribute of it or of its type names a binder type, whose reads the generator cannot see. Only MCP014 reads it.
+        /// </summary>
+        public bool IsReadFromOneValue { get; init; }
+
         public EquatableArray<PropertyInfoModel> Properties { get; init; } = EquatableArray<PropertyInfoModel>.Empty;
 
         /// <summary>
@@ -485,11 +492,19 @@ namespace Api.ToMcp.Generator.Models
         public bool IsSetByConstructor { get; init; }
 
         /// <summary>
-        /// Whether MVC's complex binder binds the property: no binding behavior makes it <c>Never</c>, and it has a public
-        /// setter, a record's constructor sets it, or MVC can update it in place. Only MCP014 reads it; the tool sends
-        /// every property as it did.
+        /// Whether the generator is sure MVC's complex binder binds the property: MVC creates the type it is a property
+        /// of, no binding behavior makes it <c>Never</c>, every <c>[Bind]</c> include list of its parameter and of that
+        /// type names it, and a record's constructor sets it or it has a public setter. MVC fills a collection without a
+        /// setter in place as well, but only one the instance already holds, which the generator cannot see. Only MCP014
+        /// reads it; the tool sends every property as it did.
         /// </summary>
         public bool IsBindable { get; init; } = true;
+
+        /// <summary>
+        /// Whether MVC binds the property from one string, such as one route value, as
+        /// <see cref="ParameterInfoModel.IsReadFromOneValue"/> tells of a parameter. Only MCP014 reads it.
+        /// </summary>
+        public bool IsReadFromOneValue { get; init; }
 
         /// <summary>
         /// Whether the property's binding source keeps <c>[ApiController]</c> from reading its type from the body. MVC

@@ -24,6 +24,11 @@ internal static class BindingAttributeNames
     public const string BinderTypePropertyName = "BinderType";
 
     /// <summary>
+    /// Implemented by <see cref="ModelBinder"/>, <see cref="BindProperty"/> and any attribute that can name a binder type.
+    /// </summary>
+    public const string BinderTypeProviderMetadata = "Microsoft.AspNetCore.Mvc.ModelBinding.IBinderTypeProviderMetadata";
+
+    /// <summary>
     /// The base of <c>[BindRequired]</c> and <c>[BindNever]</c>, whose constructor takes a <c>BindingBehavior</c>.
     /// </summary>
     public const string BindingBehavior = "Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute";
@@ -67,6 +72,11 @@ internal static class BindingAttributeNames
     public const string Bind = "Microsoft.AspNetCore.Mvc.BindAttribute";
 
     public const string BindPrefixPropertyName = "Prefix";
+
+    /// <summary>
+    /// Implemented by <see cref="Bind"/> and by any attribute that limits the properties MVC's complex binder binds.
+    /// </summary>
+    public const string PropertyFilterProvider = "Microsoft.AspNetCore.Mvc.ModelBinding.IPropertyFilterProvider";
 
     /// <summary>
     /// Implemented by <c>[ApiController]</c> and by any attribute that makes MVC apply its conventions.
