@@ -422,16 +422,73 @@ public class McpExtensionsTests
 
         await startupCheck.StartAsync(CancellationToken.None);
 
+        // The hand-written tool with structured content is left out: the SDK writes its content, not MVC.
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
         Assert.Contains("Newtonsoft.Json (AddNewtonsoftJson)", warning.Message);
-        Assert.Contains("Generated tools with an output schema: 5,", warning.Message);
+        Assert.Contains(
+            "Generated tools with an output schema: generated_converted, generated_nullable, generated_recursive, generated_refs, generated_strict.",
+            warning.Message);
+        Assert.DoesNotContain("handwritten", warning.Message);
         Assert.Contains("Minimal API", warning.Message);
         Assert.Contains("\"structuredOutput\": false", warning.Message);
     }
 
     [Fact]
+    public async Task StartupCheck_NamesEachToolOnce_WhenItsAssemblyIsRegisteredTwice()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddControllers().AddNewtonsoftJson();
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains("AddNewtonsoftJson"));
+        Assert.Contains(
+            "Generated tools with an output schema: generated_converted, generated_nullable, generated_recursive, generated_refs, generated_strict.",
+            warning.Message);
+    }
+
+    [Fact]
+    public void StartupCheck_ListsTenToolNames_AndCountsTheRest()
+    {
+        var names = Enumerable.Range(1, 12).Select(x => $"tool_{x:D2}").ToList();
+
+        var listed = McpToolsStartupCheck.ListToolNames(names);
+
+        Assert.Equal("tool_01, tool_02, tool_03, tool_04, tool_05, tool_06, tool_07, tool_08, tool_09, tool_10 and 2 more", listed);
+    }
+
+    [Fact]
+    public async Task StartupCheck_DoesNotWarnAboutNewtonsoftJson_WhenSystemTextJsonsFormatterComesFirst()
+    {
+        // A tool's request sends no Accept header, so MVC writes the response with the first JSON formatter it lists.
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddControllers().AddNewtonsoftJson();
+                services.Configure<MvcOptions>(options => options.OutputFormatters.Insert(0, new SystemTextJsonOutputFormatter(JsonSerializerOptions.Default)));
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
+    [Fact]
     public async Task StartupCheck_Warns_WhenMvcWritesResponsesWithAFormatterDerivedFromNewtonsofts()
     {
+        // Inserted before System.Text.Json's formatter, which AddControllers puts in the list.
         var logs = new List<(LogLevel Level, string Message)>();
         using var provider = BuildProvider(
             services =>

@@ -52,8 +52,6 @@ internal sealed class McpOutputSchemaBuilder
 
     private readonly ConcurrentDictionary<Type, bool> _typesWithIgnoredCycles = new();
 
-    private int _builtSchemaCount;
-
     public McpOutputSchemaBuilder(IOptions<JsonOptions> jsonOptions)
     {
         _serializerOptions = CopyOptions(jsonOptions.Value.JsonSerializerOptions);
@@ -73,12 +71,6 @@ internal sealed class McpOutputSchemaBuilder
     public IReadOnlyCollection<Type> TypesWithIgnoredCycles => [.. _typesWithIgnoredCycles.Keys];
 
     /// <summary>
-    /// How many output schemas were built, one for each generated tool that has one, for the startup warning about
-    /// responses MVC writes with Newtonsoft.Json.
-    /// </summary>
-    public int BuiltSchemaCount => Volatile.Read(ref _builtSchemaCount);
-
-    /// <summary>
     /// The schema of <paramref name="type"/> as MVC writes it. A strict schema promises a value; a nullable one is
     /// <c>{"anyOf": [value, {"type": "null"}]}</c>, which also makes the SDK wrap it as <c>{"result": ...}</c> for
     /// clients on a protocol older than 2026-07-28, whose structured content has to be an object. When MVC preserves
@@ -87,8 +79,6 @@ internal sealed class McpOutputSchemaBuilder
     /// </summary>
     public JsonElement Build(Type type, bool isNullable, AIJsonSchemaCreateOptions? inferenceOptions)
     {
-        Interlocked.Increment(ref _builtSchemaCount);
-
         if (_preservesReferences)
         {
             HasBuiltAnyValueSchema = true;

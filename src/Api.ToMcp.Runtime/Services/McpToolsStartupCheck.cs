@@ -2,6 +2,7 @@ using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Options;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -38,6 +39,11 @@ internal sealed class McpToolsStartupCheck : IHostedService
     /// </summary>
     private const string NewtonsoftJsonOutputFormatterTypeName = "Microsoft.AspNetCore.Mvc.Formatters.NewtonsoftJsonOutputFormatter";
 
+    /// <summary>
+    /// How many tools a warning names before it only counts the rest, so a large app does not log a wall of names.
+    /// </summary>
+    private const int MaxListedToolNames = 10;
+
     private readonly IServiceProvider _serviceProvider;
     private readonly XmlDocPropertyDescriber _propertyDescriber;
     private readonly McpOutputSchemaBuilder _outputSchemaBuilder;
@@ -69,8 +75,8 @@ internal sealed class McpToolsStartupCheck : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        var toolCount = _serviceProvider.GetServices<McpServerTool>().Count();
-        _logger.LogDebug("Built {ToolCount} MCP tools.", toolCount);
+        var tools = _serviceProvider.GetServices<McpServerTool>().ToList();
+        _logger.LogDebug("Built {ToolCount} MCP tools.", tools.Count);
 
         if (RunsToolCallsWithoutTheirRequests(_transportOptions))
         {
@@ -87,12 +93,18 @@ internal sealed class McpToolsStartupCheck : IHostedService
                 "The app's MVC JSON options preserve references (ReferenceHandler.Preserve), which no JSON Schema describes, so generated tools advertise an output schema that accepts any value. Set \"structuredOutput\": false in generator.json to advertise none.");
         }
 
-        var builtSchemaCount = _outputSchemaBuilder.BuiltSchemaCount;
-        if (builtSchemaCount > 0 && WritesResponsesWithNewtonsoftJson(_mvcOptions))
+        // The SDK writes a hand-written tool's structured content itself, so only the generated tools' schemas meet MVC.
+        var toolsWithOutputSchema = tools
+            .Where(x => x.Metadata.OfType<McpGeneratedToolAttribute>().Any() && x.ProtocolTool.OutputSchema is not null)
+            .Select(x => x.ProtocolTool.Name)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        if (toolsWithOutputSchema.Count > 0 && WritesResponsesWithNewtonsoftJson(_mvcOptions))
         {
             _logger.LogWarning(
-                "MVC writes responses with Newtonsoft.Json (AddNewtonsoftJson), but the output schemas of generated tools are built from MVC's System.Text.Json options, which Newtonsoft.Json does not use: [JsonProperty] names, [Newtonsoft.Json.JsonIgnore] and the converters of SerializerSettings, such as StringEnumConverter, are not in them, so a client that validates the structured content against them can reject the result. Generated tools with an output schema: {ToolCount}, counting those of Minimal API endpoints, whose responses System.Text.Json writes whatever MVC uses. Set \"structuredOutput\": false in generator.json to advertise none.",
-                builtSchemaCount);
+                "MVC writes responses with Newtonsoft.Json (AddNewtonsoftJson), but the output schemas of generated tools are built from MVC's System.Text.Json options, which Newtonsoft.Json does not use: [JsonProperty] names, [Newtonsoft.Json.JsonIgnore] and the converters of SerializerSettings, such as StringEnumConverter, are not in them, so a client that validates the structured content against them can reject the result. Generated tools with an output schema: {ToolNames}. The tools of Minimal API endpoints among them are right, as System.Text.Json writes their responses whatever MVC uses. Set \"structuredOutput\": false in generator.json to advertise none.",
+                ListToolNames(toolsWithOutputSchema));
         }
 
         var typesWithIgnoredCycles = _outputSchemaBuilder.TypesWithIgnoredCycles;
@@ -200,12 +212,27 @@ internal sealed class McpToolsStartupCheck : IHostedService
     }
 
     /// <summary>
-    /// Whether <c>AddNewtonsoftJson</c>, or the app itself, put Newtonsoft's formatter, or one derived from it, among MVC's
-    /// output formatters, which then writes the JSON of an action's response instead of System.Text.Json's.
+    /// The names, up to <see cref="MaxListedToolNames"/> of them, then how many more there are.
+    /// </summary>
+    internal static string ListToolNames(IReadOnlyList<string> names)
+    {
+        var listed = string.Join(", ", names.Take(MaxListedToolNames));
+        return names.Count > MaxListedToolNames
+            ? $"{listed} and {names.Count - MaxListedToolNames} more"
+            : listed;
+    }
+
+    /// <summary>
+    /// Whether MVC writes an action's response with Newtonsoft's formatter, which <c>AddNewtonsoftJson</c> puts in place
+    /// of System.Text.Json's, or one derived from it. A tool's request sends no <c>Accept</c> header, so MVC takes the
+    /// first formatter that can write the value: the first of the two in the list. A formatter that wraps Newtonsoft's
+    /// rather than deriving from it cannot be told apart.
     /// </summary>
     private static bool WritesResponsesWithNewtonsoftJson(MvcOptions mvcOptions)
     {
-        return mvcOptions.OutputFormatters.Any(formatter => IsOrDerivesFrom(formatter.GetType(), NewtonsoftJsonOutputFormatterTypeName));
+        var jsonFormatter = mvcOptions.OutputFormatters.FirstOrDefault(formatter =>
+            formatter is SystemTextJsonOutputFormatter || IsOrDerivesFrom(formatter.GetType(), NewtonsoftJsonOutputFormatterTypeName));
+        return jsonFormatter is not null && jsonFormatter is not SystemTextJsonOutputFormatter;
     }
 
     private static bool IsOrDerivesFrom(Type type, string fullName)
