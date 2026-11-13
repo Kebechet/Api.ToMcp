@@ -144,11 +144,22 @@ namespace TestApi
         [HttpPost(""nullable-binder"")]
         public object PostNullableBinder(NullableBinderQuery q) => q;
 
-        [HttpPost(""file-query"")]
-        public object PostFileQuery(FileQuery q) => new { q.City, hasAttachment = q.Attachment is not null };
+        [HttpGet(""header"")]
+        public object GetHeader([FromHeader(Name = ""X-Tenant"")] string? tenant, [FromHeader(Name = ""X-Ids"")] int[]? ids, [FromHeader(Name = ""X-Tags"")] string[]? tags, [FromHeader] OrderStatus? status)
+            => new { tenant, ids, tags, status };
 
-        [HttpPost(""file-list-query"")]
-        public object PostFileListQuery(FileListQuery q) => new { q.City };
+        [HttpGet(""header-default"")]
+        public object GetHeaderDefault([FromHeader(Name = ""X-Page"")] int page = 2) => new { page, sent = Request.Headers.ContainsKey(""X-Page"") };
+
+        [HttpPost(""form"")]
+        public object PostForm([FromForm] string? name, [FromForm(Name = ""f"")] ProductFilter? filter, [FromForm] int[]? ids, [FromForm] OrderStatus status = OrderStatus.Closed)
+            => new { name, city = filter?.City, ids, status, isForm = Request.HasFormContentType };
+
+        [HttpPut(""form-route/{id:int}"")]
+        public object PutFormRoute([FromForm] AttributedQuery q) => new { q.Id, q.Note };
+
+        [HttpPost(""form-header/{id}"")]
+        public object PostFormHeader(int id, [FromForm] Shipment shipment, [FromHeader(Name = ""Idempotency-Key"")] string key) => new { id, shipment.Note, key };
 
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
@@ -531,8 +542,14 @@ namespace TestApi
     [InlineData("EchoController_PostPlainCodeTool", @"{""value"":{""value"":""B-8""}}", @"{""code"":""B-8""}")]
     [InlineData("EchoController_PostTypedBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
-    [InlineData("EchoController_PostFileQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno"",""hasAttachment"":false}")]
-    [InlineData("EchoController_PostFileListQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
+    [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}")]
+    [InlineData("EchoController_GetHeaderTool", @"{}", @"{""tenant"":null,""ids"":[],""tags"":[],""status"":null}")]
+    [InlineData("EchoController_GetHeaderDefaultTool", @"{""page"":3}", @"{""page"":3,""sent"":true}")]
+    [InlineData("EchoController_GetHeaderDefaultTool", @"{}", @"{""page"":2,""sent"":false}")]
+    [InlineData("EchoController_PostFormTool", @"{""name"":""a b&c=d+e"",""filter"":{""city"":""Brno""},""ids"":[1,2],""status"":0}", @"{""name"":""a b&c=d+e"",""city"":""Brno"",""ids"":[1,2],""status"":0,""isForm"":true}")]
+    [InlineData("EchoController_PostFormTool", @"{}", @"{""name"":null,""city"":null,""ids"":[],""status"":1,""isForm"":true}")]
+    [InlineData("EchoController_PutFormRouteTool", @"{""q"":{""id"":7,""note"":""n1"",""city"":""Brno""}}", @"{""id"":7,""note"":""n1""}")]
+    [InlineData("EchoController_PostFormHeaderTool", @"{""id"":3,""shipment"":{""id"":9,""note"":""fragile""},""key"":""k-1""}", @"{""id"":3,""note"":""fragile"",""key"":""k-1""}")]
     [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
     [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
     [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
@@ -668,6 +685,18 @@ namespace TestApi
 
         Assert.True(requestCount == _host.RequestCount, $"{toolClassName} called the API, which answered {_host.LastResponse}");
         Assert.True(result.IsError, $"{toolClassName}: {GetText(result)}");
+    }
+
+    [Fact]
+    public async Task Tool_RefusesAHeaderValueAnHttpHeaderCannotHold_WithoutCallingTheApi()
+    {
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_GetHeaderTool", @"{""tenant"":""a\r\nX-Injected: 1""}");
+
+        Assert.True(requestCount == _host.RequestCount, $"The tool called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal("The argument 'tenant' is sent as the request header 'X-Tenant', which can hold only visible ASCII characters, spaces and tabs.", GetText(result));
     }
 
     [Fact]
@@ -886,7 +915,7 @@ namespace TestApi
         }
     }
 
-    private sealed class RecordingInvoker(HttpClient client) : IMcpHttpInvoker
+    private sealed class RecordingInvoker(HttpClient client) : IMcpHttpRequestInvoker
     {
         public (int StatusCode, string Body) LastResponse { get; private set; }
 
@@ -904,12 +933,33 @@ namespace TestApi
 
         public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
 
-        private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
+        public Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
+        {
+            return SendAsync(request.Method, request.Route, request.JsonBody, ct, request.FormBody, request.Headers);
+        }
+
+        private async Task<CallToolResult> SendAsync(
+            HttpMethod method,
+            string route,
+            string? jsonBody,
+            CancellationToken ct,
+            string? formBody = null,
+            IReadOnlyList<KeyValuePair<string, string>>? headers = null)
         {
             using var request = new HttpRequestMessage(method, route);
             if (jsonBody is not null)
             {
                 request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
+            }
+
+            if (formBody is not null)
+            {
+                request.Content = new StringContent(formBody, Encoding.UTF8, MediaTypeNames.Application.FormUrlEncoded);
+            }
+
+            foreach (var (name, value) in headers ?? [])
+            {
+                Assert.True(request.Headers.TryAddWithoutValidation(name, value), name);
             }
 
             RequestCount++;

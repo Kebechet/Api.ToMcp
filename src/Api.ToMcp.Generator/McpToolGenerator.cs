@@ -614,7 +614,7 @@ namespace Api.ToMcp.Generator
                 ? $"{config.Mode} mode selects none of the project's HTTP actions"
                 : selectedActions.All(x => x.IsMinimalApiEndpoint)
                     ? $"{config.Mode} mode selects only Minimal API endpoints the generator cannot give a tool"
-                    : $"{config.Mode} mode selects only HTTP actions whose route the generator cannot build";
+                    : $"{config.Mode} mode selects only HTTP actions whose route or request the generator cannot build";
 
             diagnostics.Add(DiagnosticInfoModel.InFile(
                 DiagnosticDescriptors.NoToolsGenerated,
@@ -670,7 +670,7 @@ namespace Api.ToMcp.Generator
             if (selectingUnbuildable.Count > 0)
                 reasons.Add(selectedActions.All(x => x.IsMinimalApiEndpoint)
                     ? $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only endpoints the generator cannot give a tool, as {DiagnosticDescriptors.UnbuildableEndpoint.Id} reports"
-                    : $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route the generator cannot build, as {GetUnbuildableIds(selectedActions)} {(selectedActions.All(x => !x.IsMinimalApiEndpoint) ? "reports" : "report")}");
+                    : $"{QuoteAll(selectingUnbuildable)} {(selectingUnbuildable.Count == 1 ? "selects" : "select")} only actions whose route or request the generator cannot build, as {GetUnbuildableIds(selectedActions)} {(selectedActions.All(x => !x.IsMinimalApiEndpoint) ? "reports" : "report")}");
 
             var why = reasons.Count == 0 ? "" : $": {string.Join(", and ", reasons)}";
             var selected = selectedActions.IsEmpty ? "an action" : "an action that becomes a tool";

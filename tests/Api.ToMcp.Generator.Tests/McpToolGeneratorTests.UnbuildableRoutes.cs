@@ -133,9 +133,9 @@ namespace TestApi
         var diagnostic = Assert.Single(diagnostics, x => x.Id == NoToolsGeneratedId);
 
         Assert.Equal(
-            "No MCP tools are generated: SelectedOnly mode selects only HTTP actions whose route the generator cannot build. " +
+            "No MCP tools are generated: SelectedOnly mode selects only HTTP actions whose route or request the generator cannot build. " +
             "No include entry in generator.json selects an action that becomes a tool: 'Prodcuts' names no controller or action of the project, as MCP008 reports, " +
-            "and 'ComputedVerbsController' selects only actions whose route the generator cannot build, as MCP009 reports. " +
+            "and 'ComputedVerbsController' selects only actions whose route or request the generator cannot build, as MCP009 reports. " +
             "List controllers such as 'ProductsController' or actions such as 'ProductsController.GetById' in it, or mark actions with [McpExpose].",
             diagnostic.GetMessage());
         Assert.Single(diagnostics, x => x.Id == UnmatchedConfigEntryId);
@@ -151,7 +151,7 @@ namespace TestApi
         var diagnostic = Assert.Single(diagnostics, x => x.Id == NoToolsGeneratedId);
 
         Assert.Equal(
-            "No MCP tools are generated: AllExceptExcluded mode selects only HTTP actions whose route the generator cannot build. " +
+            "No MCP tools are generated: AllExceptExcluded mode selects only HTTP actions whose route or request the generator cannot build. " +
             "MCP009 says at each of them why. Remove entries from the exclude list in generator.json, or mark actions with [McpExpose].",
             diagnostic.GetMessage());
         Assert.Single(diagnostics, x => x.Id == UnbuildableRouteId);

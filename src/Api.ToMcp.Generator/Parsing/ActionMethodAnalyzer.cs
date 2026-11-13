@@ -35,6 +35,45 @@ namespace Api.ToMcp.Generator.Parsing
         private const string IdempotentHintPropertyName = "Idempotent";
         private const string OpenWorldHintPropertyName = "OpenWorld";
         private const string AttributeUsageInheritedPropertyName = "Inherited";
+        private const string PropertyPathSeparator = ".";
+        private const string SystemNamespaceName = "System";
+        private const string MicrosoftNamespaceName = "Microsoft";
+
+        /// <summary>
+        /// The characters besides letters and digits that HTTP allows in a token (RFC 9110, section 5.6.2).
+        /// </summary>
+        private const string TokenSymbols = "!#$%&'*+-.^_`|~";
+
+        /// <summary>
+        /// The request headers a tool never sends from an argument, compared ignoring case, as HTTP compares header
+        /// names: those that carry the caller's credentials, which the invoker forwards from the MCP request or never
+        /// sends; those the tool's request carries of its own, the loop prevention header and, over HTTP, the host and
+        /// the trace context <c>HttpClient</c> sends; and those that frame or describe the body the tool writes, which
+        /// <c>HttpClient</c> keeps among the content's headers.
+        /// </summary>
+        private static readonly HashSet<string> HeadersNeverSetFromArguments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            HttpHeaderNames.Authorization,
+            HttpHeaderNames.Cookie,
+            HttpHeaderNames.Host,
+            HttpHeaderNames.LoopPrevention,
+            HttpHeaderNames.TraceParent,
+            HttpHeaderNames.TraceState,
+            HttpHeaderNames.Baggage,
+            HttpHeaderNames.CorrelationContext,
+            HttpHeaderNames.TransferEncoding,
+            HttpHeaderNames.ContentType,
+            HttpHeaderNames.ContentLength,
+            HttpHeaderNames.ContentEncoding,
+            HttpHeaderNames.ContentLanguage,
+            HttpHeaderNames.ContentLocation,
+            HttpHeaderNames.ContentMD5,
+            HttpHeaderNames.ContentRange,
+            HttpHeaderNames.ContentDisposition,
+            HttpHeaderNames.Allow,
+            HttpHeaderNames.Expires,
+            HttpHeaderNames.LastModified
+        };
 
         /// <summary>
         /// The HTTP methods a tool calls an action with, the ones <c>IMcpHttpInvoker</c> sends.
@@ -65,6 +104,15 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static readonly CompilationCache<ITypeSymbol, bool> HasOwnBindingSourceByType =
             new CompilationCache<ITypeSymbol, bool>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// The form file types, resolved once per compilation, and where in each parameter type a form file is.
+        /// </summary>
+        private static readonly CompilationCache<Compilation, ImmutableArray<ITypeSymbol>> FormFileTypes =
+            new CompilationCache<Compilation, ImmutableArray<ITypeSymbol>>(EqualityComparer<Compilation>.Default);
+
+        private static readonly CompilationCache<ITypeSymbol, string?> FormFilePaths =
+            new CompilationCache<ITypeSymbol, string?>(SymbolEqualityComparer.Default);
 
         private static readonly CompilationCache<IMethodSymbol, string?> XmlDocSummaries =
             new CompilationCache<IMethodSymbol, string?>(SymbolEqualityComparer.Default);
@@ -102,7 +150,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var routeProblem = httpInfo.Value.Problem ??
                     (IsAbsoluteTemplate(httpInfo.Value.Template) ? null : routePrefixProblem);
 
-                var parameters = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation, ct);
+                var (parameters, parameterProblem) = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation, ct);
                 var returnType = AnalyzeReturnType(method);
                 var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
@@ -150,6 +198,7 @@ namespace Api.ToMcp.Generator.Parsing
                     HttpMethod = httpInfo.Value.Method,
                     RouteTemplate = fullRoute,
                     RouteProblem = routeProblem,
+                    ParameterProblem = parameterProblem,
                     Parameters = parameters,
                     ReturnType = returnType,
                     HasMcpExposeAttribute = actionMcpExposeAttr != null,
@@ -413,7 +462,11 @@ namespace Api.ToMcp.Generator.Parsing
             return definition;
         }
 
-        private static ImmutableArray<ParameterInfoModel> AnalyzeParameters(
+        /// <returns>
+        /// The parameters, and why a tool cannot send what the action reads, as a clause of MCP009's message, or null when
+        /// it can.
+        /// </returns>
+        private static (ImmutableArray<ParameterInfoModel> Parameters, string? Problem) AnalyzeParameters(
             IMethodSymbol method,
             string httpMethod,
             bool isApiController,
@@ -422,6 +475,7 @@ namespace Api.ToMcp.Generator.Parsing
         {
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
             var paramDocs = XmlDocParams.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocParams);
+            string? problem = null;
 
             foreach (var param in method.Parameters)
             {
@@ -441,6 +495,8 @@ namespace Api.ToMcp.Generator.Parsing
                     continue;
 
                 var isSimpleType = SimpleTypeClassifier.IsSimpleType(param.Type);
+                var modelName = modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null);
+                problem ??= GetParameterProblem(param, declaredSource, modelName ?? param.Name, compilation);
 
                 // A [FromRoute] or [FromBody] parameter's properties fill route values whatever its type, as a body is JSON
                 // even for a type MVC reads from one string. A complex parameter's also decide whether MVC reads it from
@@ -468,11 +524,160 @@ namespace Api.ToMcp.Generator.Parsing
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
                     // MVC binds every parameter under the first name these give, whatever its source
                     // (BindingInfo.GetBindingInfo, then the model metadata, which reads the type's attributes too).
-                    ModelName = modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null)
+                    ModelName = modelName
                 });
             }
 
-            return builder.ToImmutable();
+            var parameters = builder.ToImmutable();
+            var body = parameters.FirstOrDefault(x => x.Source == ParameterSourceModel.Body);
+            var formField = parameters.FirstOrDefault(x => x.Source == ParameterSourceModel.Form);
+            if (body is not null && formField is not null)
+            {
+                problem ??= $"it reads '{body.Name}' from a JSON body and '{formField.Name}' from a form, which one request cannot carry";
+            }
+
+            return (parameters, problem);
+        }
+
+        /// <summary>
+        /// Why a tool cannot send the parameter, as a clause of MCP009's message, or null when it can: a form file, which
+        /// the tool's form cannot carry; a header of a type MVC reads from no header value (<c>HeaderModelBinderProvider</c>
+        /// takes a simple type or a collection of one); or a header a tool never sets.
+        /// </summary>
+        private static string? GetParameterProblem(IParameterSymbol parameter, ParameterSourceModel? declaredSource, string headerName, Compilation compilation)
+        {
+            var formFilePath = FormFilePaths.GetOrAdd(compilation, parameter.Type, x => FindFormFile(x, compilation, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default)));
+            if (formFilePath is not null)
+            {
+                return formFilePath.Length == 0
+                    ? $"its parameter '{parameter.Name}' is a form file, which a tool cannot send"
+                    : $"its parameter '{parameter.Name}' holds a form file in its property '{formFilePath}', which a tool cannot send";
+            }
+
+            if (declaredSource != ParameterSourceModel.Header)
+            {
+                return null;
+            }
+
+            var elementType = GetCollectionElementType(parameter.Type);
+            if (!SimpleTypeClassifier.IsSimpleType(parameter.Type) && (elementType is null || !SimpleTypeClassifier.IsSimpleType(elementType)))
+            {
+                return $"its parameter '{parameter.Name}' is read from a header as {parameter.Type.ToDisplayString()}, and a tool sends a header only for a type MVC reads from one string, or an array of such";
+            }
+
+            var headerProblem = GetHeaderProblem(headerName);
+            return headerProblem is null
+                ? null
+                : $"its parameter '{parameter.Name}' is read from the request header '{headerName}', {headerProblem}";
+        }
+
+        /// <summary>
+        /// Why a tool cannot send a header of the name from an argument, as the end of a clause that names the header, or
+        /// null when it can. The name has to be a token, as HTTP defines it, and none of
+        /// <see cref="HeadersNeverSetFromArguments"/>.
+        /// </summary>
+        internal static string? GetHeaderProblem(string headerName)
+        {
+            if (headerName.Length == 0 || headerName.Any(x => !IsTokenCharacter(x)))
+            {
+                return "which is no valid HTTP header name";
+            }
+
+            return HeadersNeverSetFromArguments.Contains(headerName) ? "which a tool never sets from an argument" : null;
+        }
+
+        /// <summary>
+        /// Whether HTTP allows the character in a token, which a header's name is (RFC 9110, section 5.6.2).
+        /// </summary>
+        private static bool IsTokenCharacter(char character)
+        {
+            return character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' ||
+                TokenSymbols.IndexOf(character) >= 0;
+        }
+
+        /// <summary>
+        /// Where in the type a form file is, which MVC binds from a multipart form (<c>BindingSourceMetadataProvider</c>): an
+        /// empty path for the type itself, else the path of the property that holds it, such as <c>Lines.Attachment</c>;
+        /// null when it holds none. A collection holds what its items hold. The framework's own types hold none.
+        /// </summary>
+        private static string? FindFormFile(ITypeSymbol type, Compilation compilation, HashSet<ITypeSymbol> visited)
+        {
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+            {
+                type = ((INamedTypeSymbol)type).TypeArguments[0];
+            }
+
+            if (FormFileTypes.GetOrAdd(compilation, compilation, GetFormFileTypes).Any(x => IsAssignableTo(type, x, compilation)))
+            {
+                return string.Empty;
+            }
+
+            if (SimpleTypeClassifier.IsSimpleType(type) || !visited.Add(type))
+            {
+                return null;
+            }
+
+            var elementType = GetCollectionElementType(type);
+            if (elementType is not null)
+            {
+                return FindFormFile(elementType, compilation, visited);
+            }
+
+            if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct) || IsFrameworkType(type))
+            {
+                return null;
+            }
+
+            foreach (var property in GetVisibleProperties(type))
+            {
+                var path = FindFormFile(property.Type, compilation, visited);
+                if (path is not null)
+                {
+                    return path.Length == 0 ? property.Name : property.Name + PropertyPathSeparator + path;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsFrameworkType(ITypeSymbol type)
+        {
+            var rootNamespace = type.ContainingNamespace;
+            while (rootNamespace?.ContainingNamespace is not null && !rootNamespace.ContainingNamespace.IsGlobalNamespace)
+            {
+                rootNamespace = rootNamespace.ContainingNamespace;
+            }
+
+            return rootNamespace?.Name is SystemNamespaceName or MicrosoftNamespaceName;
+        }
+
+        /// <summary>
+        /// The type of the items of an array or another <c>IEnumerable&lt;T&gt;</c> but a string, as MVC's
+        /// <c>ModelMetadata.ElementType</c> takes it, or null for any other type.
+        /// </summary>
+        private static ITypeSymbol? GetCollectionElementType(ITypeSymbol type)
+        {
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+            {
+                type = ((INamedTypeSymbol)type).TypeArguments[0];
+            }
+
+            var array = type as IArrayTypeSymbol;
+            if (array is not null)
+            {
+                return array.ElementType;
+            }
+
+            if (type.SpecialType == SpecialType.System_String)
+            {
+                return null;
+            }
+
+            var enumerable = type.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T
+                ? type as INamedTypeSymbol
+                : type.AllInterfaces.FirstOrDefault(x => x.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T);
+
+            return enumerable?.TypeArguments[0];
         }
 
         /// <summary>
@@ -569,17 +774,28 @@ namespace Api.ToMcp.Generator.Parsing
 
         private static ImmutableArray<ITypeSymbol> GetOwnBindingSourceTypes(Compilation compilation)
         {
+            var cancellationToken = compilation.GetTypeByMetadataName(KnownTypeNames.CancellationToken);
+            var formFileTypes = FormFileTypes.GetOrAdd(compilation, compilation, GetFormFileTypes);
+
+            return cancellationToken is null ? formFileTypes : formFileTypes.Add(cancellationToken);
+        }
+
+        /// <summary>
+        /// The types MVC binds from the files of a multipart form: <c>IFormFile</c>, <c>IFormFileCollection</c>,
+        /// <c>IFormCollection</c> and any <c>IEnumerable&lt;IFormFile&gt;</c>, each counting for a type assigned to it.
+        /// </summary>
+        private static ImmutableArray<ITypeSymbol> GetFormFileTypes(Compilation compilation)
+        {
             var formFile = compilation.GetTypeByMetadataName(KnownTypeNames.FormFile);
-            var boundTypes = new[]
+            var formFileTypes = new[]
             {
                 formFile,
                 compilation.GetTypeByMetadataName(KnownTypeNames.FormFileCollection),
                 compilation.GetTypeByMetadataName(KnownTypeNames.FormCollection),
-                formFile is null ? null : compilation.GetSpecialType(SpecialType.System_Collections_Generic_IEnumerable_T).Construct(formFile),
-                compilation.GetTypeByMetadataName(KnownTypeNames.CancellationToken)
+                formFile is null ? null : compilation.GetSpecialType(SpecialType.System_Collections_Generic_IEnumerable_T).Construct(formFile)
             };
 
-            return boundTypes.OfType<ITypeSymbol>().ToImmutableArray();
+            return formFileTypes.OfType<ITypeSymbol>().ToImmutableArray();
         }
 
         /// <summary>
@@ -699,6 +915,8 @@ namespace Api.ToMcp.Generator.Parsing
                         return ParameterSourceModel.Route;
                     case BindingAttributeNames.FromQuery:
                         return ParameterSourceModel.Query;
+                    case BindingAttributeNames.FromForm:
+                        return ParameterSourceModel.Form;
                 }
 
                 if (GivesBindingSource(attribute))
@@ -870,6 +1088,8 @@ namespace Api.ToMcp.Generator.Parsing
                         return ParameterSourceModel.Body;
                     case BindingAttributeNames.FromHeader:
                         return ParameterSourceModel.Header;
+                    case BindingAttributeNames.FromForm:
+                        return ParameterSourceModel.Form;
                     case BindingAttributeNames.FromServices:
                         return ParameterSourceModel.Services;
                 }

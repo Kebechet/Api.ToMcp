@@ -214,12 +214,11 @@ public partial class McpToolGeneratorTests
 
     [Theory]
     [InlineData("TypedBinderQuery")]
-    [InlineData("FileQuery")]
-    [InlineData("FileListQuery")]
     public void Generator_SendsAComplexParameterInTheQuery_WhenThePropertyTypeOfAPropertyNamesABindingSource(string type)
     {
         // MVC takes a property's binding source from its type's attributes as well as its own, and gives IFormFile and its
-        // collections one of their own; either counts among the bound properties that keep it off the body.
+        // collections one of their own; either counts among the bound properties that keep it off the body. A type that
+        // holds a form file gets no tool, as a tool cannot send the file.
         var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"search\")] public Task<string> Find({type} q) => Task.FromResult(string.Empty);");
 
         Assert.Contains("AddQueryValue(queryParts, \"q\", q);", tool);

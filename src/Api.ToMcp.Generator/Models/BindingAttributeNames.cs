@@ -11,6 +11,7 @@ internal static class BindingAttributeNames
     public const string FromQuery = "FromQueryAttribute";
     public const string FromBody = "FromBodyAttribute";
     public const string FromHeader = "FromHeaderAttribute";
+    public const string FromForm = "FromFormAttribute";
     public const string FromServices = "FromServicesAttribute";
 
     /// <summary>

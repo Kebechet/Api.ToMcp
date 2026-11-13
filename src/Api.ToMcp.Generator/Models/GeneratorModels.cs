@@ -151,6 +151,13 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public string? RouteProblem { get; init; }
 
+        /// <summary>
+        /// Why a tool cannot send what the action reads from the request, such as a header a tool never sets or a form
+        /// file, as a clause of MCP009's message, or null when it can. Unlike <see cref="RouteProblem"/>, the route is known,
+        /// so the action still counts when the routes of other actions are compared.
+        /// </summary>
+        public string? ParameterProblem { get; init; }
+
         public EquatableArray<ParameterInfoModel> Parameters { get; init; } = EquatableArray<ParameterInfoModel>.Empty;
 
         /// <summary>
@@ -426,8 +433,9 @@ namespace Api.ToMcp.Generator.Models
         public string? ModelName { get; init; }
 
         /// <summary>
-        /// Where the property's own binding attribute makes MVC read it from: <see cref="ParameterSourceModel.Route"/> or
-        /// <see cref="ParameterSourceModel.Query"/>, <see cref="ParameterSourceModel.Other"/> for any other source, and
+        /// Where the property's own binding attribute makes MVC read it from: <see cref="ParameterSourceModel.Route"/>,
+        /// <see cref="ParameterSourceModel.Query"/> or <see cref="ParameterSourceModel.Form"/>,
+        /// <see cref="ParameterSourceModel.Other"/> for any other source, and
         /// <see cref="ParameterSourceModel.Auto"/> when it has none and is read wherever its parameter is.
         /// </summary>
         public ParameterSourceModel Source { get; init; }
@@ -488,6 +496,12 @@ namespace Api.ToMcp.Generator.Models
         Query,
         Body,
         Header,
+
+        /// <summary>
+        /// The form content, which the tool sends as <c>application/x-www-form-urlencoded</c>.
+        /// </summary>
+        Form,
+
         Services,
 
         /// <summary>
