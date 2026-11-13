@@ -187,7 +187,8 @@ namespace Api.ToMcp.Generator.Emitting
                 // without [ApiController] MVC reads the route value of that name first.
                 var isNamedByRoute = routeValues.Template.HasParameter(
                     param.Source == ParameterSourceModel.Auto && action.IsApiController ? param.Name : GetBinderModelName(param));
-                if (param.Source == ParameterSourceModel.Query && param.Properties.Any(x => routeValues.RouteProperties.Contains((param, x))))
+                if (param.Source == ParameterSourceModel.Query &&
+                    (param.Properties.Any(x => routeValues.RouteProperties.Contains((param, x))) || (IsBoundWithoutPrefix(param) && !param.IsSimpleType)))
                 {
                     queryValues.AddRange(GetQueryValues(param, routeValues.RouteProperties));
                 }
@@ -279,25 +280,32 @@ namespace Api.ToMcp.Generator.Emitting
             // their own names. A [FromQuery] parameter that names no prefix of its own MVC binds the same way from the query
             // string, where only a [FromRoute] property reads the route. A parameter whose binding attribute names it, such
             // as [Bind(Prefix = "f")], MVC always binds under that prefix, so none of its properties reads the route.
-            var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action) && p.ModelName is null).ToList();
+            var valueProviderParams = parameters.Where(p => IsBoundFromValueProviders(p, action) && string.IsNullOrEmpty(p.ModelName)).ToList();
             var unprefixableParams = parameters.Where(p => FallsBackToNoPrefix(p, action)).ToList();
             var routeProperties = new HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)>(unprefixableParams
                 .SelectMany(p => p.Properties.Select(prop => (Parameter: p, Property: prop)))
                 .Where(x => x.Property.Source == ParameterSourceModel.Route && routePlaceholders.Any(placeholder => ReadsRouteValue(x.Property, placeholder))));
 
+            // MVC fills a parameter it reads from the route from the route value of the name it binds the parameter under:
+            // the name a binding attribute gives, [FromRoute(Name = "productId")] say, else the parameter's own
+            // (case-insensitive). One it binds under that name from the query string or a header does not take the route
+            // value from the parameter MVC reads it into.
+            var namedParams = routePlaceholders.ToDictionary(
+                placeholder => placeholder,
+                placeholder => parameters.FirstOrDefault(p => IsReadFromRouteValue(p, action, template) &&
+                    string.Equals(GetBinderModelName(p), placeholder, StringComparison.OrdinalIgnoreCase)),
+                StringComparer.OrdinalIgnoreCase);
+
             foreach (var placeholder in routePlaceholders)
             {
-                // MVC fills a parameter from the route value of the name it binds the parameter under: the name a binding
-                // attribute gives, [FromRoute(Name = "productId")] say, else the parameter's own (case-insensitive).
-                var directParam = parameters.FirstOrDefault(p =>
-                    string.Equals(GetBinderModelName(p), placeholder, StringComparison.OrdinalIgnoreCase));
+                var directParam = namedParams[placeholder];
 
                 // Else a property MVC reads from the route value: of a [FromRoute] parameter without a name of its own
                 // first, then of one bound from the route, query and form values, a [FromRoute] one before an unattributed
                 // one.
                 var routeProperty = directParam is null
                     ? parameters
-                        .Where(p => p.Source == ParameterSourceModel.Route && p.ModelName is null)
+                        .Where(p => p.Source == ParameterSourceModel.Route && string.IsNullOrEmpty(p.ModelName))
                         .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => ReadsRouteValue(prop, placeholder))))
                         .Concat(unprefixableParams.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
                             prop.Source == ParameterSourceModel.Route && ReadsRouteValue(prop, placeholder)))))
@@ -306,11 +314,26 @@ namespace Api.ToMcp.Generator.Emitting
                         .FirstOrDefault(x => x.Property is not null)
                     : default;
 
-                // Failing those, a parameter of the placeholder's name fills it, which MVC binds under another name, from
-                // the query string say, but the URL needs a segment for.
-                if (directParam is null && routeProperty.Property is null)
+                // Failing those, something of the placeholder's name fills it, which MVC reads from elsewhere but the URL
+                // needs a segment for: a property of a [FromBody] parameter, which MVC reads from the body, first.
+                var bodyProperty = directParam is null && routeProperty.Property is null
+                    ? parameters
+                        .Where(p => p.Source == ParameterSourceModel.Body)
+                        .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
+                            string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase))))
+                        .FirstOrDefault(x => x.Property is not null)
+                    : default;
+
+                // Then a parameter MVC binds under another name, from the query string say, unless that name fills another
+                // route value: both would get its value, which may not even match this one's constraint. Then a simple one
+                // MVC binds under the placeholder's name from elsewhere, as [ApiController] does a [ModelBinder(Name)] one
+                // whose own name the route lacks; the prefix of a complex one names its properties, not a value.
+                if (directParam is null && routeProperty.Property is null && bodyProperty.Property is null)
                 {
-                    directParam = parameters.FirstOrDefault(p => string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase));
+                    directParam = parameters.FirstOrDefault(p =>
+                            string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase) && !namedParams.ContainsValue(p)) ??
+                        parameters.FirstOrDefault(p =>
+                            p.IsSimpleType && string.Equals(GetBinderModelName(p), placeholder, StringComparison.OrdinalIgnoreCase));
                 }
 
                 if (directParam != null)
@@ -329,16 +352,11 @@ namespace Api.ToMcp.Generator.Emitting
                 }
                 else
                 {
-                    // Failing a parameter too, a property of the placeholder's name fills it, which MVC reads from
-                    // elsewhere but the URL needs a segment for: a [FromBody] parameter's, which MVC reads from the body,
-                    // first, then any.
-                    var propertySource = routeProperty.Property is not null
-                        ? routeProperty
+                    // Then any property of the placeholder's name.
+                    var propertySource = routeProperty.Property is not null ? routeProperty
+                        : bodyProperty.Property is not null ? bodyProperty
                         : parameters
-                            .Where(p => p.Source == ParameterSourceModel.Body)
-                            .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop =>
-                                string.Equals(prop.Name, placeholder, StringComparison.OrdinalIgnoreCase))))
-                            .Concat(parameters.Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => IsNamedBy(prop, placeholder)))))
+                            .Select(p => (Parameter: p, Property: p.Properties.FirstOrDefault(prop => IsNamedBy(prop, placeholder))))
                             .FirstOrDefault(x => x.Property != null);
 
                     if (propertySource.Property != null)
@@ -534,28 +552,60 @@ namespace Api.ToMcp.Generator.Emitting
         /// Whether MVC binds a complex parameter under its name as a prefix only when a value carries it, and under the
         /// names of its properties otherwise (<c>ParameterBinder</c>): one bound from the route, query and form values, or a
         /// <c>[FromQuery]</c> one, unless a binding attribute names it, <c>[Bind(Prefix = "f")]</c> say, which MVC then
-        /// always binds it under.
+        /// always binds it under. An empty name, <c>[Bind(Prefix = "")]</c>, it always binds without a prefix.
         /// </summary>
         private static bool FallsBackToNoPrefix(ParameterInfoModel parameter, ActionInfoModel action)
         {
-            return parameter.ModelName is null &&
+            return string.IsNullOrEmpty(parameter.ModelName) &&
                 (IsBoundFromValueProviders(parameter, action) ||
                     (parameter.Source == ParameterSourceModel.Query && !parameter.IsSimpleType));
         }
 
         /// <summary>
+        /// Whether a binding attribute gives the parameter an empty name, under which MVC binds its properties without a
+        /// prefix, as MVC takes the first name that is not null.
+        /// </summary>
+        private static bool IsBoundWithoutPrefix(ParameterInfoModel parameter)
+        {
+            return parameter.ModelName is not null && parameter.ModelName.Length == 0;
+        }
+
+        /// <summary>
+        /// Whether MVC reads the parameter as one value from the route value its binding name names: a <c>[FromRoute]</c>
+        /// one of a type it reads from one string, one with a model binder of its own, or a simple one without a binding
+        /// source, which an <c>[ApiController]</c> reads from the route only when the route names the parameter's own name
+        /// (<c>InferParameterBindingInfoConvention</c>). A complex parameter's name is the prefix of its properties, not a
+        /// value; one MVC reads from the query string, a header or the body takes no route value.
+        /// </summary>
+        private static bool IsReadFromRouteValue(ParameterInfoModel parameter, ActionInfoModel action, RouteTemplate template)
+        {
+            switch (parameter.Source)
+            {
+                case ParameterSourceModel.Custom:
+                    return true;
+                case ParameterSourceModel.Route:
+                    return parameter.IsSimpleType;
+                case ParameterSourceModel.Auto:
+                    return parameter.IsSimpleType && (!action.IsApiController || template.HasParameter(parameter.Name));
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
         /// The query values of a parameter bound from the route, query and form values, or from the query string alone. MVC reads its properties under the
         /// parameter's name as a prefix (<c>filter.City</c>) when a value carries it, and under their own names otherwise;
-        /// under the name a binding attribute gives the parameter always (<c>f.City</c>). Only the second lets a property
-        /// fill a route value, as no route value is named <c>filter.Id</c>, so a parameter
-        /// with such a property sends the others under their own names, each where MVC reads it: a <c>[FromQuery]</c> one
-        /// or one without a binding attribute in the query string, any other not at all.
+        /// under the name a binding attribute gives the parameter always (<c>f.City</c>), and under their own names always
+        /// when that name is empty. Only unprefixed names let a property fill a route value, as no route value is named
+        /// <c>filter.Id</c>, so a parameter with such a property, or with an empty name, sends its properties under their
+        /// own names, each where MVC reads it: a <c>[FromQuery]</c> one or one without a binding attribute in the query
+        /// string, any other not at all.
         /// </summary>
         private static IEnumerable<(string Key, string Expression)> GetQueryValues(
             ParameterInfoModel parameter,
             HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties)
         {
-            if (!parameter.Properties.Any(x => routeProperties.Contains((parameter, x))))
+            if (!IsBoundWithoutPrefix(parameter) && !parameter.Properties.Any(x => routeProperties.Contains((parameter, x))))
             {
                 return new[] { (GetBinderModelName(parameter), EscapeIdentifier(parameter.Name)) };
             }
@@ -626,7 +676,7 @@ namespace Api.ToMcp.Generator.Emitting
         /// </summary>
         private static string GetPropertyModelName(ParameterInfoModel parameter, PropertyInfoModel property)
         {
-            return parameter.ModelName is null
+            return string.IsNullOrEmpty(parameter.ModelName)
                 ? GetBinderModelName(property)
                 : parameter.ModelName + PropertyModelNameSeparator + GetBinderModelName(property);
         }

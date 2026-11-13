@@ -615,6 +615,22 @@ namespace Api.ToMcp.Generator.Parsing
                 return (ImmutableArray<ParameterInfoModel>.Empty, $"two of its inputs are named '{sharedName}', which the endpoint reads from the same value and a tool cannot tell apart", false);
             }
 
+            // Inputs of different names that a [FromRoute(Name)] or [FromQuery(Name)] has read the same route or query value,
+            // so the tool could send one argument only.
+            var routeTemplate = RouteTemplate.Parse(route);
+            var sharedValue = bindings
+                .Where(x => x.Binding != EndpointBinding.Body)
+                .GroupBy(x => (
+                    IsRoute: x.Binding == EndpointBinding.Route || (x.Binding == EndpointBinding.RouteOrQuery && routeTemplate.HasParameter(x.Input.Name)),
+                    Name: (x.ModelName ?? x.Input.Name).ToUpperInvariant()))
+                .FirstOrDefault(x => x.Count() > 1);
+            if (sharedValue is not null)
+            {
+                var valueKind = sharedValue.Key.IsRoute ? "route value" : "query value";
+                var valueName = sharedValue.First().ModelName ?? sharedValue.First().Input.Name;
+                return (ImmutableArray<ParameterInfoModel>.Empty, $"its inputs {QuoteInputs(sharedValue)} are read from the same {valueKind} '{valueName}', which a tool cannot give each a value of its own", false);
+            }
+
             var hidden = bindings.FirstOrDefault(x => !compilation.IsSymbolAccessibleWithin(x.Input.Type, compilation.Assembly)).Input;
             if (hidden is not null)
             {
@@ -938,7 +954,8 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The <c>Name</c> the first binding attribute of the kind sets, or null when it sets none.
+        /// The <c>Name</c> the first binding attribute of the kind sets, or null when it sets none. An empty name counts, as
+        /// ASP.NET Core reads the value under <c>Name ?? parameter.Name</c>.
         /// </summary>
         private static string? GetMetadataName(IEnumerable<AttributeData> attributes, string metadataInterface)
         {
@@ -947,7 +964,7 @@ namespace Api.ToMcp.Generator.Parsing
                 .SelectMany(x => x.NamedArguments)
                 .Where(x => x.Key == MinimalApiNames.MetadataNamePropertyName)
                 .Select(x => x.Value.Value as string)
-                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+                .FirstOrDefault(x => x is not null);
         }
 
         /// <summary>

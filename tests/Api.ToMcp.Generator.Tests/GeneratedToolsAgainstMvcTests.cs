@@ -212,6 +212,18 @@ namespace TestApi
         // Under the prefix o, Order would read the route value o.orderId, which no route has, and City reads o.c.
         [HttpGet(""route-object/{orderId}"")]
         public object GetRouteObject([FromRoute(Name = ""o"")] AliasedRouteQuery q) => new { q.Order, q.City, query = Request.QueryString.Value };
+
+        // MVC infers [FromRoute] for code and [FromQuery] for value, so code binds {code} and value ?code=.
+        [HttpGet(""api-dup/{code}"")]
+        public object GetApiDup([ModelBinder(Name = ""code"")] string? value, string? code) => new { value, code };
+
+        // The prefix id names the object, not one value: MVC binds its Id from ?id.Id=, though the URL needs {id}.
+        [HttpGet(""query-object/{id:int}"")]
+        public object GetQueryObject([FromQuery(Name = ""id"")] Shipment shipment) => new { shipment.Id, shipment.Note, path = Request.Path.Value };
+
+        // id fills {productId}, and only body.Id matches {id:guid}.
+        [HttpPut(""two/{id:guid}/items/{productId:int}"")]
+        public object PutTwo([FromRoute(Name = ""productId"")] int id, [FromBody] GuidDto body) => new { id, bodyId = body.Id, routeId = RouteData.Values[""id""] };
     }
 
     // Without its id, a call to Get or Delete requests the URL that List or DeleteAll is served at.
@@ -316,6 +328,24 @@ namespace TestApi
         // MVC binds Id from s.Id under the prefix, never from the route value {id}, which the URL still needs.
         [HttpGet(""bind-prefix/{id}"")]
         public object GetBindPrefixShipment([Bind(Prefix = ""s"")] Shipment shipment) => new { shipment.Id, shipment.Note, query = Request.QueryString.Value };
+
+        // MVC binds id from {id} and the parameter before it from ?id=; filled from that one, the route would delete
+        // the record it names.
+        [HttpGet(""dup/{id}"")]
+        public object GetDup([FromQuery(Name = ""id"")] int x, int id) => new { x, id };
+
+        [HttpDelete(""dup/{id}"")]
+        public object DeleteDup([FromQuery(Name = ""id"")] int other, int id) => new { deleted = id, other };
+
+        [HttpGet(""dup-prop/{id}"")]
+        public object GetDupProp([FromQuery(Name = ""id"")] int q, [FromRoute] Shipment s) => new { q, sId = s.Id };
+
+        // An empty prefix binds the properties under their own names, whatever the type's [Bind(Prefix)] says.
+        [HttpGet(""empty-prefix"")]
+        public object GetEmptyPrefix([Bind(Prefix = """")] PrefixedFilter filter) => new { filter.City, query = Request.QueryString.Value };
+
+        [HttpGet(""nested-prefix"")]
+        public object GetNestedPrefix([FromQuery] PrefixedWrapper w) => new { city = w.Inner?.City, query = Request.QueryString.Value };
     }
 
     [Flags]
@@ -566,6 +596,14 @@ namespace TestApi
     [InlineData("PlainEchoController_GetBindPrefixTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""query"":""?f.City=Brno""}")]
     [InlineData("PlainEchoController_GetTypePrefixTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""query"":""?pf.City=Brno""}")]
     [InlineData("PlainEchoController_GetBindPrefixShipmentTool", @"{""shipment"":{""id"":9,""note"":""x""}}", @"{""id"":9,""note"":""x"",""query"":""?s.Id=9&s.Note=x""}")]
+    [InlineData("PlainEchoController_GetDupTool", @"{""x"":1,""id"":2}", @"{""x"":1,""id"":2}")]
+    [InlineData("PlainEchoController_DeleteDupTool", @"{""other"":1,""id"":2}", @"{""deleted"":2,""other"":1}")]
+    [InlineData("PlainEchoController_GetDupPropTool", @"{""q"":1,""s"":{""id"":2}}", @"{""q"":1,""sId"":2}")]
+    [InlineData("EchoController_GetApiDupTool", @"{""value"":""V"",""code"":""C""}", @"{""value"":""V"",""code"":""C""}")]
+    [InlineData("EchoController_GetQueryObjectTool", @"{""shipment"":{""id"":9,""note"":""x""}}", @"{""id"":9,""note"":""x"",""path"":""/api/query-object/9""}")]
+    [InlineData("EchoController_PutTwoTool", @"{""id"":5,""body"":{""id"":""" + OrderGuid + @"""}}", @"{""id"":5,""bodyId"":""" + OrderGuid + @""",""routeId"":""" + OrderGuid + @"""}")]
+    [InlineData("PlainEchoController_GetEmptyPrefixTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""query"":""?City=Brno""}")]
+    [InlineData("PlainEchoController_GetNestedPrefixTool", @"{""w"":{""inner"":{""city"":""Brno""}}}", @"{""city"":""Brno"",""query"":""?w.pf.City=Brno""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);

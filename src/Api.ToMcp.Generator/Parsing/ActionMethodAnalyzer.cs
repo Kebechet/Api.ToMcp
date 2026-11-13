@@ -665,7 +665,8 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The name an attribute implementing <c>IModelNameProvider</c>, such as <c>[FromQuery(Name = "q")]</c>, makes MVC
-        /// bind a value under, or null when it names none. <c>[Bind]</c> names it with its <c>Prefix</c>.
+        /// bind a value under, or null when it names none. <c>[Bind]</c> names it with its <c>Prefix</c>. An empty name
+        /// counts, as MVC takes the first that is not null: <c>[Bind(Prefix = "")]</c> binds without a prefix.
         /// </summary>
         private static string? GetModelName(AttributeData attribute)
         {
@@ -681,7 +682,7 @@ namespace Api.ToMcp.Generator.Parsing
             return attribute.NamedArguments
                 .Where(x => x.Key == namePropertyName)
                 .Select(x => x.Value.Value as string)
-                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+                .FirstOrDefault(x => x is not null);
         }
 
         /// <summary>
