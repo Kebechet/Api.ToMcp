@@ -159,6 +159,69 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public void AddMcpTools_ClaimsNoUriFormat_ForAGeneratedToolsLinks_InTheInputAndOutputSchema()
+    {
+        // The uri format requires an absolute URI, but the SDK reads a relative one into a Uri, MVC binds one, and MVC
+        // writes a Uri back as the string it was made from.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+        var tool = tools.Single(x => x.ProtocolTool.Name == "generated_links").ProtocolTool;
+        var page = tool.InputSchema.GetProperty("properties").GetProperty("page").GetProperty("properties");
+
+        Assert.Equal("""{"type":"string"}""", tool.InputSchema.GetProperty("properties").GetProperty("link").GetRawText());
+        Assert.Equal("""{"type":"string"}""", page.GetProperty("self").GetRawText());
+        Assert.Equal("""{"type":"string"}""", page.GetProperty("images").GetProperty("items").GetRawText());
+        Assert.DoesNotContain("\"format\"", GetOutputSchema(tools, "generated_links").GetRawText());
+    }
+
+    [Theory]
+    [InlineData("page", """{"type":["string","null"]}""")]
+    [InlineData("logo", """{"type":["string","null"],"contentMediaType":"image/*"}""")]
+    [InlineData("updatedAt", """{"type":["string","null"]}""")]
+    [InlineData("contactAddress", """{"type":["string","null"]}""")]
+    [InlineData("homepage", """{"type":["string","null"],"format":"uri"}""")]
+    [InlineData("contact", """{"type":["string","null"],"format":"email"}""")]
+    public void AddMcpTools_ClaimsAFormat_ForAGeneratedToolsAnnotatedString_OnlyWhereMvcValidatesIt(string propertyName, string schema)
+    {
+        // MVC never validates [DataType], so such a string takes "/images/1.png" or "28.9.2026"; it validates [Url],
+        // which requires an absolute http, https or ftp URL, and [EmailAddress].
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_links").ProtocolTool;
+
+        var property = tool.InputSchema.GetProperty("properties").GetProperty("page").GetProperty("properties").GetProperty(propertyName);
+
+        Assert.Equal(schema, property.GetRawText());
+    }
+
+    [Theory]
+    [InlineData("link", "uri")]
+    [InlineData("logo", "uri")]
+    [InlineData("updatedAt", "date-time")]
+    public void AddMcpTools_LeavesTheFormatsOfAHandWrittenToolsInputSchema_ToTheSdk(string propertyName, string format)
+    {
+        // A hand-written tool receives the argument itself; what it accepts is the tool's own business.
+        var request = GetToolInputProperty(BuildTools(services => services.AddMcpTools(ToolAssembly)), "parity_static", "request");
+
+        Assert.Equal(format, request.GetProperty("properties").GetProperty(propertyName).GetProperty("format").GetString());
+    }
+
+    [Fact]
+    public async Task AddMcpTools_PassesARelativeUrl_ToAGeneratedTool()
+    {
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_links");
+        await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions());
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+            """{"link":"/images/1.png","page":{"self":"pages/2","images":[]}}""")!;
+        var context = new RequestContext<CallToolRequestParams>(
+            server,
+            new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+            new CallToolRequestParams { Name = "generated_links", Arguments = arguments });
+
+        var result = await tool.InvokeAsync(context, CancellationToken.None);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal("/images/1.png pages/2", Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text);
+    }
+
+    [Fact]
     public void AddMcpTools_LeavesTheArgumentPropertiesAGeneratedToolNeverSends_OutOfItsInputSchema()
     {
         // The query string carries none of them, and a JSON body none without a public getter.

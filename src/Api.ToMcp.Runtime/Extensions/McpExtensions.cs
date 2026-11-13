@@ -260,10 +260,11 @@ public static class McpExtensions
         var describingOptions = scopeOptions.ArePropertyDescriptionsFromXmlDocs
             ? serviceProvider.GetRequiredService<XmlDocPropertyDescriber>().SchemaCreateOptions
             : null;
+        var schemaCreateOptions = ConvertedPropertySchema.Apply(describingOptions);
         var createOptions = new McpServerToolCreateOptions
         {
             Services = serviceProvider,
-            SchemaCreateOptions = ConvertedPropertySchema.Apply(describingOptions),
+            SchemaCreateOptions = isGenerated ? UncheckedFormatSchema.ApplyToInput(schemaCreateOptions) : schemaCreateOptions,
             SerializerOptions = isGenerated ? GeneratedToolArguments.SerializerOptions : null
         };
 
