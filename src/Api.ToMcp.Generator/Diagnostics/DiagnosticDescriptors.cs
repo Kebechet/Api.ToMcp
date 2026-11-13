@@ -35,7 +35,7 @@ namespace Api.ToMcp.Generator.Diagnostics
         public static readonly DiagnosticDescriptor McpRouteSkipped = new DiagnosticDescriptor(
             id: "MCP004",
             title: "MCP Route Skipped",
-            messageFormat: "Action '{0}.{1}' was skipped because its route contains '/mcp' (loop prevention)",
+            messageFormat: "Action '{0}.{1}' was skipped because its route is '/mcp' or under it (loop prevention)",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Info,
             isEnabledByDefault: true);

@@ -101,11 +101,13 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The route of a pattern under a prefix, as <c>RoutePatternFactory.Combine</c> joins them: one slash between the
-        /// two, and one in front.
+        /// two, and one in front. <c>RoutePatternParser</c> drops a leading "~/" from each, so <c>MapGroup("~/api")</c>
+        /// serves <c>/api/...</c>, not <c>/~/api/...</c>.
         /// </summary>
         public static string Combine(string prefix, string pattern)
         {
             var parts = new[] { prefix, pattern }
+                .Select(x => x.StartsWith(RouteTokens.AppRelativePrefix, StringComparison.Ordinal) ? x.Substring(RouteTokens.AppRelativePrefix.Length) : x)
                 .Select(x => x.Trim(PathSeparator))
                 .Where(x => x.Length > 0);
 
@@ -650,7 +652,7 @@ namespace Api.ToMcp.Generator.Parsing
                 SymbolEqualityComparer.Default.Equals(definition.ReturnType, receiverType);
         }
 
-        private static bool IsWebApplication(ITypeSymbol type)
+        internal static bool IsWebApplication(ITypeSymbol type)
         {
             return ResponseTypeResolver.IsOrImplements(type, MinimalApiNames.WebApplication);
         }

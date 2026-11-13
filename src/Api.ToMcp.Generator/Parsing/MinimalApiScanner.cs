@@ -216,17 +216,27 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether the route pattern of the call holds <c>/mcp</c>, which no tool ever calls, so it counts for no endpoint
-        /// left out. Only arguments written as strings are read: the constant value of a lambda would bind its body.
+        /// Whether the call maps its endpoint on the app itself at <c>/mcp</c> or under it, which no tool ever calls, so it
+        /// counts for no endpoint left out. Only arguments written as strings are read: the constant value of a lambda
+        /// would bind its body. The groups a call on another builder is mapped in are not followed, which would cost the
+        /// analysis this count avoids, so such an endpoint counts: <c>MapGroup("/api").MapGet("/mcp")</c> gets a tool
+        /// once selected, while <c>MapGroup("/mcp").MapGet("/x")</c>, counted too, does not.
         /// </summary>
         private static bool IsMcpPattern(InvocationExpressionSyntax invocation, SemanticModel semanticModel, CancellationToken ct)
         {
+            var receiver = (invocation.Expression as MemberAccessExpressionSyntax)?.Expression;
+            var receiverType = receiver is null ? null : semanticModel.GetTypeInfo(receiver, ct).Type;
+            if (receiverType is null || !RouteGroupResolver.IsWebApplication(receiverType))
+            {
+                return false;
+            }
+
             var pattern = invocation.ArgumentList.Arguments
                 .Where(x => x.Expression is LiteralExpressionSyntax || x.Expression is InterpolatedStringExpressionSyntax || x.Expression is BinaryExpressionSyntax)
                 .Select(x => semanticModel.GetConstantValue(x.Expression, ct).Value as string)
                 .FirstOrDefault(x => x is not null);
 
-            return pattern is not null && pattern.IndexOf(MinimalApiNames.McpRouteSegment, StringComparison.OrdinalIgnoreCase) >= 0;
+            return pattern is not null && McpEndpointRoute.Covers(RouteGroupResolver.Combine(string.Empty, pattern));
         }
 
         /// <summary>

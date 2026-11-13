@@ -1201,12 +1201,77 @@ namespace TestApi
         Assert.Contains("public static async Task<CallToolResult> InvokeAsync(", tool);
     }
 
-    [Fact]
-    public void Endpoint_UnderAnMcpRoute_IsNeverExposed()
+    [Theory]
+    [InlineData(@"app.MapGet(""/mcp"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGet(""/mcp/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGet(""MCP/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGroup(""/Mcp"").MapGet(""/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGet(""~/mcp/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGroup(""~/mcp"").MapGet(""/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGroup(""~/Mcp/"").MapGet(""status"", [McpExpose] () => 1);")]
+    public void Endpoint_AtTheMcpRouteOrUnderIt_IsNeverExposed(string statement)
     {
-        var source = MinimalApi(@"app.MapGet(""/api/mcp-status"", [McpExpose] () => 1);");
+        var source = MinimalApi(statement);
 
         Assert.DoesNotContain("[McpServerTool(", RunGenerator(source, MinimalApisConfig));
+    }
+
+    [Theory]
+    [InlineData(@"app.MapGet(""/api/mcp-status"", [McpExpose] () => 1);", "/api/mcp-status")]
+    [InlineData(@"app.MapGet(""/api/mcp"", [McpExpose] () => 1);", "/api/mcp")]
+    [InlineData(@"app.MapGet(""/mcpservers"", [McpExpose] () => 1);", "/mcpservers")]
+    [InlineData(@"app.MapGroup(""/api"").MapGet(""/mcp"", [McpExpose] () => 1);", "/api/mcp")]
+    [InlineData(@"app.MapGroup(""/{tenant}"").MapGet(""/mcp"", [McpExpose] (string tenant) => tenant);", "/{routetenant}/mcp")]
+    public void Endpoint_WhoseRouteOnlyHoldsMcp_GetsItsTool(string statement, string route)
+    {
+        var generated = RunGenerator(MinimalApi(statement), MinimalApisConfig);
+
+        Assert.Contains("[McpServerTool(", generated);
+        Assert.Contains($"var route = $\"{route}\";", generated);
+    }
+
+    [Theory]
+    [InlineData(@"app.MapGet(""~/api/status"", [McpExpose] () => 1);", "/api/status")]
+    [InlineData(@"app.MapGroup(""~/api"").MapGet(""/status"", [McpExpose] () => 1);", "/api/status")]
+    [InlineData(@"app.MapGroup(""~/api/"").MapGet(""~/status"", [McpExpose] () => 1);", "/api/status")]
+    public void Endpoint_WithAnAppRelativePatternOrGroup_IsCalledWhereTheAppServesIt(string statement, string route)
+    {
+        // RoutePatternParser drops a leading "~/" from each pattern; "/~/api/status" answers 404.
+        var generated = RunGenerator(MinimalApi(statement), MinimalApisConfig);
+
+        Assert.Contains($"var route = $\"{route}\";", generated);
+    }
+
+    [Fact]
+    public void AllExceptExcluded_WithoutTheOptIn_CountsAnEndpointWhoseRouteOnlyHoldsMcp_ButNoneUnderMcp()
+    {
+        var source = MinimalApi(@"
+            app.MapGet(""/mcp/health"", () => 1);
+            app.MapGet(""/api/mcp-status"", () => 2);") + ControllerNextToEndpoints;
+
+        var info = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig));
+
+        Assert.Equal(EndpointsLeftOutId, info.Id);
+        Assert.StartsWith("AllExceptExcluded mode selects none of the project's 1 Minimal API endpoint,", info.GetMessage());
+    }
+
+    [Theory]
+    [InlineData(@"app.MapGet(""mcp/health"", () => 1);", 0)]
+    [InlineData(@"app.MapGet(""~/mcp/health"", () => 1);", 0)]
+    [InlineData(@"app.MapGet(""/MCP"", () => 1);", 0)]
+    [InlineData(@"app.MapGroup(""/api"").MapGet(""/mcp"", () => 1);", 1)]
+    [InlineData(@"var api = app.MapGroup(""/api""); api.MapGet(""mcp/health"", () => 1);", 1)]
+    [InlineData(@"app.MapGroup(""/mcp"").MapGet(""/health"", () => 1);", 1)]
+    public void AllExceptExcluded_WithoutTheOptIn_LeavesOutOfItsCount_OnlyAnEndpointMappedOnTheAppUnderMcp(string statement, int count)
+    {
+        // The count reads only the Map* call's own pattern, as following its groups would cost the analysis it avoids.
+        // So it leaves out only a pattern mapped on the app itself; one mapped on a group counts, also when the group
+        // puts it under /mcp, where the opt-in would give it no tool.
+        var source = MinimalApi(statement) + ControllerNextToEndpoints;
+
+        var diagnostics = GetGeneratorDiagnostics(source, AllExceptExcludedConfig);
+
+        Assert.Equal(count, diagnostics.Count(x => x.Id == EndpointsLeftOutId));
     }
 
     [Fact]

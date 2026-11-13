@@ -17,7 +17,6 @@ namespace Api.ToMcp.Generator
     [Generator(LanguageNames.CSharp)]
     public sealed class McpToolGenerator : IIncrementalGenerator
     {
-        private const string McpRouteSegment = "/mcp";
         private const string IncludeListName = "include";
         private const string ExcludeListName = "exclude";
         private const string GeneratedSourceSuffix = ".g.cs";
@@ -566,7 +565,7 @@ namespace Api.ToMcp.Generator
         private static bool IsSelectable(ControllerInfoModel controller, ActionInfoModel action)
         {
             // Safety: Never expose MCP endpoints (loop prevention)
-            if (action.RouteTemplate.IndexOf(McpRouteSegment, StringComparison.OrdinalIgnoreCase) >= 0)
+            if (McpEndpointRoute.Covers(action.RouteTemplate))
                 return false;
 
             // Attribute overrides take highest precedence
@@ -663,7 +662,7 @@ namespace Api.ToMcp.Generator
             var reasons = new List<string>();
 
             if (keptFromMcp.Count > 0)
-                reasons.Add($"{QuoteAll(keptFromMcp)} {(keptFromMcp.Count == 1 ? "names" : "name")} no [Http*] action without [McpIgnore] or '{McpRouteSegment}' in its route");
+                reasons.Add($"{QuoteAll(keptFromMcp)} {(keptFromMcp.Count == 1 ? "names" : "name")} no [Http*] action without [McpIgnore] or a route at or under '{McpEndpointRoute.Route}'");
 
             if (unmatched.Count > 0)
                 reasons.Add($"{QuoteAll(unmatched)} {(unmatched.Count == 1 ? "names" : "name")} no controller or action of the project, as {DiagnosticDescriptors.UnmatchedConfigEntry.Id} reports");
