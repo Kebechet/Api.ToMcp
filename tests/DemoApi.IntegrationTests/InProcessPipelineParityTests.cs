@@ -390,6 +390,18 @@ public static class ParityProbeTools
     }
 
     /// <summary>
+    /// Sends a number in a form, as a generated tool of a <c>[FromForm]</c> parameter does.
+    /// </summary>
+    [McpServerTool(Name = "parity_form_amount")]
+    public static Task<CallToolResult> SendFormAmount(IMcpHttpInvoker invoker, string route, decimal amount, CancellationToken cancellationToken)
+    {
+        var formParts = new List<string>();
+        McpRequestValueFormatter.AddFormValue(formParts, "amount", amount);
+
+        return new McpHttpRequest(HttpMethod.Post, route) { FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
+    }
+
+    /// <summary>
     /// Sends the header the call names from the argument <c>value</c>, as a generated tool of a <c>[FromHeader]</c>
     /// parameter does.
     /// </summary>

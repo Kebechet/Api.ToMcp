@@ -175,6 +175,16 @@ namespace TestApi
         public object PostAmounts([FromForm] decimal amount, [FromForm] double ratio, [FromForm] DateOnly day, [FromForm] int delta, [FromForm] decimal[]? amounts, [FromHeader(Name = ""X-Amount"")] decimal? headerAmount, [FromQuery] decimal? queryAmount)
             => new { amount, ratio, day, delta, amounts, headerAmount, queryAmount };
 
+        // UseRequestLocalization picks the request's culture from Accept-Language and from the culture query value, so
+        // the AI would pick the culture MVC reads the form in.
+        [HttpPost(""localized"")]
+        public object PostLocalized([FromHeader(Name = ""Accept-Language"")] string? language, [FromForm] decimal amount)
+            => new { language, amount, culture = System.Globalization.CultureInfo.CurrentCulture.Name };
+
+        [HttpPost(""localized-query"")]
+        public object PostLocalizedQuery([FromQuery] string? culture, [FromForm] decimal amount)
+            => new { culture, amount, requestCulture = System.Globalization.CultureInfo.CurrentCulture.Name };
+
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
             => new { isNaN = double.IsNaN(value), inf = float.IsPositiveInfinity(inf), negInf = double.IsNegativeInfinity(negInf), query = Request.QueryString.Value };
@@ -742,6 +752,52 @@ namespace TestApi
     }
 
     [Fact]
+    public async Task Tool_NamesTheCultureItWritesTheFormIn_SoTheAppReadsTheFormInIt()
+    {
+        // The MCP client asked for en-US, which the app supports, so the tool call runs under it and writes 1234.25 as
+        // "1,234.25". The tool's own request named no culture, so the app read the form in its default, de-DE.
+        const string arguments = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-11-13"",""delta"":-12,""amounts"":[1.5,2.25]}";
+        const string expected = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-11-13"",""delta"":-12,""amounts"":[1.5,2.25],""headerAmount"":null,""queryAmount"":null}";
+
+        var (statusCode, body) = await _host.InvokeToolAsync("EchoController_PostAmountsTool", arguments, MvcHost.EnglishCulture);
+        var (cultureStatus, cultureBody) = await _host.InvokeToolAsync("EchoController_PostLocalizedTool", @"{""amount"":1.5}", MvcHost.EnglishCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(body)), $"en-US: MVC bound {body}");
+        Assert.True(cultureStatus == StatusCodes.Status200OK, $"{cultureStatus} {cultureBody}");
+        Assert.Equal(@"{""language"":""en-US"",""amount"":1.5,""culture"":""en-US""}", cultureBody);
+    }
+
+    [Theory]
+    [InlineData("EchoController_PostLocalizedTool", @"{""amount"":1.25,""language"":""de-DE""}", @"{""language"":""de-DE"",""amount"":1.25,""culture"":""de-DE""}")]
+    [InlineData("EchoController_PostLocalizedTool", @"{""amount"":1.25}", @"{""language"":""de-DE"",""amount"":1.25,""culture"":""de-DE""}")]
+    [InlineData("EchoController_PostLocalizedQueryTool", @"{""amount"":1.25,""culture"":""de-DE""}", @"{""culture"":""de-DE"",""amount"":1.25,""requestCulture"":""de-DE""}")]
+    [InlineData("EchoController_PostLocalizedQueryTool", @"{""amount"":1.25}", @"{""culture"":null,""amount"":1.25,""requestCulture"":""de-DE""}")]
+    public async Task Tool_SendsAFormWithACultureArgument_ThatNamesTheCultureItWritesTheFormIn(string toolClassName, string arguments, string expected)
+    {
+        var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments, MvcHost.GermanCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.Equal(expected, body);
+    }
+
+    [Theory]
+    [InlineData("EchoController_PostLocalizedTool", @"{""amount"":1.25,""language"":""en-US""}", "The argument 'language' is sent as the request header 'Accept-Language', which")]
+    [InlineData("EchoController_PostLocalizedQueryTool", @"{""amount"":1.25,""culture"":""en-US""}", "The query value 'culture' of the tool's request")]
+    public async Task Tool_RefusesACultureArgumentNamingAnotherCultureThanTheFormIsWrittenIn_WithoutCallingTheApi(string toolClassName, string arguments, string subject)
+    {
+        // With the AI's en-US the app read the 1,25 the tool wrote in the MCP request's de-DE as 125.
+        var requestCount = _host.GermanRequestCount;
+
+        var result = await _host.CallToolAsync(toolClassName, arguments, MvcHost.GermanCulture);
+
+        Assert.True(requestCount == _host.GermanRequestCount, $"The tool called the API, which answered {_host.GermanLastResponse}");
+        Assert.True(result.IsError);
+        Assert.StartsWith(subject, GetText(result));
+        Assert.Contains("the tool writes the form's numbers and dates in the culture of the MCP request, 'de-DE'.", GetText(result));
+    }
+
+    [Fact]
     public async Task Tool_RefusesAHeaderValueAnHttpHeaderCannotHold_WithoutCallingTheApi()
     {
         var requestCount = _host.RequestCount;
@@ -845,6 +901,11 @@ namespace TestApi
         /// </summary>
         public static readonly CultureInfo GermanCulture = CultureInfo.GetCultureInfo("de-DE");
 
+        /// <summary>
+        /// The other culture the second app supports, which reads a decimal point.
+        /// </summary>
+        public static readonly CultureInfo EnglishCulture = CultureInfo.GetCultureInfo("en-US");
+
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
         private HttpClient _client = null!;
@@ -877,8 +938,8 @@ namespace TestApi
             _germanApp.UseRequestLocalization(new RequestLocalizationOptions
             {
                 DefaultRequestCulture = new RequestCulture(GermanCulture),
-                SupportedCultures = [GermanCulture],
-                SupportedUICultures = [GermanCulture]
+                SupportedCultures = [GermanCulture, EnglishCulture],
+                SupportedUICultures = [GermanCulture, EnglishCulture]
             });
             _germanApp.MapControllers();
             await _germanApp.StartAsync();
@@ -904,11 +965,22 @@ namespace TestApi
         /// </summary>
         public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, CultureInfo culture)
         {
+            await CallToolAsync(toolClassName, arguments, culture);
+
+            return _germanInvoker.LastResponse;
+        }
+
+        /// <summary>
+        /// Calls a generated tool as <see cref="InvokeToolAsync(string, string, CultureInfo)"/> does, and returns the tool's
+        /// result.
+        /// </summary>
+        public async Task<CallToolResult> CallToolAsync(string toolClassName, string arguments, CultureInfo culture)
+        {
             var previousCulture = CultureInfo.CurrentCulture;
             CultureInfo.CurrentCulture = culture;
             try
             {
-                return await InvokeToolAsync(toolClassName, arguments, _germanInvoker);
+                return await RunToolAsync(toolClassName, arguments, _germanInvoker);
             }
             finally
             {
@@ -927,6 +999,17 @@ namespace TestApi
 
         private async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, RecordingInvoker invoker)
         {
+            await RunToolAsync(toolClassName, arguments, invoker);
+
+            return invoker.LastResponse;
+        }
+
+        /// <summary>
+        /// Runs a generated tool's method, and returns its result, or an empty one from a tool with an output schema,
+        /// which returns what the action answered instead.
+        /// </summary>
+        private async Task<CallToolResult> RunToolAsync(string toolClassName, string arguments, RecordingInvoker invoker)
+        {
             var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
             var argumentValues = JsonNode.Parse(arguments)!.AsObject();
             var parameterValues = toolMethod
@@ -937,9 +1020,10 @@ namespace TestApi
                     : GetDefaultArgument(x))
                 .ToArray();
 
-            await (Task)toolMethod.Invoke(null, parameterValues)!;
+            var run = (Task)toolMethod.Invoke(null, parameterValues)!;
+            await run;
 
-            return invoker.LastResponse;
+            return run.GetType().GetProperty(nameof(Task<object>.Result))!.GetValue(run) as CallToolResult ?? new CallToolResult();
         }
 
         /// <summary>
@@ -961,6 +1045,10 @@ namespace TestApi
         }
 
         public int RequestCount => _invoker.RequestCount;
+
+        public int GermanRequestCount => _germanInvoker.RequestCount;
+
+        public (int StatusCode, string Body) GermanLastResponse => _germanInvoker.LastResponse;
 
         public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
 

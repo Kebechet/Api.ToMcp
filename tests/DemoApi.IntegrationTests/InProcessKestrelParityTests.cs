@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -231,6 +233,30 @@ public sealed class InProcessKestrelParityTests
             tool.Text);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AToolsForm_IsReadInTheCultureTheAppPickedForItsMcpRequest(bool areApiCallsInProcess)
+    {
+        // The app picks en-US for the MCP request from the client's Accept-Language, so the tool writes 1234.25 as
+        // "1,234.25", and would pick its de-DE default for a request that names no culture, which reads that as 123425.
+        string[] cultures = ["de-DE", "en-US"];
+        await using var app = await StartAsync(
+            app => app.UseRequestLocalization(new RequestLocalizationOptions { DefaultRequestCulture = new RequestCulture(cultures[0]) }
+                .AddSupportedCultures(cultures)
+                .AddSupportedUICultures(cultures)),
+            areApiCallsInProcess);
+
+        var tool = await CallToolAsync(
+            app.Urls.Single(),
+            "parity_form_amount",
+            new Dictionary<string, object?> { ["route"] = Route + "/amount", ["amount"] = 1234.25m },
+            new Dictionary<string, string> { ["Accept-Language"] = "en-US" });
+
+        Assert.False(tool.IsError, tool.Text);
+        Assert.Equal("{\"amount\":1234.25,\"culture\":\"en-US\"}", tool.Text);
+    }
+
     [Fact]
     public async Task AToolsRequest_ReachesTheMapBranchOfItsMcpRequest_AsOneSentToTheServer()
     {
@@ -359,13 +385,18 @@ public sealed class InProcessKestrelParityTests
         return (result.IsError == true, ((TextContentBlock)result.Content[0]).Text);
     }
 
-    private static async Task<(bool IsError, string Text)> CallToolAsync(string address, string toolName, Dictionary<string, object?> arguments)
+    private static async Task<(bool IsError, string Text)> CallToolAsync(
+        string address,
+        string toolName,
+        Dictionary<string, object?> arguments,
+        Dictionary<string, string>? headers = null)
     {
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
                 Endpoint = new Uri(address + "/mcp"),
-                TransportMode = HttpTransportMode.StreamableHttp
+                TransportMode = HttpTransportMode.StreamableHttp,
+                AdditionalHeaders = headers
             },
             NullLoggerFactory.Instance);
         await using var client = await McpClient.CreateAsync(transport);
@@ -462,6 +493,12 @@ public sealed class KestrelParityController : ControllerBase
     public IActionResult FormRedirect()
     {
         return RedirectPreserveMethod("/api/kestrel-parity/headers-form");
+    }
+
+    [HttpPost("amount")]
+    public IActionResult Amount([FromForm] decimal amount)
+    {
+        return Ok(new { amount, culture = CultureInfo.CurrentCulture.Name });
     }
 
     [HttpGet("client")]
