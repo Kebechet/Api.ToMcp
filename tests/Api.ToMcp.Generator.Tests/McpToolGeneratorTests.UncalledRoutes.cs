@@ -459,7 +459,7 @@ public partial class McpToolGeneratorTests
     [InlineData("{id}/{slug}", "AddressSlug", false)]
     [InlineData("{id}/{slug}", "AddressesSlug", false)]
     // MVC creates a complex value through a public constructor without parameters, or a record's primary one; it
-    // creates no abstract class or struct.
+    // creates no abstract class, nor a struct without such a constructor declared on it.
     [InlineData("{id}/{slug}", "CtorSlug", false)]
     [InlineData("{id}/{slug}", "TwoCtorsSlug", true)]
     [InlineData("{id}/{slug}", "AbstractSlug", false)]

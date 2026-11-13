@@ -878,8 +878,9 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Whether MVC's complex binder creates a value of the type (<c>ComplexObjectModelBinder.CreateModel</c>): through a
-        /// record's primary constructor, else a public one without parameters of a class that is not abstract. For any
-        /// other type, a struct included, it throws.
+        /// record's primary constructor, else a public one without parameters of a class that is not abstract. It throws
+        /// for any other class, and for a struct without such a constructor declared on it; the generator counts no struct
+        /// as created.
         /// </summary>
         private static bool IsCreatedByMvc(ITypeSymbol type, Dictionary<IPropertySymbol, IParameterSymbol> constructorParameters)
         {

@@ -885,7 +885,8 @@ namespace TestApi
         public object Post(int id, [FromForm] Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
     }
 
-    // MVC creates a complex value through a public constructor without parameters, or a record's primary one.
+    // MVC creates a complex value through a public constructor without parameters, or a record's primary one; a struct
+    // without one declared on it neither.
     public sealed class Mcp014CtorSlug
     {
         public Mcp014CtorSlug(int page)
@@ -905,6 +906,22 @@ namespace TestApi
         [HttpGet(""{id}"")]
         [HttpGet(""{id}/{slug}"")]
         public object Get(int id, Mcp014CtorSlug f) => new { id, f.Slug, f.Page };
+    }
+
+    public struct Mcp014SlugStruct
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    [Route(""plain/mcp014-slugstruct"")]
+    public class Mcp014SlugStructController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014SlugStruct f) => new { id, f.Slug, f.Page };
     }
 }
 ";
@@ -1381,6 +1398,7 @@ namespace TestApi
     [Theory]
     [InlineData("Mcp014ApiSlugRecordController_GetTool", "/api/mcp014-slugrecord/7/red", StatusCodes.Status415UnsupportedMediaType)]
     [InlineData("Mcp014CtorSlugController_GetTool", "/plain/mcp014-ctorslug/7/red", StatusCodes.Status500InternalServerError)]
+    [InlineData("Mcp014SlugStructController_GetTool", "/plain/mcp014-slugstruct/7/red", StatusCodes.Status500InternalServerError)]
     public async Task Mcp014_IsNotReported_WhereMvcBindsNoValueAtTheRouteTheToolDoesNotCall(string toolClassName, string uncalledRoute, int expectedStatusCode)
     {
         // MVC reads the value from the body, or cannot create it, so the route the tool does not call carries nothing it
