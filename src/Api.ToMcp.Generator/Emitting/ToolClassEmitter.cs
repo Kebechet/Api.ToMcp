@@ -244,7 +244,7 @@ namespace Api.ToMcp.Generator.Emitting
         /// <summary>
         /// The headers and the form the tool sends: each <c>[FromHeader]</c> parameter as a header, refusing a value no
         /// header can hold before the API is called, and each <c>[FromForm]</c> one as form fields, under the keys MVC's
-        /// form binding reads.
+        /// form binding reads, refusing a date the calendar of the culture the form is written in cannot hold.
         /// </summary>
         private static (bool HasHeaders, bool HasForm) EmitHeadersAndForm(
             StringBuilder sb,
@@ -271,9 +271,14 @@ namespace Api.ToMcp.Generator.Emitting
             if (formParameters.Any())
             {
                 sb.AppendLine($"            var {names.FormParts} = new {names.SystemNamespace}.Collections.Generic.List<string>();");
-                foreach (var (key, expression) in formParameters.SelectMany(x => GetFormValues(x, routeValues.RouteProperties)))
+                foreach (var parameter in formParameters)
                 {
-                    sb.AppendLine($"            {RequestValueFormatter}.AddFormValue({names.FormParts}, {SymbolDisplay.FormatLiteral(key, quote: true)}, {expression});");
+                    var message = $"The argument '{parameter.Name}' holds a date that the tool cannot write in the calendar of the MCP request's culture, in which it writes the form. Give a date that calendar holds; a date left out counts as 0001-01-01.";
+                    foreach (var (key, expression) in GetFormValues(parameter, routeValues.RouteProperties))
+                    {
+                        sb.AppendLine($"            if (!{RequestValueFormatter}.TryAddFormValue({names.FormParts}, {SymbolDisplay.FormatLiteral(key, quote: true)}, {expression}))");
+                        sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
+                    }
                 }
             }
 

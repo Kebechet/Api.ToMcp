@@ -384,7 +384,7 @@ public static class ParityProbeTools
         Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Name", name));
         Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tags", tags));
         var formParts = new List<string>();
-        McpRequestValueFormatter.AddFormValue(formParts, "comment", comment);
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "comment", comment));
 
         return new McpHttpRequest(HttpMethod.Post, route) { Headers = headers, FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
     }
@@ -396,7 +396,7 @@ public static class ParityProbeTools
     public static Task<CallToolResult> SendFormAmount(IMcpHttpInvoker invoker, string route, decimal amount, CancellationToken cancellationToken)
     {
         var formParts = new List<string>();
-        McpRequestValueFormatter.AddFormValue(formParts, "amount", amount);
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "amount", amount));
 
         return new McpHttpRequest(HttpMethod.Post, route) { FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
     }

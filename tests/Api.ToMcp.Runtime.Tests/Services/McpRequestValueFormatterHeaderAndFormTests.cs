@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Http;
@@ -19,24 +20,24 @@ public class McpRequestValueFormatterHeaderAndFormTests
     }
 
     [Fact]
-    public void AddFormValue_WritesAValue_AsAQueryValueIsWritten()
+    public void TryAddFormValue_WritesAValue_AsAQueryValueIsWritten()
     {
         var formParts = new List<string>();
 
-        McpRequestValueFormatter.AddFormValue(formParts, "name", "a b&c=d+e");
-        McpRequestValueFormatter.AddFormValue(formParts, "at", new DateTime(2026, 9, 28, 14, 30, 0));
-        McpRequestValueFormatter.AddFormValue(formParts, "ids", new[] { 1, 2 });
-        McpRequestValueFormatter.AddFormValue(formParts, "none", null);
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "name", "a b&c=d+e"));
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "at", new DateTime(2026, 9, 28, 14, 30, 0)));
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "ids", new[] { 1, 2 }));
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "none", null));
 
         Assert.Equal(new[] { "name=a%20b%26c%3Dd%2Be", "at=2026-09-28T14%3A30%3A00.0000000", "ids=1", "ids=2" }, formParts);
     }
 
     [Fact]
-    public void AddFormValue_SendsThePropertiesMvcReadsFromTheForm_UnderTheParametersPrefix()
+    public void TryAddFormValue_SendsThePropertiesMvcReadsFromTheForm_UnderTheParametersPrefix()
     {
         var formParts = new List<string>();
 
-        McpRequestValueFormatter.AddFormValue(formParts, "review", new FormReview
+        var isAdded = McpRequestValueFormatter.TryAddFormValue(formParts, "review", new FormReview
         {
             Rating = 5,
             Comment = "Quiet",
@@ -47,6 +48,7 @@ public class McpRequestValueFormatterHeaderAndFormTests
             Attachment = new FormFile(Stream.Null, 0, 0, "file", "file.txt")
         });
 
+        Assert.True(isAdded);
         Assert.Equal(new[] { "review.Rating=5", "review.Comment=Quiet", "review.Tags=a", "review.Tags=b", "review.by=Ann" }, formParts);
     }
 
@@ -125,7 +127,7 @@ public class McpRequestValueFormatterHeaderAndFormTests
     [Theory]
     [InlineData("de-DE", "amount=1234%2C25", "ratio=-0%2C5", "day=28.09.2026", "delta=-12")]
     [InlineData("en-US", "amount=1234.25", "ratio=-0.5", "day=9%2F28%2F2026", "delta=-12")]
-    public void AddFormValue_WritesNumbersAndDates_InTheCurrentCulture_AsMvcReadsAForm(string cultureName, string amount, string ratio, string day, string delta)
+    public void TryAddFormValue_WritesNumbersAndDates_InTheCurrentCulture_AsMvcReadsAForm(string cultureName, string amount, string ratio, string day, string delta)
     {
         // MVC reads a form with the request's culture, unlike the query string, so 1234.25 would be 123425 under de-DE.
         var previousCulture = CultureInfo.CurrentCulture;
@@ -134,11 +136,11 @@ public class McpRequestValueFormatterHeaderAndFormTests
         {
             var formParts = new List<string>();
 
-            McpRequestValueFormatter.AddFormValue(formParts, "amount", 1234.25m);
-            McpRequestValueFormatter.AddFormValue(formParts, "ratio", -0.5);
-            McpRequestValueFormatter.AddFormValue(formParts, "day", new DateOnly(2026, 9, 28));
-            McpRequestValueFormatter.AddFormValue(formParts, "delta", -12);
-            McpRequestValueFormatter.AddFormValue(formParts, "id", Guid.Empty);
+            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "amount", 1234.25m));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "ratio", -0.5));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "day", new DateOnly(2026, 9, 28)));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "delta", -12));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "id", Guid.Empty));
 
             Assert.Equal(new[] { amount, ratio, day, delta, "id=00000000-0000-0000-0000-000000000000" }, formParts);
         }
@@ -149,7 +151,7 @@ public class McpRequestValueFormatterHeaderAndFormTests
     }
 
     [Fact]
-    public void AddFormValue_WritesANumber_ThatTheCurrentCultureParsesBack_InEveryCulture()
+    public void TryAddFormValue_WritesANumber_ThatTheCurrentCultureParsesBack_InEveryCulture()
     {
         // Arabic cultures write the minus sign with a letter mark that the invariant text lacks and they require.
         var previousCulture = CultureInfo.CurrentCulture;
@@ -160,12 +162,63 @@ public class McpRequestValueFormatterHeaderAndFormTests
                 CultureInfo.CurrentCulture = culture;
                 var formParts = new List<string>();
 
-                McpRequestValueFormatter.AddFormValue(formParts, "a", -1234.25m);
+                Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "a", -1234.25m));
 
                 var text = Uri.UnescapeDataString(formParts[0]["a=".Length..]);
                 Assert.True(
                     decimal.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands, culture, out var value) && value == -1234.25m,
                     $"{culture.Name}: {text}");
+            }
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Theory]
+    [InlineData("fa-IR", "0001-01-01")]
+    [InlineData("fa-IR", "0622-03-21")]
+    [InlineData("ar-SA", "1900-04-29")]
+    [InlineData("ar-SA", "9999-12-31")]
+    public void TryAddFormValue_ReturnsFalse_ForADateOutsideTheCalendarOfTheCurrentCulture(string cultureName, string date)
+    {
+        // ToString throws for it: the Persian calendar starts in 622, the Umm al-Qura one spans 1900 to 2077. A date
+        // property left out is 0001-01-01, in an object or in a collection.
+        var day = DateOnly.Parse(date, CultureInfo.InvariantCulture);
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
+        try
+        {
+            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "day", day));
+            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "form", new DatedForm { Amount = 1.5m, Day = day }));
+            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "days", new[] { new DateOnly(2026, 11, 13), day }));
+            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "forms", new[] { new DatedForm { Day = new DateOnly(2026, 11, 13) }, new DatedForm { Day = day } }));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
+    public void TryAddFormValue_WritesTheFirstAndLastDateOfTheCalendar_ThatTheCurrentCultureParsesBack_InEveryCulture()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        var converter = TypeDescriptor.GetConverter(typeof(DateOnly));
+        try
+        {
+            foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures))
+            {
+                CultureInfo.CurrentCulture = culture;
+                var calendar = culture.DateTimeFormat.Calendar;
+                DateOnly[] days = [DateOnly.FromDateTime(calendar.MinSupportedDateTime), DateOnly.FromDateTime(calendar.MaxSupportedDateTime)];
+                var formParts = new List<string>();
+
+                Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "days", days), culture.Name);
+
+                var texts = formParts.Select(x => Uri.UnescapeDataString(x["days=".Length..])).ToList();
+                Assert.Equal(days, texts.Select(x => (DateOnly)converter.ConvertFrom(null, culture, x)!));
             }
         }
         finally
@@ -191,6 +244,13 @@ public class McpRequestValueFormatterHeaderAndFormTests
         {
             CultureInfo.CurrentCulture = previousCulture;
         }
+    }
+
+    private sealed class DatedForm
+    {
+        public decimal Amount { get; set; }
+
+        public DateOnly Day { get; set; }
     }
 
     private sealed class FormReview

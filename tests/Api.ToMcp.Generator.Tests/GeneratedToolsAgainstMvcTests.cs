@@ -185,6 +185,9 @@ namespace TestApi
         public object PostLocalizedQuery([FromQuery] string? culture, [FromForm] decimal amount)
             => new { culture, amount, requestCulture = System.Globalization.CultureInfo.CurrentCulture.Name };
 
+        [HttpPost(""dated"")]
+        public object PostDated([FromForm] DatedAmount a) => a;
+
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
             => new { isNaN = double.IsNaN(value), inf = float.IsPositiveInfinity(inf), negInf = double.IsNegativeInfinity(negInf), query = Request.QueryString.Value };
@@ -381,6 +384,13 @@ namespace TestApi
 
         [HttpGet(""nested-prefix"")]
         public object GetNestedPrefix([FromQuery] PrefixedWrapper w) => new { city = w.Inner?.City, query = Request.QueryString.Value };
+    }
+
+    public sealed class DatedAmount
+    {
+        public decimal Amount { get; set; }
+
+        public DateOnly Day { get; set; }
     }
 
     [Flags]
@@ -798,6 +808,32 @@ namespace TestApi
     }
 
     [Fact]
+    public async Task Tool_WritesAFormDate_InTheCalendarOfTheCultureItWritesTheFormIn()
+    {
+        // fa-IR writes dates in the Persian calendar, 1405/08/22, which MVC reads back in the same culture.
+        var (statusCode, body) = await _host.InvokeToolAsync("EchoController_PostDatedTool", @"{""a"":{""amount"":1.5,""day"":""2026-11-13""}}", MvcHost.PersianCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.Equal(@"{""amount"":1.5,""day"":""2026-11-13""}", body);
+    }
+
+    [Fact]
+    public async Task Tool_RefusesAFormDateOutsideTheCalendarOfTheCultureItWritesTheFormIn_WithoutCallingTheApi()
+    {
+        // A date left out is 0001-01-01, before the Persian calendar starts, so writing it threw and the AI saw only
+        // "An error occurred invoking".
+        var requestCount = _host.GermanRequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_PostDatedTool", @"{""a"":{""amount"":1.5}}", MvcHost.PersianCulture);
+
+        Assert.True(requestCount == _host.GermanRequestCount, $"The tool called the API, which answered {_host.GermanLastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "The argument 'a' holds a date that the tool cannot write in the calendar of the MCP request's culture, in which it writes the form. Give a date that calendar holds; a date left out counts as 0001-01-01.",
+            GetText(result));
+    }
+
+    [Fact]
     public async Task Tool_RefusesAHeaderValueAnHttpHeaderCannotHold_WithoutCallingTheApi()
     {
         var requestCount = _host.RequestCount;
@@ -906,6 +942,11 @@ namespace TestApi
         /// </summary>
         public static readonly CultureInfo EnglishCulture = CultureInfo.GetCultureInfo("en-US");
 
+        /// <summary>
+        /// A culture the second app supports whose calendar, the Persian one, starts in 622.
+        /// </summary>
+        public static readonly CultureInfo PersianCulture = CultureInfo.GetCultureInfo("fa-IR");
+
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
         private HttpClient _client = null!;
@@ -938,8 +979,8 @@ namespace TestApi
             _germanApp.UseRequestLocalization(new RequestLocalizationOptions
             {
                 DefaultRequestCulture = new RequestCulture(GermanCulture),
-                SupportedCultures = [GermanCulture, EnglishCulture],
-                SupportedUICultures = [GermanCulture, EnglishCulture]
+                SupportedCultures = [GermanCulture, EnglishCulture, PersianCulture],
+                SupportedUICultures = [GermanCulture, EnglishCulture, PersianCulture]
             });
             _germanApp.MapControllers();
             await _germanApp.StartAsync();

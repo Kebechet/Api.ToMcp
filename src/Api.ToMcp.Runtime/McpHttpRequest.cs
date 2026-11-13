@@ -75,7 +75,7 @@ public sealed class McpHttpRequest
     /// </summary>
     /// <remarks>
     /// MVC reads a form's numbers and dates in the culture of the API request, which <c>UseRequestLocalization</c> picks,
-    /// and <see cref="Services.McpRequestValueFormatter.AddFormValue"/> writes them in <see cref="CultureInfo.CurrentCulture"/>,
+    /// and <see cref="Services.McpRequestValueFormatter.TryAddFormValue"/> writes them in <see cref="CultureInfo.CurrentCulture"/>,
     /// the culture of the MCP request. So a request with a form carries <c>Accept-Language</c> naming that culture, which the
     /// app then picks for it as it did for the MCP request. A request that would pick another culture itself, through an
     /// <c>Accept-Language</c> header or a <c>culture</c> or <c>ui-culture</c> query value of its own, gets an error result
