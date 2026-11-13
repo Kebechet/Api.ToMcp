@@ -156,6 +156,37 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public void AddMcpTools_ClaimsNoUriFormat_ForAGeneratedToolsLinks_InTheInputAndOutputSchema()
+    {
+        // The uri format requires an absolute URI, but the SDK reads a relative one into a Uri, MVC binds one, and MVC
+        // writes a Uri back as the string it was made from.
+        var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
+        var tool = tools.Single(x => x.ProtocolTool.Name == "generated_links").ProtocolTool;
+
+        Assert.Equal("""{"type":"string"}""", tool.InputSchema.GetProperty("properties").GetProperty("link").GetRawText());
+        Assert.DoesNotContain("\"format\"", tool.InputSchema.GetRawText());
+        Assert.DoesNotContain("\"format\"", GetOutputSchema(tools, "generated_links").GetRawText());
+    }
+
+    [Fact]
+    public async Task AddMcpTools_PassesARelativeUrl_ToAGeneratedTool()
+    {
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_links");
+        await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions());
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+            """{"link":"/images/1.png","page":{"self":"pages/2","images":[]}}""")!;
+        var context = new RequestContext<CallToolRequestParams>(
+            server,
+            new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+            new CallToolRequestParams { Name = "generated_links", Arguments = arguments });
+
+        var result = await tool.InvokeAsync(context, CancellationToken.None);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal("/images/1.png pages/2", Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text);
+    }
+
+    [Fact]
     public void AddMcpTools_LeavesTheArgumentPropertiesAGeneratedToolNeverSends_OutOfItsInputSchema()
     {
         // The query string carries none of them, and a JSON body none without a public getter.

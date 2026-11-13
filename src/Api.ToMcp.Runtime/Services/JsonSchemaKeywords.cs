@@ -7,5 +7,7 @@ internal static class JsonSchemaKeywords
 {
     public const string Description = "description";
 
+    public const string Format = "format";
+
     public const string Ref = "$ref";
 }

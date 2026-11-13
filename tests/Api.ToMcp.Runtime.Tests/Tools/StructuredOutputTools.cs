@@ -90,6 +90,14 @@ public sealed class StructuredLineConverter : JsonConverter<StructuredLine>
     }
 }
 
+/// <summary>A page whose links can be relative.</summary>
+public sealed class StructuredLinks
+{
+    public Uri Self { get; set; } = null!;
+
+    public List<Uri> Images { get; set; } = [];
+}
+
 /// <summary>Shaped like the tools the generator emits for actions with a typed response.</summary>
 [McpServerToolType]
 public static class GeneratedStructuredTools
@@ -124,6 +132,14 @@ public static class GeneratedStructuredTools
     public static Task<object> Refs(StructuredRefInvoice invoice)
     {
         return Task.FromResult<object>(new CallToolResult());
+    }
+
+    [McpServerTool(Name = "generated_links", UseStructuredContent = true, OutputSchemaType = typeof(StructuredLinks))]
+    [McpGeneratedTool]
+    [Description("Generated tool whose request and response hold links.")]
+    public static Task<object> Links(Uri link, StructuredLinks page)
+    {
+        return Task.FromResult<object>(new CallToolResult { Content = [new TextContentBlock { Text = $"{link.OriginalString} {page.Self.OriginalString}" }] });
     }
 
     [McpServerTool(Name = "generated_recursive", UseStructuredContent = true, OutputSchemaType = typeof(StructuredNode))]

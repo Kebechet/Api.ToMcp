@@ -237,6 +237,34 @@ public class McpOutputSchemaBuilderTests
     }
 
     [Theory]
+    [InlineData("link", "\"string\"")]
+    [InlineData("maybeLink", "[\"string\",\"null\"]")]
+    public void Build_ClaimsNoFormat_ForAUri_WhichMvcWritesAsTheStringItWasMadeFrom(string propertyName, string type)
+    {
+        // MVC writes new Uri("/images/1.png", UriKind.Relative) as "/images/1.png", and keeps a space or a non-ASCII
+        // letter of an absolute one as given; the uri format requires an absolute URI with neither.
+        var property = Build(typeof(LinkPage)).GetProperty("properties").GetProperty(propertyName);
+
+        Assert.Equal($"{{\"type\":{type}}}", property.GetRawText());
+    }
+
+    [Theory]
+    [InlineData(typeof(LinkPage), false)]
+    [InlineData(typeof(LinkPage), true)]
+    [InlineData(typeof(List<LinkPage>), false)]
+    [InlineData(typeof(Uri), false)]
+    [InlineData(typeof(Uri), true)]
+    [InlineData(typeof(List<Uri>), false)]
+    [InlineData(typeof(Dictionary<string, Uri>), true)]
+    public void Build_ClaimsNoFormat_ForAUriAnywhereInTheResponse(Type type, bool isNullable)
+    {
+        var schema = Build(type, isNullable).GetRawText();
+
+        Assert.Contains("\"string\"", schema);
+        Assert.DoesNotContain("\"format\"", schema);
+    }
+
+    [Theory]
     [InlineData("stampedAt", "date-time")]
     [InlineData("day", "date")]
     [InlineData("id", "uuid")]
@@ -616,6 +644,24 @@ public class McpOutputSchemaBuilderTests
         public DateOnly Day { get; set; }
 
         public Guid Id { get; set; }
+    }
+
+    public sealed class LinkPage
+    {
+        public Uri Link { get; set; } = null!;
+
+        public Uri? MaybeLink { get; set; }
+
+        public List<Uri> Links { get; set; } = [];
+
+        public Dictionary<string, Uri> LinksByName { get; set; } = [];
+
+        public LinkImage Image { get; set; } = new();
+    }
+
+    public sealed class LinkImage
+    {
+        public Uri Source { get; set; } = null!;
     }
 
     public sealed record OrderRecord(Guid Id, string? Note, int Quantity = 1);

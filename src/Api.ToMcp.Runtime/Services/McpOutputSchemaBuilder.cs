@@ -20,7 +20,6 @@ internal sealed class McpOutputSchemaBuilder
     private const string TypeKeyword = "type";
     private const string AnyOfKeyword = "anyOf";
     private const string RequiredKeyword = "required";
-    private const string FormatKeyword = "format";
     private const string SchemaKeyword = "$schema";
     private const string NullType = "null";
 
@@ -236,17 +235,18 @@ internal sealed class McpOutputSchemaBuilder
     /// <summary>
     /// The <c>date-time</c> and <c>time</c> formats require an offset, which MVC writes for a <c>DateTime</c> only when
     /// its kind is UTC or local (<c>"2026-09-28T00:00:00"</c> otherwise, as from a database) and never for a
-    /// <c>TimeOnly</c> (<c>"13:45:00"</c>), so both stay plain strings.
+    /// <c>TimeOnly</c> (<c>"13:45:00"</c>), so both stay plain strings. So does a <c>Uri</c>, which MVC writes as the
+    /// string it was made from, relative ones included (<see cref="UriSchema"/>).
     /// </summary>
     private static JsonNode RemoveFormatMvcCanMiss(AIJsonSchemaCreateContext context, JsonNode schema)
     {
         var type = Nullable.GetUnderlyingType(context.TypeInfo.Type) ?? context.TypeInfo.Type;
         if ((type == typeof(DateTime) || type == typeof(TimeOnly)) && schema is JsonObject schemaObject)
         {
-            schemaObject.Remove(FormatKeyword);
+            schemaObject.Remove(JsonSchemaKeywords.Format);
         }
 
-        return schema;
+        return UriSchema.RemoveFormat(context, schema);
     }
 
     /// <summary>
