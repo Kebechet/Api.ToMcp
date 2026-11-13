@@ -586,10 +586,10 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var isBodyInferred = !endpoint.HttpMethods.Any(BodilessHttpMethods.Contains);
-            var bindings = new List<(EndpointInput Input, EndpointBinding Binding, string? QueryName)>();
+            var bindings = new List<(EndpointInput Input, EndpointBinding Binding, string? ModelName)>();
             foreach (var input in inputs)
             {
-                var (binding, queryName, problem) = GetEndpointBinding(input, isBodyInferred);
+                var (binding, modelName, problem) = GetEndpointBinding(input, isBodyInferred);
                 if (problem is not null)
                 {
                     return (ImmutableArray<ParameterInfoModel>.Empty, problem, false);
@@ -597,7 +597,7 @@ namespace Api.ToMcp.Generator.Parsing
 
                 if (binding != EndpointBinding.None)
                 {
-                    bindings.Add((input, binding, queryName));
+                    bindings.Add((input, binding, modelName));
                 }
             }
 
@@ -615,6 +615,22 @@ namespace Api.ToMcp.Generator.Parsing
                 return (ImmutableArray<ParameterInfoModel>.Empty, $"two of its inputs are named '{sharedName}', which the endpoint reads from the same value and a tool cannot tell apart", false);
             }
 
+            // Inputs of different names that a [FromRoute(Name)] or [FromQuery(Name)] has read the same route or query value,
+            // so the tool could send one argument only.
+            var routeTemplate = RouteTemplate.Parse(route);
+            var sharedValue = bindings
+                .Where(x => x.Binding != EndpointBinding.Body)
+                .GroupBy(x => (
+                    IsRoute: x.Binding == EndpointBinding.Route || (x.Binding == EndpointBinding.RouteOrQuery && routeTemplate.HasParameter(x.Input.Name)),
+                    Name: (x.ModelName ?? x.Input.Name).ToUpperInvariant()))
+                .FirstOrDefault(x => x.Count() > 1);
+            if (sharedValue is not null)
+            {
+                var valueKind = sharedValue.Key.IsRoute ? "route value" : "query value";
+                var valueName = sharedValue.First().ModelName ?? sharedValue.First().Input.Name;
+                return (ImmutableArray<ParameterInfoModel>.Empty, $"its inputs {QuoteInputs(sharedValue)} are read from the same {valueKind} '{valueName}', which a tool cannot give each a value of its own", false);
+            }
+
             var hidden = bindings.FirstOrDefault(x => !compilation.IsSymbolAccessibleWithin(x.Input.Type, compilation.Assembly)).Input;
             if (hidden is not null)
             {
@@ -622,7 +638,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var parameters = bindings
-                .Select(x => CreateEndpointParameter(x.Input, ToParameterSource(x.Binding), x.QueryName, compilation))
+                .Select(x => CreateEndpointParameter(x.Input, ToParameterSource(x.Binding), x.ModelName, compilation))
                 .ToImmutableArray();
 
             return (parameters, null, bindings.Any(x => !IsEffectivelyPublic(x.Input.Type)));
@@ -633,7 +649,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// input without an attribute is a service, as an endpoint reads one body at most. Without one, a single such
         /// input is the body; of several, all but one are services, and only the running app knows which.
         /// </summary>
-        private static string? ResolveBody(List<(EndpointInput Input, EndpointBinding Binding, string? QueryName)> bindings, string httpMethod)
+        private static string? ResolveBody(List<(EndpointInput Input, EndpointBinding Binding, string? ModelName)> bindings, string httpMethod)
         {
             var declaredBodies = bindings.Where(x => x.Binding == EndpointBinding.Body).ToList();
             var candidates = bindings.Where(x => x.Binding == EndpointBinding.BodyOrService).ToList();
@@ -667,7 +683,7 @@ namespace Api.ToMcp.Generator.Parsing
                 : null;
         }
 
-        private static string QuoteInputs(IEnumerable<(EndpointInput Input, EndpointBinding Binding, string? QueryName)> bindings)
+        private static string QuoteInputs(IEnumerable<(EndpointInput Input, EndpointBinding Binding, string? ModelName)> bindings)
         {
             var names = bindings.Select(x => $"'{x.Input.Name}'").ToList();
 
@@ -679,13 +695,13 @@ namespace Api.ToMcp.Generator.Parsing
         /// attribute, a type it fills itself, a <c>BindAsync</c>, a type it parses from one string, an array of those on an
         /// endpoint without a body, and otherwise a service or the body.
         /// </summary>
-        private static (EndpointBinding Binding, string? QueryName, string? Problem) GetEndpointBinding(EndpointInput input, bool isBodyInferred)
+        private static (EndpointBinding Binding, string? ModelName, string? Problem) GetEndpointBinding(EndpointInput input, bool isBodyInferred)
         {
             var attributes = input.Attributes;
             var type = input.Type;
 
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromRouteMetadata)))
-                return (EndpointBinding.Route, null, null);
+                return (EndpointBinding.Route, GetMetadataName(attributes, MinimalApiNames.FromRouteMetadata), null);
 
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromQueryMetadata)))
                 return (EndpointBinding.Query, GetMetadataName(attributes, MinimalApiNames.FromQueryMetadata), null);
@@ -751,7 +767,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
-        private static ParameterInfoModel CreateEndpointParameter(EndpointInput input, ParameterSourceModel source, string? queryName, Compilation compilation)
+        private static ParameterInfoModel CreateEndpointParameter(EndpointInput input, ParameterSourceModel source, string? modelName, Compilation compilation)
         {
             var type = input.Type;
             var isSimpleType = SimpleTypeClassifier.IsParsable(type);
@@ -770,7 +786,7 @@ namespace Api.ToMcp.Generator.Parsing
                     Source = source,
                     IsCollection = true,
                     Description = input.Description,
-                    QueryName = queryName
+                    ModelName = modelName
                 };
             }
 
@@ -794,7 +810,7 @@ namespace Api.ToMcp.Generator.Parsing
                     ? ExtractProperties(type, compilation)
                     : ImmutableArray<PropertyInfoModel>.Empty,
                 Description = input.Description,
-                QueryName = queryName
+                ModelName = modelName
             };
         }
 
@@ -938,7 +954,8 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The <c>Name</c> the first binding attribute of the kind sets, or null when it sets none.
+        /// The <c>Name</c> the first binding attribute of the kind sets, or null when it sets none. An empty name counts, as
+        /// ASP.NET Core reads the value under <c>Name ?? parameter.Name</c>.
         /// </summary>
         private static string? GetMetadataName(IEnumerable<AttributeData> attributes, string metadataInterface)
         {
@@ -947,7 +964,7 @@ namespace Api.ToMcp.Generator.Parsing
                 .SelectMany(x => x.NamedArguments)
                 .Where(x => x.Key == MinimalApiNames.MetadataNamePropertyName)
                 .Select(x => x.Value.Value as string)
-                .FirstOrDefault(x => !string.IsNullOrEmpty(x));
+                .FirstOrDefault(x => x is not null);
         }
 
         /// <summary>

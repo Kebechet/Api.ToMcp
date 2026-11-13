@@ -460,6 +460,24 @@ namespace TestApi
         public string? Note { get; set; }
     }
 
+    // MVC binds every parameter of the type under the prefix, as it reads a parameter's model name from its type too.
+    [Bind(Prefix = ""pf"")]
+    public sealed class PrefixedFilter
+    {
+        public string? City { get; set; }
+    }
+
+    // MVC reads a property's model name from its type too, so Inner binds under w.pf, not w.Inner.
+    public sealed class PrefixedWrapper
+    {
+        public PrefixedFilter? Inner { get; set; }
+    }
+
+    public sealed class GuidDto
+    {
+        public Guid Id { get; set; }
+    }
+
     public class BaseQuery
     {
         [FromQuery]

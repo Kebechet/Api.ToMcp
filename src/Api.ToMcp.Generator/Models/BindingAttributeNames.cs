@@ -56,6 +56,13 @@ internal static class BindingAttributeNames
     public const string ModelNamePropertyName = "Name";
 
     /// <summary>
+    /// Implements <c>IModelNameProvider.Name</c> explicitly, with its <see cref="BindPrefixPropertyName"/>.
+    /// </summary>
+    public const string Bind = "Microsoft.AspNetCore.Mvc.BindAttribute";
+
+    public const string BindPrefixPropertyName = "Prefix";
+
+    /// <summary>
     /// Implemented by <c>[ApiController]</c> and by any attribute that makes MVC apply its conventions.
     /// </summary>
     public const string ApiBehaviorMetadata = "Microsoft.AspNetCore.Mvc.Infrastructure.IApiBehaviorMetadata";

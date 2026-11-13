@@ -100,6 +100,10 @@ namespace TestApi
             app.MapGet(""/values/{id:int}"", (int id, HttpRequest request, string? name, int page = 1) => new { id, name, page, query = request.QueryString.Value })
                 .WithName(""Values"");
             app.MapGet(""/alias"", ([FromQuery(Name = ""q"")] string query) => new { query }).WithName(""Alias"");
+            app.MapGet(""/route-alias/{productId:int}"", ([FromRoute(Name = ""productId"")] int id, HttpRequest request) => new { id, path = request.Path.Value })
+                .WithName(""RouteAlias"");
+            app.MapGet(""/route-and-query/{orderId:int}"", ([FromQuery(Name = ""orderId"")] int q, int orderId) => new { q, orderId })
+                .WithName(""RouteAndQuery"");
             app.MapGet(""/special/{id}"", (HttpContext context, HttpRequest request, CancellationToken ct, ClaimsPrincipal user, int id) => new { id, path = request.Path.Value })
                 .WithName(""Special"");
             app.MapGet(""/header"", ([FromHeader(Name = ""X-Tenant"")] string? tenant) => new { tenant }).WithName(""OptionalHeader"");
@@ -161,6 +165,8 @@ namespace TestApi
     [InlineData("EchoEndpoints_ValuesTool", @"{""id"":7,""name"":""a""}", @"{""id"":7,""name"":""a"",""page"":1,""query"":""?name=a""}")]
     [InlineData("EchoEndpoints_ValuesTool", @"{""id"":7,""page"":3}", @"{""id"":7,""name"":null,""page"":3,""query"":""?page=3""}")]
     [InlineData("EchoEndpoints_AliasTool", @"{""query"":""brno""}", @"{""query"":""brno""}")]
+    [InlineData("EchoEndpoints_RouteAliasTool", @"{""id"":7}", @"{""id"":7,""path"":""/route-alias/7""}")]
+    [InlineData("EchoEndpoints_RouteAndQueryTool", @"{""q"":1,""orderId"":2}", @"{""q"":1,""orderId"":2}")]
     [InlineData("EchoEndpoints_SpecialTool", @"{""id"":7}", @"{""id"":7,""path"":""/special/7""}")]
     [InlineData("EchoEndpoints_OptionalHeaderTool", @"{}", @"{""tenant"":null}")]
     [InlineData("EchoEndpoints_TagsTool", @"{""tags"":[""a"",""b c""],""ids"":[1,2]}", @"{""tags"":[""a"",""b c""],""ids"":[1,2]}")]
@@ -213,7 +219,7 @@ namespace TestApi
     [Fact]
     public void EveryGeneratedTool_IsRegisteredByAddMcpTools()
     {
-        Assert.Equal(27, _host.ToolClassNames.Count);
+        Assert.Equal(29, _host.ToolClassNames.Count);
         Assert.Equal(_host.ToolClassNames.Count, _host.Tools.Count);
         Assert.False(_host.GetToolType("EchoEndpoints_InternalTool").IsPublic);
     }
