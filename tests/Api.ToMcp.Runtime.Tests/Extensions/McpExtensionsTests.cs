@@ -490,7 +490,7 @@ public class McpExtensionsTests
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
         Assert.Contains("Newtonsoft.Json (AddNewtonsoftJson)", warning.Message);
         Assert.Contains(
-            "Generated tools with an output schema: generated_converted, generated_nullable, generated_recursive, generated_refs, generated_strict.",
+            "Generated tools with an output schema: generated_converted, generated_links, generated_nullable, generated_recursive, generated_refs, generated_strict.",
             warning.Message);
         Assert.DoesNotContain("handwritten", warning.Message);
         Assert.Contains("Minimal API", warning.Message);
@@ -515,7 +515,7 @@ public class McpExtensionsTests
 
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains("AddNewtonsoftJson"));
         Assert.Contains(
-            "Generated tools with an output schema: generated_converted, generated_nullable, generated_recursive, generated_refs, generated_strict.",
+            "Generated tools with an output schema: generated_converted, generated_links, generated_nullable, generated_recursive, generated_refs, generated_strict.",
             warning.Message);
     }
 
