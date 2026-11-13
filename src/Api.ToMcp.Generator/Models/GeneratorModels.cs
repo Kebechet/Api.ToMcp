@@ -151,6 +151,13 @@ namespace Api.ToMcp.Generator.Models
         /// </summary>
         public string? RouteProblem { get; init; }
 
+        /// <summary>
+        /// Why a tool cannot send what the action reads from the request, such as a header a tool never sets or a form
+        /// file, as a clause of MCP009's message, or null when it can. Unlike <see cref="RouteProblem"/>, the route is known,
+        /// so the action still counts when the routes of other actions are compared.
+        /// </summary>
+        public string? ParameterProblem { get; init; }
+
         public EquatableArray<ParameterInfoModel> Parameters { get; init; } = EquatableArray<ParameterInfoModel>.Empty;
 
         /// <summary>
@@ -407,8 +414,9 @@ namespace Api.ToMcp.Generator.Models
         /// The name MVC binds the parameter under, or null when it binds it under its own: the name the first of its
         /// attributes, then of its type's, implementing <c>IModelNameProvider</c> gives, such as <c>[FromQuery(Name = "q")]</c>,
         /// <c>[FromRoute(Name = "productId")]</c>, <c>[ModelBinder(Name = "q")]</c> or <c>[Bind(Prefix = "f")]</c>. It is the
-        /// query key, the route value the parameter fills and the prefix of its properties; the tool's argument keeps the
-        /// parameter's own name. Of a Minimal API endpoint, the <c>Name</c> of its <c>[FromQuery]</c> or <c>[FromRoute]</c>.
+        /// query key, the header, the form key, the route value the parameter fills and the prefix of its properties; the
+        /// tool's argument keeps the parameter's own name. Of a Minimal API endpoint, the <c>Name</c> of its <c>[FromQuery]</c>
+        /// or <c>[FromRoute]</c>, and the header of its <c>[FromHeader]</c>.
         /// </summary>
         public string? ModelName { get; init; }
     }
@@ -426,8 +434,9 @@ namespace Api.ToMcp.Generator.Models
         public string? ModelName { get; init; }
 
         /// <summary>
-        /// Where the property's own binding attribute makes MVC read it from: <see cref="ParameterSourceModel.Route"/> or
-        /// <see cref="ParameterSourceModel.Query"/>, <see cref="ParameterSourceModel.Other"/> for any other source, and
+        /// Where the property's own binding attribute makes MVC read it from: <see cref="ParameterSourceModel.Route"/>,
+        /// <see cref="ParameterSourceModel.Query"/> or <see cref="ParameterSourceModel.Form"/>,
+        /// <see cref="ParameterSourceModel.Other"/> for any other source, and
         /// <see cref="ParameterSourceModel.Auto"/> when it has none and is read wherever its parameter is.
         /// </summary>
         public ParameterSourceModel Source { get; init; }
@@ -488,6 +497,12 @@ namespace Api.ToMcp.Generator.Models
         Query,
         Body,
         Header,
+
+        /// <summary>
+        /// The form content, which the tool sends as <c>application/x-www-form-urlencoded</c>.
+        /// </summary>
+        Form,
+
         Services,
 
         /// <summary>

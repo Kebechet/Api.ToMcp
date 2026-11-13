@@ -27,4 +27,9 @@ internal static class KnownTypeNames
     public const string FormFile = "Microsoft.AspNetCore.Http.IFormFile";
     public const string FormFileCollection = "Microsoft.AspNetCore.Http.IFormFileCollection";
     public const string FormCollection = "Microsoft.AspNetCore.Http.IFormCollection";
+    public const string Consumes = "Microsoft.AspNetCore.Mvc.ConsumesAttribute";
+    public const string ValidateAntiForgeryToken = "Microsoft.AspNetCore.Mvc.ValidateAntiForgeryTokenAttribute";
+    public const string AutoValidateAntiforgeryToken = "Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryTokenAttribute";
+    public const string IgnoreAntiforgeryToken = "Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryTokenAttribute";
+    public const string RequireAntiforgeryToken = "Microsoft.AspNetCore.Antiforgery.RequireAntiforgeryTokenAttribute";
 }

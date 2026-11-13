@@ -6,6 +6,7 @@
     "ProductsController.GetAll",
     "ProductsController.GetById",
     "ProductsController.GetCheapest",
+    "ProductsController.AddReview",
     "CategoriesController",
     "TodoEndpoints"
   ],

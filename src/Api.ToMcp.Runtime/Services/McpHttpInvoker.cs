@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Mime;
 using System.Text;
@@ -8,12 +9,14 @@ using Api.ToMcp.Runtime.Options;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using HeaderNames = Microsoft.Net.Http.Headers.HeaderNames;
 
 namespace Api.ToMcp.Runtime.Services;
 
-public sealed class McpHttpInvoker : IMcpHttpInvoker
+public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
 {
     private const string LoopPreventionHeader = McpLoopPreventionMiddleware.LoopPreventionHeader;
     private const string LoopPreventionValue = "true";
@@ -26,6 +29,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
     private readonly McpScopeOptions _scopeOptions;
     private readonly InProcessApiPipeline? _inProcessPipeline;
     private readonly string _forwardedProtoHeaderName;
+    private readonly HashSet<string> _proxyHeaderNames;
 
     /// <summary>
     /// An invoker that sends every request over HTTP. Only the invoker <c>AddMcpTools</c> registers is handed the app's
@@ -48,7 +52,8 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions,
         InProcessApiPipeline? inProcessPipeline,
-        string? forwardedProtoHeaderName = null)
+        string? forwardedProtoHeaderName = null,
+        IEnumerable<string>? proxyHeaderNames = null)
     {
         _httpClient = httpClient;
         _baseUrlProvider = baseUrlProvider;
@@ -57,6 +62,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         _scopeOptions = scopeOptions.Value;
         _inProcessPipeline = inProcessPipeline;
         _forwardedProtoHeaderName = forwardedProtoHeaderName ?? ForwardedHeadersDefaults.XForwardedProtoHeaderName;
+        _proxyHeaderNames = new HashSet<string>(proxyHeaderNames ?? [], StringComparer.OrdinalIgnoreCase);
     }
 
     public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default)
@@ -84,46 +90,160 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         return SendAsync(HttpMethod.Delete, route, jsonBody: null, ct);
     }
 
-    private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
+    private Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
     {
+        return SendAsync(new McpHttpRequest(method, route) { JsonBody = jsonBody }, ct);
+    }
+
+    /// <summary>
+    /// Sends the request as the other methods do, with its headers next to the invoker's own and its JSON body or form.
+    /// A request with a header that the app's middleware trusts from its proxy, under a name the app configured for
+    /// <c>UseForwardedHeaders</c> or <c>UseCertificateForwarding</c>, gets an error result instead, and is not sent. When
+    /// the MCP request ran <c>UseRequestLocalization</c>, a request with a form names the culture it is written in, as
+    /// <see cref="McpHttpRequest.FormCulture"/> says.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The request has a JSON body and a form, or a header the invoker sets itself, a content header such as
+    /// <c>Content-Type</c>, an invalid header name, or a header value with a character an HTTP header cannot carry.
+    /// </exception>
+    public async Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var proxyHeader = request.Headers.FirstOrDefault(x => _proxyHeaderNames.Contains(x.Key)).Key;
+        if (proxyHeader is not null)
+        {
+            return RefuseProxyHeader(request, proxyHeader);
+        }
+
         var caller = _httpContextAccessor.HttpContext;
+
+        // Without UseRequestLocalization, the tool writes the form and the app reads it in the server's culture, whatever
+        // the request names.
+        var mcpRequestCulture = caller?.Features.Get<IRequestCultureFeature>();
+        if (request.FormBody is not null && request.FormCulture is not null && mcpRequestCulture is not null)
+        {
+            var cultureRefusal = request.RefuseAnotherCulture(request.FormCulture);
+            if (cultureRefusal is not null)
+            {
+                return ToResult(cultureRefusal, isError: true);
+            }
+        }
+
         var inProcessPipeline = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured
             ? _inProcessPipeline
             : null;
         var url = inProcessPipeline is not null && caller is not null && caller.Request.Host.HasValue
-            ? BuildInProcessUrl(caller.Request, route)
-            : BuildUrl(route);
+            ? BuildInProcessUrl(caller.Request, request.Route)
+            : BuildUrl(request.Route);
 
-        using var request = new HttpRequestMessage(method, url);
-        ConfigureRequest(request);
+        using var message = new HttpRequestMessage(request.Method, url);
+        ConfigureRequest(message);
         if (inProcessPipeline is null)
         {
-            ForwardTheScheme(request, caller);
+            ForwardTheScheme(message, caller);
         }
 
-        if (jsonBody is not null)
+        AddHeaders(message, request.Headers);
+        if (request.FormBody is not null && mcpRequestCulture is not null)
         {
-            request.Content = CreateJsonContent(jsonBody);
+            NameTheCulture(message, request.FormCulture ?? mcpRequestCulture.RequestCulture.Culture);
         }
 
-        _logger.LogDebug("MCP invoking {Method} {Url}", method.Method, url);
+        message.Content = CreateContent(request);
+
+        _logger.LogDebug("MCP invoking {Method} {Url}", request.Method.Method, url);
 
         using var response = inProcessPipeline is not null
-            ? await SendInProcessAsync(inProcessPipeline, request, caller, ct)
-            : await SendOverHttpAsync(request, jsonBody, ct);
+            ? await SendInProcessAsync(inProcessPipeline, message, caller, ct)
+            : await SendOverHttpAsync(message, request, ct);
         return await HandleResponse(response, ct);
+    }
+
+    /// <summary>
+    /// The error result for a header the app takes the client's address, scheme, host or certificate from, which would
+    /// let the AI choose them.
+    /// </summary>
+    private CallToolResult RefuseProxyHeader(McpHttpRequest request, string headerName)
+    {
+        _logger.LogWarning(
+            "MCP tool call refused: its request would carry the header {Header}, which the app trusts from its proxy through ForwardedHeadersOptions or CertificateForwardingOptions.",
+            headerName);
+
+        const string Reason = "which the app trusts from its proxy: its ForwardedHeadersOptions or CertificateForwardingOptions name it, " +
+            "and its value would become the client's address, scheme, host or certificate";
+        var argument = request.FindHeaderArgument(headerName);
+        var text = argument is null
+            ? $"The tool's request would carry the header '{headerName}', {Reason}."
+            : $"The argument '{argument}' is sent as the request header '{headerName}', {Reason}. Call the tool without '{argument}'.";
+
+        return ToResult(text, isError: true);
+    }
+
+    private static void AddHeaders(HttpRequestMessage message, IReadOnlyList<KeyValuePair<string, string>> headers)
+    {
+        foreach (var (name, value) in headers)
+        {
+            if (ToolRequestHeaders.IsNeverSetFromArguments(name))
+            {
+                throw new ArgumentException($"The tool's request carries the header '{name}' of its own, or never from a tool.", nameof(headers));
+            }
+
+            if (!McpRequestValueFormatter.IsHeaderValue(value))
+            {
+                throw new ArgumentException($"The value of the header '{name}' holds a character an HTTP header cannot carry.", nameof(headers));
+            }
+
+            // Kestrel drops the spaces and tabs around a value, which the in-process request would keep.
+            if (!message.Headers.TryAddWithoutValidation(name, McpRequestValueFormatter.TrimHeaderValue(value)))
+            {
+                throw new ArgumentException($"'{name}' is no header the tool's request can carry: it describes the body, or is no valid header name.", nameof(headers));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Asks the app, through <c>Accept-Language</c>, to read the form in the culture it is written in, the MCP request's,
+    /// as it picked that culture for the MCP request, unless the request names a culture itself or the culture is the
+    /// invariant one, which no header names. Every request with a form gets it, so a form tool's request runs in the MCP
+    /// request's culture whatever the values of its form.
+    /// </summary>
+    private static void NameTheCulture(HttpRequestMessage message, CultureInfo culture)
+    {
+        if (culture.Name.Length > 0 && !message.Headers.Contains(HeaderNames.AcceptLanguage))
+        {
+            message.Headers.TryAddWithoutValidation(HeaderNames.AcceptLanguage, culture.Name);
+        }
+    }
+
+    private static HttpContent? CreateContent(McpHttpRequest request)
+    {
+        if (request.JsonBody is not null && request.FormBody is not null)
+        {
+            throw new ArgumentException("A request has a JSON body or a form, not both.", nameof(request));
+        }
+
+        if (request.JsonBody is not null)
+        {
+            return CreateJsonContent(request.JsonBody);
+        }
+
+        return request.FormBody is null
+            ? null
+            : new StringContent(request.FormBody, Encoding.UTF8, MediaTypeNames.Application.FormUrlEncoded);
     }
 
     /// <summary>
     /// Sends the request over HTTP and follows a redirect as <see cref="InProcessApiPipeline"/> does: only back to the
     /// scheme, host and port the tool called, so an action that redirects to a URL from its input cannot send the tool's
     /// request to another server. Any other redirect comes back as it is. The invoker's client follows none itself,
-    /// unless the app gave it a handler of its own that does.
+    /// unless the app gave it a handler of its own that does. Each hop sends the JSON body or the form of
+    /// <paramref name="body"/> again, unless the redirect turns the request into a GET.
     /// </summary>
-    private async Task<HttpResponseMessage> SendOverHttpAsync(HttpRequestMessage request, string? jsonBody, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendOverHttpAsync(HttpRequestMessage request, McpHttpRequest body, CancellationToken ct)
     {
         var sent = request;
-        var body = jsonBody;
+        McpHttpRequest? hopBody = body;
         var response = await _httpClient.SendAsync(sent, ct);
         for (var redirections = 0; redirections < InProcessApiPipeline.MaxAutomaticRedirections; redirections++)
         {
@@ -136,7 +256,7 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
             var isRedirectedAsGet = InProcessApiPipeline.IsRedirectedAsGet((int)response.StatusCode, sent.Method);
             if (isRedirectedAsGet)
             {
-                body = null;
+                hopBody = null;
             }
 
             // HttpClient sends a request only once, so each hop is a new one. The hop leads back to the address the tool
@@ -147,9 +267,9 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
                 next.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
-            if (body is not null)
+            if (hopBody is not null)
             {
-                next.Content = CreateJsonContent(body);
+                next.Content = CreateContent(hopBody);
             }
 
             response.Dispose();

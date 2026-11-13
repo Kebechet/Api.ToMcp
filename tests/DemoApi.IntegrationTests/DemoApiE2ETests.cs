@@ -300,6 +300,121 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task McpProtocol_ToolsCall_SendsTheHeaderAndTheFormTheActionReads(bool areApiCallsInProcess)
+    {
+        // AddReview reads the review [FromForm] and the Idempotency-Key [FromHeader]; the tool used to send the review as
+        // JSON and no header, so the action stored an empty review without its key.
+        var requests = new List<string>();
+        await using var client = await ConnectMcpClientAsync(configureServices: services =>
+        {
+            if (areApiCallsInProcess)
+            {
+                return;
+            }
+
+            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false);
+            services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
+            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+                new RecordingHandler(((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler(), requests));
+        });
+
+        var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 5, ["comment"] = "Fast & quiet = 100% worth it" },
+            ["idempotencyKey"] = "req-42"
+        });
+
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        var review = result["structuredContent"]!;
+        Assert.Equal(LaptopId, review["productId"]!.GetValue<Guid>());
+        Assert.Equal(5, review["rating"]!.GetValue<int>());
+        Assert.Equal("Fast & quiet = 100% worth it", review["comment"]!.GetValue<string>());
+        Assert.Equal("req-42", review["idempotencyKey"]!.GetValue<string>());
+        Assert.Equal(areApiCallsInProcess ? 0 : 1, requests.Count);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_LeavesOutAnOptionalHeaderTheClientDoesNotGive()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 4, ["comment"] = "Fine" }
+        });
+
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        Assert.Equal(4, result["structuredContent"]!["rating"]!.GetValue<int>());
+        Assert.Null(result["structuredContent"]!["idempotencyKey"]);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_RefusesAHeaderValueAnHttpHeaderCannotCarry()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 4, ["comment"] = "Fine" },
+            ["idempotencyKey"] = "req-42\r\nX-Injected: 1"
+        });
+
+        Assert.True(result["isError"]!.GetValue<bool>());
+        Assert.Equal(
+            "The argument 'idempotencyKey' is sent as the request header 'Idempotency-Key', which can hold only visible ASCII characters, spaces and tabs.",
+            Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_WarnsOnce_WhenTheRegisteredInvokerCannotSendTheToolsHeadersOrForm()
+    {
+        // A decorator of the app's own that implements only IMcpHttpInvoker cannot send them, and its error result would
+        // reach only the AI client.
+        var logs = new List<(LogLevel Level, string Message)>();
+        await using var client = await ConnectMcpClientAsync(configureServices: services =>
+        {
+            services.AddTransient<IMcpHttpInvoker, HeaderlessInvoker>();
+            services.AddSingleton<ILoggerProvider>(new ListLoggerProvider(logs));
+        });
+        var arguments = new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 5, ["comment"] = "Fine" }
+        };
+
+        // The plain tool goes first: the warning comes once per invoker type, so after the header tool's it could not
+        // show a wrong one.
+        var plain = await CallToolRawAsync(client, "Products_GetById", new JsonObject { ["id"] = LaptopId.ToString() });
+        var warningsAfterThePlainTool = GetInvokerWarnings(logs);
+        var first = await CallToolRawAsync(client, "Products_AddReview", arguments);
+        var second = await CallToolRawAsync(client, "Products_AddReview", arguments.DeepClone().AsObject());
+        var warnings = GetInvokerWarnings(logs);
+
+        Assert.NotEqual(true, plain["isError"]?.GetValue<bool>());
+        Assert.Empty(warningsAfterThePlainTool);
+        Assert.True(first["isError"]!.GetValue<bool>());
+        Assert.Contains("implement IMcpHttpRequestInvoker as well", first["content"]![0]!["text"]!.GetValue<string>());
+        Assert.True(second["isError"]!.GetValue<bool>());
+        var warning = Assert.Single(warnings);
+        Assert.Equal(
+            $"The tool Products_AddReview sends request headers or a form, which the registered IMcpHttpInvoker, {typeof(HeaderlessInvoker).FullName}, cannot send, so its calls with any get an error result. Implement IMcpHttpRequestInvoker as well.",
+            warning.Message);
+    }
+
+    private static List<(LogLevel Level, string Message)> GetInvokerWarnings(List<(LogLevel Level, string Message)> logs)
+    {
+        lock (logs)
+        {
+            return logs.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("IMcpHttpRequestInvoker")).ToList();
+        }
+    }
+
+    [Theory]
     [InlineData(null, "User is not authenticated. Scope validation requires authentication.")]
     [InlineData("write", "Insufficient scope. Required: Read, Granted: Write")]
     public async Task McpProtocol_ToolsCall_TellsTheClientWhyTheScopeCheckRefusedIt(string? grantedScopes, string expectedText)
@@ -762,6 +877,22 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
                 next(app);
             };
         }
+    }
+
+    /// <summary>
+    /// An invoker of the app's own that implements only <see cref="IMcpHttpInvoker"/>, and answers every call with an
+    /// empty object.
+    /// </summary>
+    private sealed class HeaderlessInvoker : IMcpHttpInvoker
+    {
+        public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default) => Answer();
+        public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default) => Answer();
+        public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
+
+        private static Task<CallToolResult> Answer() => Task.FromResult(new CallToolResult { Content = { new TextContentBlock { Text = "{}" } } });
     }
 
     private sealed class RefusingHandler : HttpMessageHandler

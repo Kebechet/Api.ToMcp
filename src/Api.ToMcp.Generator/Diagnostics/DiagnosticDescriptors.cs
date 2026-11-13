@@ -82,16 +82,17 @@ namespace Api.ToMcp.Generator.Diagnostics
 
         /// <summary>
         /// The generator cannot build the request MVC serves the action at, so it leaves the tool out rather than generate
-        /// one that would not compile or would call another endpoint. The build still succeeds, with the other tools.
+        /// one that would not compile, would call another endpoint, or would not send what the action reads: a header a
+        /// tool never sets, or a form file. The build still succeeds, with the other tools.
         /// </summary>
         public static readonly DiagnosticDescriptor UnbuildableRoute = new DiagnosticDescriptor(
             id: "MCP009",
-            title: "Tool route cannot be built",
+            title: "Action cannot become a tool",
             messageFormat: "No MCP tool is generated for action '{0}.{1}': {2}",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true,
-            description: "Give the action a parameter, or a property of one, for every required route value, or mark it [McpIgnore] to keep it from MCP without the warning.");
+            description: "Give the action a parameter, or a property of one, for every required route value, and no parameter a tool cannot send, such as a form file or a header a tool never sets, or mark it [McpIgnore] to keep it from MCP without the warning.");
 
         /// <summary>
         /// The generator cannot tell at build time what a Minimal API endpoint serves, or cannot send what it reads: its

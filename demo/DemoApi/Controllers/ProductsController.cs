@@ -61,6 +61,27 @@ public class ProductsController : ControllerBase
     }
 
     /// <summary>
+    /// Adds a review of a product. The review comes as a form, and the request may carry an Idempotency-Key header.
+    /// </summary>
+    /// <param name="id">The unique identifier of the product to review.</param>
+    /// <param name="review">The review: a rating and a comment.</param>
+    /// <param name="idempotencyKey">A key that identifies this request, returned with the stored review.</param>
+    [HttpPost("{id:guid}/reviews")]
+    public ActionResult<StoredReview> AddReview(Guid id, [FromForm] ProductReview review, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey = null)
+    {
+        if (_products.All(p => p.Id != id))
+            return NotFound();
+
+        return new StoredReview
+        {
+            ProductId = id,
+            Rating = review.Rating,
+            Comment = review.Comment,
+            IdempotencyKey = idempotencyKey
+        };
+    }
+
+    /// <summary>
     /// Creates a new product.
     /// </summary>
     [HttpPost]

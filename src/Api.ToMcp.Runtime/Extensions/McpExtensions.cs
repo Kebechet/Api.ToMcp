@@ -52,14 +52,21 @@ public static class McpExtensions
         services.TryAddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
         services.TryAddSingleton<InProcessApiPipeline>();
         CaptureThePipelineTheHostBuilds(services);
-        services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) => new McpHttpInvoker(
-            httpClient,
-            serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
-            serviceProvider.GetRequiredService<IHttpContextAccessor>(),
-            serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
-            serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
-            serviceProvider.GetRequiredService<InProcessApiPipeline>(),
-            serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value.ForwardedProtoHeaderName))
+        services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) =>
+            {
+                var forwardedHeaders = serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
+                var certificateForwarding = serviceProvider.GetRequiredService<IOptions<CertificateForwardingOptions>>().Value;
+
+                return new McpHttpInvoker(
+                    httpClient,
+                    serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
+                    serviceProvider.GetRequiredService<IHttpContextAccessor>(),
+                    serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
+                    serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
+                    serviceProvider.GetRequiredService<InProcessApiPipeline>(),
+                    forwardedHeaders.ForwardedProtoHeaderName,
+                    ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
+            })
             .ConfigurePrimaryHttpMessageHandler(LeaveRedirectsToTheInvoker);
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
@@ -86,7 +93,11 @@ public static class McpExtensions
         // Register the official MCP server with HTTP transport
         services.AddMcpServer()
             .WithHttpTransport()
-            .WithRequestFilters(filters => filters.AddCallToolFilter(McpScopeValidationFilter.Create));
+            .WithRequestFilters(filters =>
+            {
+                filters.AddCallToolFilter(McpScopeValidationFilter.Create);
+                filters.AddCallToolFilter(McpRequestInvokerCheck.Create);
+            });
 
         // Same discovery as the SDK's WithToolsFromAssembly, with the XML doc schema hook passed to each tool.
         // A tool is created lazily from the built provider, as the SDK does it, because the SDK decides which

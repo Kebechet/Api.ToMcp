@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -13,16 +14,21 @@ using System.Threading;
 using System.Threading.Tasks;
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime;
+using Api.ToMcp.Runtime.Options;
+using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Xunit;
@@ -144,11 +150,56 @@ namespace TestApi
         [HttpPost(""nullable-binder"")]
         public object PostNullableBinder(NullableBinderQuery q) => q;
 
-        [HttpPost(""file-query"")]
-        public object PostFileQuery(FileQuery q) => new { q.City, hasAttachment = q.Attachment is not null };
+        [HttpGet(""header"")]
+        public object GetHeader([FromHeader(Name = ""X-Tenant"")] string? tenant, [FromHeader(Name = ""X-Ids"")] int[]? ids, [FromHeader(Name = ""X-Tags"")] string[]? tags, [FromHeader] OrderStatus? status)
+            => new { tenant, ids, tags, status };
 
-        [HttpPost(""file-list-query"")]
-        public object PostFileListQuery(FileListQuery q) => new { q.City };
+        [HttpGet(""header-default"")]
+        public object GetHeaderDefault([FromHeader(Name = ""X-Page"")] int page = 2) => new { page, sent = Request.Headers.ContainsKey(""X-Page"") };
+
+        [HttpPost(""form"")]
+        public object PostForm([FromForm] string? name, [FromForm(Name = ""f"")] ProductFilter? filter, [FromForm] int[]? ids, [FromForm] OrderStatus status = OrderStatus.Closed)
+            => new { name, city = filter?.City, ids, status, isForm = Request.HasFormContentType };
+
+        [HttpPut(""form-route/{id:int}"")]
+        public object PutFormRoute([FromForm] AttributedQuery q) => new { q.Id, q.Note };
+
+        [HttpPost(""form-header/{id}"")]
+        public object PostFormHeader(int id, [FromForm] Shipment shipment, [FromHeader(Name = ""Idempotency-Key"")] string key) => new { id, shipment.Note, key };
+
+        [HttpPost(""bind-prefix"")]
+        public object PostBindPrefix([FromForm, Bind(Prefix = ""r"")] ProductFilter review, [FromHeader, ModelBinder(Name = ""X-Tenant"")] string tenant) => new { review.City, tenant };
+
+        // The AI never sets these headers, so the tool takes no argument for them and sends the request's own.
+        [HttpGet(""own-headers"")]
+        public object GetOwnHeaders([FromHeader(Name = ""Authorization"")] string? auth, [FromHeader(Name = ""X-MS-CLIENT-PRINCIPAL-ID"")] string? userId, [FromHeader(Name = ""X-Forwarded-For"")] string? clientIp)
+            => new { auth, userId, clientIp };
+
+        [HttpPost(""amounts"")]
+        public object PostAmounts([FromForm] decimal amount, [FromForm] double ratio, [FromForm] DateOnly day, [FromForm] int delta, [FromForm] decimal[]? amounts, [FromHeader(Name = ""X-Amount"")] decimal? headerAmount, [FromQuery] decimal? queryAmount)
+            => new { amount, ratio, day, delta, amounts, headerAmount, queryAmount };
+
+        // UseRequestLocalization picks the request's culture from Accept-Language and from the culture query value, so
+        // the AI would pick the culture MVC reads the form in.
+        [HttpPost(""localized"")]
+        public object PostLocalized([FromHeader(Name = ""Accept-Language"")] string? language, [FromForm] decimal amount)
+            => new { language, amount, culture = System.Globalization.CultureInfo.CurrentCulture.Name };
+
+        [HttpPost(""localized-query"")]
+        public object PostLocalizedQuery([FromQuery] string? culture, [FromForm] decimal amount)
+            => new { culture, amount, requestCulture = System.Globalization.CultureInfo.CurrentCulture.Name };
+
+        [HttpPost(""dated"")]
+        public object PostDated([FromForm] DatedAmount a) => a;
+
+        // A form of text alone reads the same in every culture, so the language and the culture are the action's own data.
+        [HttpPost(""translate"")]
+        public object PostTranslate([FromHeader(Name = ""Accept-Language"")] string? language, [FromForm] string text)
+            => new { language, text, culture = System.Globalization.CultureInfo.CurrentCulture.Name };
+
+        [HttpPost(""names"")]
+        public object PostNames([FromQuery] string? culture, [FromForm] string name)
+            => new { culture, name, requestCulture = System.Globalization.CultureInfo.CurrentCulture.Name };
 
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
@@ -348,6 +399,13 @@ namespace TestApi
         public object GetNestedPrefix([FromQuery] PrefixedWrapper w) => new { city = w.Inner?.City, query = Request.QueryString.Value };
     }
 
+    public sealed class DatedAmount
+    {
+        public decimal Amount { get; set; }
+
+        public DateOnly Day { get; set; }
+    }
+
     [Flags]
     public enum EchoAccess
     {
@@ -531,8 +589,17 @@ namespace TestApi
     [InlineData("EchoController_PostPlainCodeTool", @"{""value"":{""value"":""B-8""}}", @"{""code"":""B-8""}")]
     [InlineData("EchoController_PostTypedBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
-    [InlineData("EchoController_PostFileQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno"",""hasAttachment"":false}")]
-    [InlineData("EchoController_PostFileListQueryTool", @"{""q"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
+    [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}")]
+    [InlineData("EchoController_GetHeaderTool", @"{}", @"{""tenant"":null,""ids"":[],""tags"":[],""status"":null}")]
+    [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""  t1\t "",""tags"":["" sp "",""a, b""]}", @"{""tenant"":""t1"",""ids"":[],""tags"":[""sp"",""a, b""],""status"":null}")]
+    [InlineData("EchoController_PostBindPrefixTool", @"{""review"":{""city"":""Brno""},""tenant"":""t1""}", @"{""city"":""Brno"",""tenant"":""t1""}")]
+    [InlineData("EchoController_GetOwnHeadersTool", @"{""auth"":""Bearer forged"",""userId"":""bob"",""clientIp"":""10.0.0.5""}", @"{""auth"":null,""userId"":null,""clientIp"":null}")]
+    [InlineData("EchoController_GetHeaderDefaultTool", @"{""page"":3}", @"{""page"":3,""sent"":true}")]
+    [InlineData("EchoController_GetHeaderDefaultTool", @"{}", @"{""page"":2,""sent"":false}")]
+    [InlineData("EchoController_PostFormTool", @"{""name"":""a b&c=d+e"",""filter"":{""city"":""Brno""},""ids"":[1,2],""status"":0}", @"{""name"":""a b&c=d+e"",""city"":""Brno"",""ids"":[1,2],""status"":0,""isForm"":true}")]
+    [InlineData("EchoController_PostFormTool", @"{}", @"{""name"":null,""city"":null,""ids"":[],""status"":1,""isForm"":true}")]
+    [InlineData("EchoController_PutFormRouteTool", @"{""q"":{""id"":7,""note"":""n1"",""city"":""Brno""}}", @"{""id"":7,""note"":""n1""}")]
+    [InlineData("EchoController_PostFormHeaderTool", @"{""id"":3,""shipment"":{""id"":9,""note"":""fragile""},""key"":""k-1""}", @"{""id"":3,""note"":""fragile"",""key"":""k-1""}")]
     [InlineData("CustomRouteController_GetByIdTool", @"{""id"":7}", @"{""id"":7,""path"":""/custom/customroute/by/7""}")]
     [InlineData("CustomRouteController_PatchVerbsTool", @"{""id"":7,""filter"":{""city"":""Brno""}}", @"{""id"":7,""city"":""Brno"",""method"":""PATCH""}")]
     [InlineData("CustomRouteController_GetNamedTool", @"{""id"":7}", @"{""id"":7}")]
@@ -670,6 +737,164 @@ namespace TestApi
         Assert.True(result.IsError, $"{toolClassName}: {GetText(result)}");
     }
 
+    [Theory]
+    [InlineData(@"{""tags"":[""\""q\""""]}")]
+    [InlineData(@"{""tags"":[""x,\""y"",""z""]}")]
+    [InlineData(@"{""tags"":[""a"",""""]}")]
+    [InlineData(@"{""tags"":[""a"","" \t ""]}")]
+    public async Task Tool_RefusesAHeaderArrayItemMvcWouldReadBackOtherwise_WithoutCallingTheApi(string arguments)
+    {
+        // MVC splits the header at its commas, drops an empty item and removes or splits at a quote.
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_GetHeaderTool", arguments);
+
+        Assert.True(requestCount == _host.RequestCount, $"The tool called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "The argument 'tags' is sent as the request header 'X-Tags', one value per item, and an item cannot be empty and can hold only visible ASCII characters other than '\"', spaces and tabs.",
+            GetText(result));
+    }
+
+    [Fact]
+    public async Task Tool_WritesFormNumbersAndDates_InTheCultureMvcReadsTheFormWith()
+    {
+        // MVC reads a form with the request's culture and the query string and headers with the invariant one, so under
+        // de-DE 1234.25 written invariantly arrives as 123425. The app's request localization defaults to de-DE, and the
+        // tool call runs under the culture the MCP request got, the same default.
+        const string arguments = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-09-28"",""delta"":-12,""amounts"":[1.5,2.25],""headerAmount"":1.25,""queryAmount"":1.25}";
+        const string expected = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-09-28"",""delta"":-12,""amounts"":[1.5,2.25],""headerAmount"":1.25,""queryAmount"":1.25}";
+
+        var (germanStatus, germanBody) = await _host.InvokeToolAsync("EchoController_PostAmountsTool", arguments, MvcHost.GermanCulture);
+        var (statusCode, body) = await _host.InvokeToolAsync("EchoController_PostAmountsTool", arguments);
+
+        Assert.True(germanStatus == StatusCodes.Status200OK, $"{germanStatus} {germanBody}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(germanBody)), $"de-DE: MVC bound {germanBody}");
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(body)), $"invariant: MVC bound {body}");
+    }
+
+    [Fact]
+    public async Task Tool_NamesTheCultureItWritesTheFormIn_SoTheAppReadsTheFormInIt()
+    {
+        // The MCP client asked for en-US, which the app supports, so the tool call runs under it and writes 1234.25 as
+        // "1,234.25". The tool's own request named no culture, so the app read the form in its default, de-DE.
+        const string arguments = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-11-13"",""delta"":-12,""amounts"":[1.5,2.25]}";
+        const string expected = @"{""amount"":1234.25,""ratio"":-0.5,""day"":""2026-11-13"",""delta"":-12,""amounts"":[1.5,2.25],""headerAmount"":null,""queryAmount"":null}";
+
+        var (statusCode, body) = await _host.InvokeToolAsync("EchoController_PostAmountsTool", arguments, MvcHost.EnglishCulture);
+        var (cultureStatus, cultureBody) = await _host.InvokeToolAsync("EchoController_PostLocalizedTool", @"{""amount"":1.5}", MvcHost.EnglishCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(body)), $"en-US: MVC bound {body}");
+        Assert.True(cultureStatus == StatusCodes.Status200OK, $"{cultureStatus} {cultureBody}");
+        Assert.Equal(@"{""language"":""en-US"",""amount"":1.5,""culture"":""en-US""}", cultureBody);
+    }
+
+    [Theory]
+    [InlineData("EchoController_PostLocalizedTool", @"{""amount"":1.25,""language"":""de-DE""}", @"{""language"":""de-DE"",""amount"":1.25,""culture"":""de-DE""}")]
+    [InlineData("EchoController_PostLocalizedTool", @"{""amount"":1.25}", @"{""language"":""de-DE"",""amount"":1.25,""culture"":""de-DE""}")]
+    [InlineData("EchoController_PostLocalizedQueryTool", @"{""amount"":1.25,""culture"":""de-DE""}", @"{""culture"":""de-DE"",""amount"":1.25,""requestCulture"":""de-DE""}")]
+    [InlineData("EchoController_PostLocalizedQueryTool", @"{""amount"":1.25}", @"{""culture"":null,""amount"":1.25,""requestCulture"":""de-DE""}")]
+    public async Task Tool_SendsAFormWithACultureArgument_ThatNamesTheCultureItWritesTheFormIn(string toolClassName, string arguments, string expected)
+    {
+        var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments, MvcHost.GermanCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.Equal(expected, body);
+    }
+
+    [Theory]
+    [InlineData("EchoController_PostLocalizedTool", @"{""amount"":1.25,""language"":""en-US""}", "The argument 'language' is sent as the request header 'Accept-Language', which")]
+    [InlineData("EchoController_PostLocalizedQueryTool", @"{""amount"":1.25,""culture"":""en-US""}", "The query value 'culture' of the tool's request")]
+    public async Task Tool_RefusesACultureArgumentNamingAnotherCultureThanTheFormIsWrittenIn_WithoutCallingTheApi(string toolClassName, string arguments, string subject)
+    {
+        // With the AI's en-US the app read the 1,25 the tool wrote in the MCP request's de-DE as 125.
+        var requestCount = _host.GermanRequestCount;
+
+        var result = await _host.CallToolAsync(toolClassName, arguments, MvcHost.GermanCulture);
+
+        Assert.True(requestCount == _host.GermanRequestCount, $"The tool called the API, which answered {_host.GermanLastResponse}");
+        Assert.True(result.IsError);
+        Assert.StartsWith(subject, GetText(result));
+        Assert.Contains("the tool writes the form's numbers and dates in the culture of the MCP request, 'de-DE'.", GetText(result));
+    }
+
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("")]
+    public async Task Tool_SendsACultureArgumentAsItIs_WhenTheAppRunsNoRequestLocalization(string serverCultureName)
+    {
+        // The app reads the form in the server's culture, which the tool call runs under and writes the form in, so the
+        // AI's language or culture is the action's own data, also under invariant globalization, whose culture has no name.
+        var serverCulture = CultureInfo.GetCultureInfo(serverCultureName);
+        (string ToolClassName, string Arguments, string Expected)[] calls =
+        [
+            ("EchoController_PostTranslateTool", @"{""text"":""hello"",""language"":""de-DE""}", $@"{{""language"":""de-DE"",""text"":""hello"",""culture"":""{serverCultureName}""}}"),
+            ("EchoController_PostNamesTool", @"{""name"":""Ann"",""culture"":""fr-FR""}", $@"{{""culture"":""fr-FR"",""name"":""Ann"",""requestCulture"":""{serverCultureName}""}}"),
+            ("EchoController_PostLocalizedTool", @"{""amount"":1.5,""language"":""de-DE""}", $@"{{""language"":""de-DE"",""amount"":1.5,""culture"":""{serverCultureName}""}}")
+        ];
+
+        foreach (var (toolClassName, arguments, expected) in calls)
+        {
+            var (statusCode, body, result) = await _host.CallToolWithoutLocalizationAsync(toolClassName, arguments, serverCulture);
+
+            Assert.True(result.IsError != true, $"{toolClassName}: {GetText(result)}");
+            Assert.True(statusCode == StatusCodes.Status200OK, $"{toolClassName}: {statusCode} {body}");
+            Assert.Equal(expected, body);
+        }
+    }
+
+    [Theory]
+    [InlineData("EchoController_PostTranslateTool", @"{""text"":""hello"",""language"":""en-US""}", @"{""language"":""en-US"",""text"":""hello"",""culture"":""en-US""}")]
+    [InlineData("EchoController_PostNamesTool", @"{""name"":""Ann"",""culture"":""en-US""}", @"{""culture"":""en-US"",""name"":""Ann"",""requestCulture"":""en-US""}")]
+    public async Task Tool_SendsACultureArgumentAsItIs_ForAFormOfTextAlone_UnderRequestLocalization(string toolClassName, string arguments, string expected)
+    {
+        // The app reads the text in en-US, as the AI asked, and a text reads the same in every culture.
+        var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments, MvcHost.GermanCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.Equal(expected, body);
+    }
+
+    [Fact]
+    public async Task Tool_WritesAFormDate_InTheCalendarOfTheCultureItWritesTheFormIn()
+    {
+        // fa-IR writes dates in the Persian calendar, 1405/08/22, which MVC reads back in the same culture.
+        var (statusCode, body) = await _host.InvokeToolAsync("EchoController_PostDatedTool", @"{""a"":{""amount"":1.5,""day"":""2026-11-13""}}", MvcHost.PersianCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.Equal(@"{""amount"":1.5,""day"":""2026-11-13""}", body);
+    }
+
+    [Fact]
+    public async Task Tool_RefusesAFormDateOutsideTheCalendarOfTheCultureItWritesTheFormIn_WithoutCallingTheApi()
+    {
+        // A date left out is 0001-01-01, before the Persian calendar starts, so writing it threw and the AI saw only
+        // "An error occurred invoking".
+        var requestCount = _host.GermanRequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_PostDatedTool", @"{""a"":{""amount"":1.5}}", MvcHost.PersianCulture);
+
+        Assert.True(requestCount == _host.GermanRequestCount, $"The tool called the API, which answered {_host.GermanLastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "The argument 'a' holds a date that the tool cannot write in the calendar of the MCP request's culture, in which it writes the form. Give a date that calendar holds; a date left out counts as 0001-01-01.",
+            GetText(result));
+    }
+
+    [Fact]
+    public async Task Tool_RefusesAHeaderValueAnHttpHeaderCannotHold_WithoutCallingTheApi()
+    {
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_GetHeaderTool", @"{""tenant"":""a\r\nX-Injected: 1""}");
+
+        Assert.True(requestCount == _host.RequestCount, $"The tool called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal("The argument 'tenant' is sent as the request header 'X-Tenant', which can hold only visible ASCII characters, spaces and tabs.", GetText(result));
+    }
+
     [Fact]
     public async Task Tool_NamesTheArgument_WhenTheClientSendsNullForARequiredRouteValue()
     {
@@ -757,10 +982,33 @@ namespace TestApi
     {
         private static readonly JsonSerializerOptions ArgumentOptions = new(JsonSerializerDefaults.Web);
 
+        /// <summary>
+        /// The culture of the second app, whose request localization defaults to it, and which reads a decimal comma.
+        /// </summary>
+        public static readonly CultureInfo GermanCulture = CultureInfo.GetCultureInfo("de-DE");
+
+        /// <summary>
+        /// The other culture the second app supports, which reads a decimal point.
+        /// </summary>
+        public static readonly CultureInfo EnglishCulture = CultureInfo.GetCultureInfo("en-US");
+
+        /// <summary>
+        /// A culture the second app supports whose calendar, the Persian one, starts in 622.
+        /// </summary>
+        public static readonly CultureInfo PersianCulture = CultureInfo.GetCultureInfo("fa-IR");
+
+        private readonly RecordingHandler _serverCultureRecorder = new();
+        private readonly RecordingHandler _germanRecorder = new();
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
+        private string _address = null!;
         private HttpClient _client = null!;
         private RecordingInvoker _invoker = null!;
+        private HttpClient _serverCultureClient = null!;
+        private CultureInfo? _serverCulture;
+        private WebApplication _germanApp = null!;
+        private string _germanAddress = null!;
+        private HttpClient _germanClient = null!;
 
         public async Task InitializeAsync()
         {
@@ -771,40 +1019,160 @@ namespace TestApi
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddControllers().AddApplicationPart(_assembly);
             _app = builder.Build();
+            _app.Use(RunInTheServerCulture);
             _app.MapControllers();
             await _app.StartAsync();
 
-            var address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-            _client = new HttpClient { BaseAddress = new Uri(address) };
+            _address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+            _client = new HttpClient { BaseAddress = new Uri(_address) };
             _invoker = new RecordingInvoker(_client);
+            _serverCultureClient = new HttpClient(_serverCultureRecorder);
+
+            var germanBuilder = WebApplication.CreateBuilder();
+            germanBuilder.Logging.ClearProviders();
+            germanBuilder.WebHost.UseUrls("http://127.0.0.1:0");
+            germanBuilder.Services.AddControllers().AddApplicationPart(_assembly);
+            _germanApp = germanBuilder.Build();
+            _germanApp.UseRequestLocalization(new RequestLocalizationOptions
+            {
+                DefaultRequestCulture = new RequestCulture(GermanCulture),
+                SupportedCultures = [GermanCulture, EnglishCulture, PersianCulture],
+                SupportedUICultures = [GermanCulture, EnglishCulture, PersianCulture]
+            });
+            _germanApp.MapControllers();
+            await _germanApp.StartAsync();
+
+            _germanAddress = _germanApp.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+            _germanClient = new HttpClient(_germanRecorder);
         }
 
         public async Task DisposeAsync()
         {
             _client.Dispose();
+            _serverCultureClient.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
+            _germanClient.Dispose();
+            await _germanApp.StopAsync();
+            await _germanApp.DisposeAsync();
+        }
+
+        /// <summary>
+        /// Calls a generated tool through <see cref="McpHttpInvoker"/> against the app whose request localization defaults
+        /// to <see cref="GermanCulture"/>, from an MCP request that it gave the culture, which the tool call runs under.
+        /// </summary>
+        public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, CultureInfo culture)
+        {
+            await CallToolAsync(toolClassName, arguments, culture);
+
+            return _germanRecorder.LastResponse;
+        }
+
+        /// <summary>
+        /// Calls a generated tool as <see cref="InvokeToolAsync(string, string, CultureInfo)"/> does, and returns the tool's
+        /// result.
+        /// </summary>
+        public Task<CallToolResult> CallToolAsync(string toolClassName, string arguments, CultureInfo culture)
+        {
+            var mcpRequest = new DefaultHttpContext();
+            mcpRequest.Features.Set<IRequestCultureFeature>(new RequestCultureFeature(new RequestCulture(culture), provider: null));
+
+            return CallToolThroughTheInvokerAsync(toolClassName, arguments, culture, _germanAddress, _germanClient, mcpRequest);
+        }
+
+        /// <summary>
+        /// Calls a generated tool through <see cref="McpHttpInvoker"/> against the first app, which runs no request
+        /// localization, but every request in the server's culture, as a server does in its own: the MCP request and the
+        /// tool call too.
+        /// </summary>
+        public async Task<(int StatusCode, string Body, CallToolResult Result)> CallToolWithoutLocalizationAsync(string toolClassName, string arguments, CultureInfo serverCulture)
+        {
+            _serverCulture = serverCulture;
+            try
+            {
+                var result = await CallToolThroughTheInvokerAsync(toolClassName, arguments, serverCulture, _address, _serverCultureClient, new DefaultHttpContext());
+
+                return (_serverCultureRecorder.LastResponse.StatusCode, _serverCultureRecorder.LastResponse.Body, result);
+            }
+            finally
+            {
+                _serverCulture = null;
+            }
+        }
+
+        private async Task<CallToolResult> CallToolThroughTheInvokerAsync(
+            string toolClassName,
+            string arguments,
+            CultureInfo culture,
+            string address,
+            HttpClient client,
+            HttpContext mcpRequest)
+        {
+            var invoker = new McpHttpInvoker(
+                client,
+                new FixedBaseUrl(address),
+                new FixedHttpContextAccessor(mcpRequest),
+                NullLogger<McpHttpInvoker>.Instance,
+                Options.Create(new McpScopeOptions()));
+            var previousCulture = CultureInfo.CurrentCulture;
+            CultureInfo.CurrentCulture = culture;
+            try
+            {
+                return await RunToolAsync(toolClassName, arguments, invoker);
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = previousCulture;
+            }
+        }
+
+        private Task RunInTheServerCulture(HttpContext context, RequestDelegate next)
+        {
+            if (_serverCulture is not null)
+            {
+                CultureInfo.CurrentCulture = _serverCulture;
+                CultureInfo.CurrentUICulture = _serverCulture;
+            }
+
+            return next(context);
         }
 
         /// <summary>
         /// Calls a generated tool with arguments deserialized from JSON, as the MCP server does, and returns what the
         /// action answered.
         /// </summary>
-        public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments)
+        public Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments)
+        {
+            return InvokeToolAsync(toolClassName, arguments, _invoker);
+        }
+
+        private async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, RecordingInvoker invoker)
+        {
+            await RunToolAsync(toolClassName, arguments, invoker);
+
+            return invoker.LastResponse;
+        }
+
+        /// <summary>
+        /// Runs a generated tool's method, and returns its result, or an empty one from a tool with an output schema,
+        /// which returns what the action answered instead.
+        /// </summary>
+        private async Task<CallToolResult> RunToolAsync(string toolClassName, string arguments, IMcpHttpInvoker invoker)
         {
             var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
             var argumentValues = JsonNode.Parse(arguments)!.AsObject();
             var parameterValues = toolMethod
                 .GetParameters()
-                .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? _invoker
+                .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? invoker
                     : x.ParameterType == typeof(CancellationToken) ? CancellationToken.None
                     : argumentValues.TryGetPropertyValue(x.Name!, out var argument) ? argument?.Deserialize(x.ParameterType, ArgumentOptions)
                     : GetDefaultArgument(x))
                 .ToArray();
 
-            await (Task)toolMethod.Invoke(null, parameterValues)!;
+            var run = (Task)toolMethod.Invoke(null, parameterValues)!;
+            await run;
 
-            return _invoker.LastResponse;
+            return run.GetType().GetProperty(nameof(Task<object>.Result))!.GetValue(run) as CallToolResult ?? new CallToolResult();
         }
 
         /// <summary>
@@ -826,6 +1194,10 @@ namespace TestApi
         }
 
         public int RequestCount => _invoker.RequestCount;
+
+        public int GermanRequestCount => _germanRecorder.RequestCount;
+
+        public (int StatusCode, string Body) GermanLastResponse => _germanRecorder.LastResponse;
 
         public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
 
@@ -886,7 +1258,43 @@ namespace TestApi
         }
     }
 
-    private sealed class RecordingInvoker(HttpClient client) : IMcpHttpInvoker
+    /// <summary>
+    /// Sends what <see cref="McpHttpInvoker"/> sends, and keeps the count and the last answer.
+    /// </summary>
+    private sealed class RecordingHandler() : DelegatingHandler(new HttpClientHandler())
+    {
+        public int RequestCount { get; private set; }
+
+        public (int StatusCode, string Body) LastResponse { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            var response = await base.SendAsync(request, cancellationToken);
+            LastResponse = ((int)response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+            return response;
+        }
+    }
+
+    private sealed class FixedBaseUrl(string address) : ISelfBaseUrlProvider
+    {
+        public string GetBaseUrl() => address.TrimEnd('/');
+    }
+
+    /// <summary>
+    /// The MCP request a tool call runs in.
+    /// </summary>
+    private sealed class FixedHttpContextAccessor(HttpContext context) : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext
+        {
+            get => context;
+            set => throw new NotSupportedException();
+        }
+    }
+
+    private sealed class RecordingInvoker(HttpClient client) : IMcpHttpRequestInvoker
     {
         public (int StatusCode, string Body) LastResponse { get; private set; }
 
@@ -904,12 +1312,33 @@ namespace TestApi
 
         public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
 
-        private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
+        public Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
+        {
+            return SendAsync(request.Method, request.Route, request.JsonBody, ct, request.FormBody, request.Headers);
+        }
+
+        private async Task<CallToolResult> SendAsync(
+            HttpMethod method,
+            string route,
+            string? jsonBody,
+            CancellationToken ct,
+            string? formBody = null,
+            IReadOnlyList<KeyValuePair<string, string>>? headers = null)
         {
             using var request = new HttpRequestMessage(method, route);
             if (jsonBody is not null)
             {
                 request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
+            }
+
+            if (formBody is not null)
+            {
+                request.Content = new StringContent(formBody, Encoding.UTF8, MediaTypeNames.Application.FormUrlEncoded);
+            }
+
+            foreach (var (name, value) in headers ?? [])
+            {
+                Assert.True(request.Headers.TryAddWithoutValidation(name, value), name);
             }
 
             RequestCount++;

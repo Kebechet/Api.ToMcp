@@ -1172,7 +1172,7 @@ namespace Api.ToMcp.Generator.Parsing
                 : null;
         }
 
-        private static string GetDisplayName(INamedTypeSymbol attributeClass)
+        internal static string GetDisplayName(INamedTypeSymbol attributeClass)
         {
             var name = attributeClass.Name;
 

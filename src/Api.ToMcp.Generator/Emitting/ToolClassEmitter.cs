@@ -17,6 +17,8 @@ namespace Api.ToMcp.Generator.Emitting
         private const string RequestValueFormatter = "global::Api.ToMcp.Runtime.Services.McpRequestValueFormatter";
 
         private const string StructuredOutput = "global::Api.ToMcp.Runtime.Services.McpStructuredOutput";
+        private const string HttpRequestType = "global::Api.ToMcp.Runtime.McpHttpRequest";
+        private const string SendsHeadersOrFormArgument = "SendsHeadersOrForm = true";
         private const string GeneratedToolAttribute = "global::Api.ToMcp.Runtime.McpGeneratedTool";
         private const string RequiredScopeAttribute = "global::Api.ToMcp.Runtime.McpRequiredScope";
         private const string NullLiteral = "null";
@@ -112,14 +114,22 @@ namespace Api.ToMcp.Generator.Emitting
 
             // A ToolName or a toolNameFormat is any string, so the name is written as an escaped C# literal.
             var toolNameLiteral = SymbolDisplay.FormatLiteral(toolName, quote: true);
+
+            // AddMcpTools warns when such a tool is called through an invoker that cannot send headers or a form.
+            var sendsHeadersOrForm = parameters.Any(x => x.Source is ParameterSourceModel.Header or ParameterSourceModel.Form);
             if (hasOutputSchema)
             {
+                var sendsHeadersOrFormArgument = sendsHeadersOrForm ? ", " + SendsHeadersOrFormArgument : "";
                 sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, UseStructuredContent = true, OutputSchemaType = typeof({action.OutputSchemaType}), {annotations})]");
-                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)})]");
+                sb.AppendLine($"        [{GeneratedToolAttribute}(IsOutputNullable = {FormatBool(action.IsOutputNullable)}{sendsHeadersOrFormArgument})]");
             }
             else
             {
                 sb.AppendLine($"        [McpServerTool(Name = {toolNameLiteral}{title}, {annotations})]");
+                if (sendsHeadersOrForm)
+                {
+                    sb.AppendLine($"        [{GeneratedToolAttribute}({SendsHeadersOrFormArgument})]");
+                }
             }
             sb.AppendLine($"        [{RequiredScopeAttribute}({GetScopeExpression(action.RequiredScope, names.McpScope)})]");
             sb.AppendLine($"        [Description(\"{EscapeString(description)}\")]");
@@ -139,7 +149,8 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine("        {");
 
             EmitRouteBuilding(sb, action, parameters, routeValues, names);
-            EmitHttpCall(sb, action, parameters, hasOutputSchema, names);
+            var (hasHeaders, hasForm) = EmitHeadersAndForm(sb, parameters, routeValues, names);
+            EmitHttpCall(sb, action, parameters, hasOutputSchema, names, hasHeaders, hasForm);
 
             sb.AppendLine("        }");
         }
@@ -231,13 +242,85 @@ namespace Api.ToMcp.Generator.Emitting
         }
 
         /// <summary>
-        /// Why the tool cannot build the URL MVC serves the action at, as a clause of MCP009's message, or null when it can.
+        /// The headers and the form the tool sends: each <c>[FromHeader]</c> parameter as a header, refusing a value no
+        /// header can hold before the API is called, and each <c>[FromForm]</c> one as form fields, under the keys MVC's
+        /// form binding reads, refusing a date the calendar of the culture the form is written in cannot hold.
+        /// </summary>
+        private static (bool HasHeaders, bool HasForm) EmitHeadersAndForm(
+            StringBuilder sb,
+            List<ParameterInfoModel> parameters,
+            RouteValues routeValues,
+            ToolNames names)
+        {
+            var headerParameters = parameters.Where(x => x.Source == ParameterSourceModel.Header).ToList();
+            if (headerParameters.Any())
+            {
+                sb.AppendLine($"            var {names.Headers} = new {names.SystemNamespace}.Collections.Generic.List<{names.SystemNamespace}.Collections.Generic.KeyValuePair<string, string>>();");
+                foreach (var parameter in headerParameters)
+                {
+                    var headerName = GetBinderModelName(parameter);
+                    var message = parameter.IsCollection
+                        ? $"The argument '{parameter.Name}' is sent as the request header '{headerName}', one value per item, and an item cannot be empty and can hold only visible ASCII characters other than '\"', spaces and tabs."
+                        : $"The argument '{parameter.Name}' is sent as the request header '{headerName}', which can hold only visible ASCII characters, spaces and tabs.";
+                    sb.AppendLine($"            if (!{RequestValueFormatter}.TryAddHeaderValue({names.Headers}, {SymbolDisplay.FormatLiteral(headerName, quote: true)}, {GetSentValue(parameter)}))");
+                    sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
+                }
+            }
+
+            var formParameters = parameters.Where(x => x.Source == ParameterSourceModel.Form).ToList();
+            if (formParameters.Any())
+            {
+                sb.AppendLine($"            var {names.FormParts} = new {names.SystemNamespace}.Collections.Generic.List<string>();");
+                sb.AppendLine($"            {names.SystemNamespace}.Globalization.CultureInfo? {names.FormCulture} = null;");
+                foreach (var parameter in formParameters)
+                {
+                    var message = $"The argument '{parameter.Name}' holds a date that the tool cannot write in the calendar of the MCP request's culture, in which it writes the form. Give a date that calendar holds; a date left out counts as 0001-01-01.";
+                    foreach (var (key, expression) in GetFormValues(parameter, routeValues.RouteProperties))
+                    {
+                        sb.AppendLine($"            if (!{RequestValueFormatter}.TryAddFormValue({names.FormParts}, {SymbolDisplay.FormatLiteral(key, quote: true)}, {expression}, ref {names.FormCulture}))");
+                        sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
+                    }
+                }
+            }
+
+            return (headerParameters.Any(), formParameters.Any());
+        }
+
+        /// <summary>
+        /// The form values of a <c>[FromForm]</c> parameter: the whole value under the name MVC binds it under, which it
+        /// reads a complex type's properties under as a prefix. When a <c>[FromRoute]</c> property of it fills the route, MVC
+        /// binds that property only without the prefix, and with an empty name, <c>[Bind(Prefix = "")]</c>, every property,
+        /// so the others go under their own names: those it reads from the form, a property without a binding attribute or
+        /// with <c>[FromForm]</c>.
+        /// </summary>
+        private static IEnumerable<(string Key, string Expression)> GetFormValues(
+            ParameterInfoModel parameter,
+            HashSet<(ParameterInfoModel Parameter, PropertyInfoModel Property)> routeProperties)
+        {
+            if ((!IsBoundWithoutPrefix(parameter) || parameter.IsSimpleType) && !parameter.Properties.Any(x => routeProperties.Contains((parameter, x))))
+            {
+                return new[] { (GetBinderModelName(parameter), GetSentValue(parameter)) };
+            }
+
+            return parameter.Properties
+                .Where(x => x.Source is ParameterSourceModel.Auto or ParameterSourceModel.Form && !routeProperties.Contains((parameter, x)))
+                .Select(x => (GetBinderModelName(x), GetPropertyAccess(parameter, x)));
+        }
+
+        /// <summary>
+        /// Why the tool cannot build the URL MVC serves the action at, or send what it reads, as a clause of MCP009's
+        /// message, or null when it can.
         /// </summary>
         internal static string? GetUnbuildableRouteReason(ActionInfoModel action)
         {
             if (action.RouteProblem != null)
             {
                 return action.RouteProblem;
+            }
+
+            if (action.ParameterProblem != null)
+            {
+                return action.ParameterProblem;
             }
 
             var parameters = action.Parameters
@@ -551,14 +634,14 @@ namespace Api.ToMcp.Generator.Emitting
         /// <summary>
         /// Whether MVC binds a complex parameter under its name as a prefix only when a value carries it, and under the
         /// names of its properties otherwise (<c>ParameterBinder</c>): one bound from the route, query and form values, or a
-        /// <c>[FromQuery]</c> one, unless a binding attribute names it, <c>[Bind(Prefix = "f")]</c> say, which MVC then
-        /// always binds it under. An empty name, <c>[Bind(Prefix = "")]</c>, it always binds without a prefix.
+        /// <c>[FromQuery]</c> or <c>[FromForm]</c> one, unless a binding attribute names it, <c>[Bind(Prefix = "f")]</c> say,
+        /// which MVC then always binds it under. An empty name, <c>[Bind(Prefix = "")]</c>, it always binds without a prefix.
         /// </summary>
         private static bool FallsBackToNoPrefix(ParameterInfoModel parameter, ActionInfoModel action)
         {
             return string.IsNullOrEmpty(parameter.ModelName) &&
                 (IsBoundFromValueProviders(parameter, action) ||
-                    (parameter.Source == ParameterSourceModel.Query && !parameter.IsSimpleType));
+                    (parameter.Source is ParameterSourceModel.Query or ParameterSourceModel.Form && !parameter.IsSimpleType));
         }
 
         /// <summary>
@@ -686,7 +769,9 @@ namespace Api.ToMcp.Generator.Emitting
             ActionInfoModel action,
             List<ParameterInfoModel> parameters,
             bool hasOutputSchema,
-            ToolNames names)
+            ToolNames names,
+            bool hasHeaders,
+            bool hasForm)
         {
             var bodyParam = parameters.FirstOrDefault(p => p.Source == ParameterSourceModel.Body);
             var invoker = names.Invoker;
@@ -696,6 +781,49 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine($"            await {invoker}.BeforeInvokeAsync({GetScopeExpression(action.RequiredScope, names.McpScope)}, {cancellationToken});");
 
             string invokerCall;
+            if (hasHeaders || hasForm)
+            {
+                // IMcpHttpInvoker has no method that sends headers or a form, and a member added to it would break every
+                // implementation, so the request goes through McpHttpRequest, which asks the invoker for the interface
+                // that sends them.
+                var httpMethodName = GetHttpMethodPropertyName(action.HttpMethod);
+                if (httpMethodName is null)
+                {
+                    return;
+                }
+
+                var initializers = new List<string>();
+                if (bodyParam != null && action.HttpMethod is HttpMethodNames.Post or HttpMethodNames.Put or HttpMethodNames.Patch)
+                {
+                    sb.AppendLine($"            var {names.BodyJson} = {names.JsonSerializer}.Serialize({EscapeIdentifier(bodyParam.Name)});");
+                    initializers.Add($"JsonBody = {names.BodyJson}");
+                }
+
+                if (hasHeaders)
+                {
+                    // The invoker refuses a header the app trusts from its proxy under a name only the app's options give,
+                    // and its error result names the argument the AI gave.
+                    var headerArguments = parameters
+                        .Where(x => x.Source == ParameterSourceModel.Header)
+                        .Select(x => $"[{SymbolDisplay.FormatLiteral(GetBinderModelName(x), quote: true)}] = {SymbolDisplay.FormatLiteral(x.Name, quote: true)}");
+                    initializers.Add($"Headers = {names.Headers}");
+                    initializers.Add($"HeaderArguments = new {names.SystemNamespace}.Collections.Generic.Dictionary<string, string> {{ {string.Join(", ", headerArguments)} }}");
+                }
+
+                if (hasForm)
+                {
+                    initializers.Add($"FormBody = string.Join(\"&\", {names.FormParts})");
+                    initializers.Add($"FormCulture = {names.FormCulture}");
+                }
+
+                sb.AppendLine($"            var {names.Request} = new {HttpRequestType}({names.SystemNamespace}.Net.Http.HttpMethod.{httpMethodName}, {route}) {{ {string.Join(", ", initializers)} }};");
+                invokerCall = $"await {names.Request}.SendAsync({invoker}, {cancellationToken})";
+                sb.AppendLine(hasOutputSchema
+                    ? $"            return {StructuredOutput}.FromResult({invokerCall});"
+                    : $"            return {invokerCall};");
+                return;
+            }
+
             switch (action.HttpMethod)
             {
                 case HttpMethodNames.Get:
@@ -721,6 +849,28 @@ namespace Api.ToMcp.Generator.Emitting
             sb.AppendLine(hasOutputSchema
                 ? $"            return {StructuredOutput}.FromResult({invokerCall});"
                 : $"            return {invokerCall};");
+        }
+
+        /// <summary>
+        /// The property of <c>System.Net.Http.HttpMethod</c> for an HTTP method a tool sends, or null for another.
+        /// </summary>
+        private static string? GetHttpMethodPropertyName(string httpMethod)
+        {
+            switch (httpMethod)
+            {
+                case HttpMethodNames.Get:
+                    return "Get";
+                case HttpMethodNames.Post:
+                    return "Post";
+                case HttpMethodNames.Put:
+                    return "Put";
+                case HttpMethodNames.Patch:
+                    return "Patch";
+                case HttpMethodNames.Delete:
+                    return "Delete";
+                default:
+                    return null;
+            }
         }
 
         /// <summary>
@@ -956,6 +1106,10 @@ namespace Api.ToMcp.Generator.Emitting
                 Route = Declare("route");
                 QueryParts = Declare("queryParts");
                 BodyJson = Declare("bodyJson");
+                Headers = Declare("headers");
+                FormParts = Declare("formParts");
+                FormCulture = Declare("formCulture");
+                Request = Declare("request");
                 SystemNamespace = parameterNames.Contains(SystemNamespaceName) ? "global::System" : SystemNamespaceName;
                 JsonSerializer = parameterNames.Contains(JsonSerializerName) ? "global::System.Text.Json.JsonSerializer" : JsonSerializerName;
                 McpScope = parameterNames.Contains(McpScopeName) ? "global::Api.ToMcp.Abstractions.Scopes.McpScope" : McpScopeName;
@@ -966,6 +1120,10 @@ namespace Api.ToMcp.Generator.Emitting
             public string Route { get; }
             public string QueryParts { get; }
             public string BodyJson { get; }
+            public string Headers { get; }
+            public string FormParts { get; }
+            public string FormCulture { get; }
+            public string Request { get; }
             public string SystemNamespace { get; }
             public string JsonSerializer { get; }
             public string McpScope { get; }

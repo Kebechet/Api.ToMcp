@@ -1,9 +1,11 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Api.ToMcp.Runtime;
+using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -371,6 +373,62 @@ public static class ParityProbeTools
     public static Task<CallToolResult> Post(IMcpHttpInvoker invoker, string route, string body, CancellationToken cancellationToken)
     {
         return invoker.PostAsync(route, body, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a header and a form as a generated tool of <c>[FromHeader]</c> and <c>[FromForm]</c> parameters does.
+    /// </summary>
+    [McpServerTool(Name = "parity_headers_form")]
+    public static Task<CallToolResult> SendHeadersAndForm(IMcpHttpInvoker invoker, string route, string name, string[] tags, string comment, CancellationToken cancellationToken)
+    {
+        var headers = new List<KeyValuePair<string, string>>();
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Name", name));
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tags", tags));
+        var formParts = new List<string>();
+        CultureInfo? formCulture = null;
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "comment", comment, ref formCulture));
+
+        return new McpHttpRequest(HttpMethod.Post, route) { Headers = headers, FormBody = string.Join("&", formParts), FormCulture = formCulture }
+            .SendAsync(invoker, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a number in a form, and the argument <c>language</c> as <c>Accept-Language</c>, as a generated tool of
+    /// <c>[FromForm]</c> and <c>[FromHeader]</c> parameters does.
+    /// </summary>
+    [McpServerTool(Name = "parity_form_amount")]
+    public static Task<CallToolResult> SendFormAmount(IMcpHttpInvoker invoker, string route, decimal amount, string? language = null, CancellationToken cancellationToken = default)
+    {
+        var headers = new List<KeyValuePair<string, string>>();
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "Accept-Language", language));
+        var formParts = new List<string>();
+        CultureInfo? formCulture = null;
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "amount", amount, ref formCulture));
+
+        return new McpHttpRequest(HttpMethod.Post, route)
+        {
+            Headers = headers,
+            HeaderArguments = new Dictionary<string, string> { ["Accept-Language"] = nameof(language) },
+            FormBody = string.Join("&", formParts),
+            FormCulture = formCulture
+        }.SendAsync(invoker, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends the header the call names from the argument <c>value</c>, as a generated tool of a <c>[FromHeader]</c>
+    /// parameter does.
+    /// </summary>
+    [McpServerTool(Name = "parity_header")]
+    public static Task<CallToolResult> SendHeader(IMcpHttpInvoker invoker, string route, string header, string value, CancellationToken cancellationToken)
+    {
+        var headers = new List<KeyValuePair<string, string>>();
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, header, value));
+
+        return new McpHttpRequest(HttpMethod.Get, route)
+        {
+            Headers = headers,
+            HeaderArguments = new Dictionary<string, string> { [header] = nameof(value) }
+        }.SendAsync(invoker, cancellationToken);
     }
 }
 
