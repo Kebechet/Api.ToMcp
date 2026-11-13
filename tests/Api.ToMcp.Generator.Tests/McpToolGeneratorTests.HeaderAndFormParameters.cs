@@ -1,6 +1,16 @@
 using System;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using Api.ToMcp.Generator.Parsing;
+using Api.ToMcp.Runtime;
+using Api.ToMcp.Runtime.Options;
+using Api.ToMcp.Runtime.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.CodeAnalysis;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Api.ToMcp.Generator.Tests;
@@ -120,31 +130,87 @@ public partial class McpToolGeneratorTests
         Assert.Contains("return await request2.SendAsync(invoker, cancellationToken);", tool);
     }
 
-    [Theory]
-    [InlineData("[FromHeader(Name = \"Authorization\")] string? auth", "auth", "Authorization")]
-    [InlineData("[FromHeader] string? authorization", "authorization", "authorization")]
-    [InlineData("[FromHeader(Name = \"cookie\")] string? session", "session", "cookie")]
-    [InlineData("[FromHeader(Name = \"HOST\")] string? host", "host", "HOST")]
-    [InlineData("[FromHeader(Name = \"x-mcp-internal-call\")] string? internalCall", "internalCall", "x-mcp-internal-call")]
-    [InlineData("[FromHeader(Name = \"Content-Type\")] string? contentType", "contentType", "Content-Type")]
-    [InlineData("[FromHeader(Name = \"Content-Length\")] long? length", "length", "Content-Length")]
-    [InlineData("[FromHeader(Name = \"Content-Language\")] string? language", "language", "Content-Language")]
-    [InlineData("[FromHeader(Name = \"Transfer-Encoding\")] string? encoding", "encoding", "Transfer-Encoding")]
-    [InlineData("[FromHeader(Name = \"traceparent\")] string? trace", "trace", "traceparent")]
-    [InlineData("[FromHeader(Name = \"Baggage\")] string? baggage", "baggage", "Baggage")]
-    public void Generator_GivesNoTool_ToAnActionReadingAHeaderAToolNeverSets(string parameter, string parameterName, string headerName)
+    [Fact]
+    public void Generator_LeavesOutEveryHeaderAToolNeverSets_AsItLeavesOutAService()
     {
-        var source = SimpleTypeSource($"[HttpGet(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+        // The AI chose every header a tool sent, so a tool sends none the request carries of its own or the app may trust
+        // as set by a front-end proxy. The action gets the header its request carries, or none.
+        var headerNames = RequestHeaderRules.NeverSetNames
+            .Concat(RequestHeaderRules.NeverSetPrefixes.Select(x => x + "Test"))
+            .Append("X-MS-CLIENT-PRINCIPAL-ID")
+            .ToList();
+        var parameters = string.Join(", ", headerNames.Select((x, i) => $"[FromHeader(Name = \"{x}\")] string? header{i}"));
+        var source = SimpleTypeSource($"[HttpGet(\"x\")] public Task<string> Find({parameters}, int page) => Task.FromResult(string.Empty);");
+
+        var diagnostics = GetGeneratorDiagnostics(source, AllExceptExcludedConfig);
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpGet(\"x\")] public Task<string> Find({parameters}, int page) => Task.FromResult(string.Empty);");
+
+        Assert.DoesNotContain(diagnostics, x => x.Id == UnbuildableRouteId);
+        Assert.DoesNotContain("header", tool);
+        Assert.Contains("[Description(\"Parameter: page\")] int page,", tool);
+        Assert.Contains("invoker.GetAsync(route, cancellationToken)", tool);
+    }
+
+    [Theory]
+    [InlineData("HttpGet", "[FromHeader(Name = \"Authorization\")] string auth")]
+    [InlineData("HttpGet", "[FromHeader] string authorization, [FromHeader(Name = \"X-MCP-Internal-Call\")] string internalCall, [FromHeader] string host")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"traceparent\")] string trace")]
+    [InlineData("HttpPost", "[FromHeader(Name = \"Content-Type\")] string contentType, [FromForm] string name")]
+    [InlineData("HttpPut", "[FromHeader(Name = \"content-length\")] string length, [FromBody] ProductFilter filter")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"Cookie\")] string? cookie")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-MS-CLIENT-PRINCIPAL-ID\")] string userId = \"\"")]
+    public void Generator_GivesATool_ToAnActionReadingAHeaderAToolNeverSets_WhenItsRequestMayCarryItOrTheActionDoesWithout(string httpAttribute, string parameters)
+    {
+        var tool = GenerateCompilingSimpleTypeTool($"[{httpAttribute}(\"x\")] public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        Assert.DoesNotContain("TryAddHeaderValue", tool);
+        Assert.DoesNotContain(" auth", tool);
+        Assert.DoesNotContain(" cookie", tool);
+        Assert.DoesNotContain("userId", tool);
+    }
+
+    [Theory]
+    [InlineData("HttpGet", "[FromHeader(Name = \"Cookie\")] string session", "session", "Cookie")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-MS-CLIENT-PRINCIPAL-ID\")] string userId", "userId", "X-MS-CLIENT-PRINCIPAL-ID")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-For\"), Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int? hops", "hops", "X-Forwarded-For")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"Content-Type\")] string contentType", "contentType", "Content-Type")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-HTTP-Method-Override\"), System.ComponentModel.DataAnnotations.Required] string? method", "method", "X-HTTP-Method-Override")]
+    public void Generator_GivesNoTool_ToAnActionRequiringAHeaderAToolNeverSetsAndItsRequestDoesNotCarry(string httpAttribute, string parameter, string parameterName, string headerName)
+    {
+        var source = SimpleTypeSource($"[{httpAttribute}(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
 
         var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
         var generated = RunGenerator(source, AllExceptExcludedConfig);
 
         Assert.Equal(DiagnosticSeverity.Warning, warning.Severity);
         Assert.Equal(
-            $"No MCP tool is generated for action 'OrdersController.Find': its parameter '{parameterName}' is read from the request header '{headerName}', which a tool never sets from an argument",
+            $"No MCP tool is generated for action 'OrdersController.Find': its parameter '{parameterName}' is read from the request header '{headerName}', which a tool never sets from an argument and its request does not carry",
             warning.GetMessage());
         Assert.Equal("Find", GetLocatedText(warning.Location, source));
         Assert.DoesNotContain(SimpleTypeToolClassName, generated);
+    }
+
+    [Fact]
+    public void RuntimeInvoker_RefusesEveryHeaderTheGeneratorNeverSets()
+    {
+        // The runtime keeps its own list, as the generator cannot reference it; a header missing from it would be sent by a
+        // hand-written request, and one the generator lacks would be taken from the AI.
+        var invoker = new McpHttpInvoker(
+            new HttpClient(new NoRequestHandler()),
+            new FixedBaseUrl(),
+            new HttpContextAccessor(),
+            NullLogger<McpHttpInvoker>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()));
+        var headerNames = RequestHeaderRules.NeverSetNames.Concat(RequestHeaderRules.NeverSetPrefixes.Select(x => x + "Test"));
+
+        foreach (var headerName in headerNames)
+        {
+            var request = new McpHttpRequest(HttpMethod.Get, "/x") { Headers = [new(headerName, "v")] };
+
+            var exception = Record.Exception(() => invoker.SendAsync(request).GetAwaiter().GetResult());
+
+            Assert.True(exception is ArgumentException, $"{headerName}: {exception}");
+        }
     }
 
     [Theory]
@@ -188,10 +254,10 @@ namespace TestApi
     [Fact]
     public void Generator_StillDecidesTheRouteEnd_AgainstAnActionWithoutATool()
     {
-        // The app serves DELETE api/orders with All, which reads a header no tool sets, so a call to Delete without its
-        // id would run All all the same.
+        // The app serves DELETE api/orders with All, which requires a cookie a tool's request never carries, so a call to
+        // Delete without its id would run All all the same.
         var source = SimpleTypeSource(@"
-        [HttpDelete] public Task<string> All([FromHeader(Name = ""Authorization"")] string? auth) => Task.FromResult(string.Empty);
+        [HttpDelete] public Task<string> All([FromHeader(Name = ""Cookie"")] string cookie) => Task.FromResult(string.Empty);
         [HttpDelete(""{id?}"")] public Task<string> Delete(int? id) => Task.FromResult(string.Empty);");
 
         var tool = GetToolClass(RunGenerator(source, AllExceptExcludedConfig), "OrdersController_DeleteTool");
@@ -227,5 +293,18 @@ namespace TestApi
     }}
 }}
 ";
+    }
+
+    private sealed class NoRequestHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class FixedBaseUrl : ISelfBaseUrlProvider
+    {
+        public string GetBaseUrl() => "http://localhost";
     }
 }

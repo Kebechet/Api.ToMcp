@@ -124,6 +124,12 @@ namespace Api.ToMcp.Generator.Parsing
             Header,
 
             /// <summary>
+            /// A header the AI never sets, which is no input of the tool: the endpoint gets the value the tool's request
+            /// carries of its own, or none.
+            /// </summary>
+            WithheldHeader,
+
+            /// <summary>
             /// A complex parameter without an attribute on an endpoint that infers a body: the body, unless the app
             /// registered its type as a service, which only the running app knows.
             /// </summary>
@@ -608,6 +614,16 @@ namespace Api.ToMcp.Generator.Parsing
                 return (ImmutableArray<ParameterInfoModel>.Empty, bodyProblem, false);
             }
 
+            var hasBody = bindings.Any(x => x.Binding == EndpointBinding.Body);
+            var missingHeader = bindings.FirstOrDefault(x =>
+                x.Binding == EndpointBinding.WithheldHeader && !x.Input.IsOptional && !RequestHeaderRules.MayBeCarriedByTheRequest(x.ModelName!, hasBody));
+            if (missingHeader.Input is not null)
+            {
+                return (ImmutableArray<ParameterInfoModel>.Empty, $"it reads '{missingHeader.Input.Name}' from the request header '{missingHeader.ModelName}', {HeaderNeverCarried}", false);
+            }
+
+            bindings.RemoveAll(x => x.Binding == EndpointBinding.WithheldHeader);
+
             var sharedName = bindings
                 .GroupBy(x => x.Input.Name, StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault(x => x.Count() > 1)?.Key;
@@ -708,21 +724,24 @@ namespace Api.ToMcp.Generator.Parsing
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromQueryMetadata)))
                 return (EndpointBinding.Query, GetMetadataName(attributes, MinimalApiNames.FromQueryMetadata), null);
 
-            // A Minimal API reads an array from a header one value per header line, which HttpClient joins into one, so the
-            // tool sends only a value parsed from one string. An optional array the endpoint does without; a required one it
-            // refuses with 400.
+            // A header the AI never sets is no argument, as for an action. A Minimal API reads an array from a header one
+            // value per header line, which HttpClient joins into one, so the tool sends only a value parsed from one string.
+            // An optional array the endpoint does without; a required one it refuses with 400.
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromHeaderMetadata)))
             {
+                var headerName = GetMetadataName(attributes, MinimalApiNames.FromHeaderMetadata) ?? input.Name;
+                if (!RequestHeaderRules.IsValidName(headerName))
+                    return (EndpointBinding.None, null, $"it reads '{input.Name}' from the request header '{headerName}', {InvalidHeaderName}");
+
+                if (RequestHeaderRules.IsNeverSetFromArguments(headerName))
+                    return (EndpointBinding.WithheldHeader, headerName, null);
+
                 if (!SimpleTypeClassifier.IsParsable(type))
                     return input.IsOptional
                         ? (EndpointBinding.None, null, null)
                         : (EndpointBinding.None, null, $"it reads '{input.Name}' from a header as {type.ToDisplayString()}, which a tool does not send");
 
-                var headerName = GetMetadataName(attributes, MinimalApiNames.FromHeaderMetadata) ?? input.Name;
-                var headerProblem = GetHeaderProblem(headerName);
-                return headerProblem is null
-                    ? (EndpointBinding.Header, headerName, null)
-                    : (EndpointBinding.None, null, $"it reads '{input.Name}' from the request header '{headerName}', {headerProblem}");
+                return (EndpointBinding.Header, headerName, null);
             }
 
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromBodyMetadata)))

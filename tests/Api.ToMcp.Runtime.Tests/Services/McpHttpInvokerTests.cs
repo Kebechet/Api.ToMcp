@@ -1112,6 +1112,24 @@ public class McpHttpInvokerTests
         Assert.Null(capturedRequest);
     }
 
+    [Theory]
+    [InlineData("X-MS-CLIENT-PRINCIPAL-ID")]
+    [InlineData("x-forwarded-for")]
+    [InlineData("X-HTTP-Method-Override")]
+    [InlineData("Connection")]
+    [InlineData("Proxy-Authorization")]
+    [InlineData("X-Auth-Request-User")]
+    public async Task SendAsync_RefusesAHeaderAFrontEndOrAMiddlewareTrusts(string name)
+    {
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+
+        var request = new McpHttpRequest(HttpMethod.Get, "/api/x") { Headers = [new(name, "value")] };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateInvoker().SendAsync(request));
+        Assert.Null(capturedRequest);
+    }
+
     [Fact]
     public async Task SendAsync_RefusesAHeaderValueAnHttpHeaderCannotCarry()
     {

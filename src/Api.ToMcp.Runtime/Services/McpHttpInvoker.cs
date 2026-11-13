@@ -10,7 +10,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.Net.Http.Headers;
 
 namespace Api.ToMcp.Runtime.Services;
 
@@ -19,25 +18,6 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     private const string LoopPreventionHeader = McpLoopPreventionMiddleware.LoopPreventionHeader;
     private const string LoopPreventionValue = "true";
     private const char PathSeparator = RouteTokens.PathSeparator;
-
-    /// <summary>
-    /// The request headers a tool's request carries of its own, or never from a tool: the caller's credentials, which
-    /// the invoker forwards or never sends, the loop prevention header, the host, the body's framing and the trace
-    /// context <c>HttpClient</c> sends. <c>HttpClient</c> keeps the headers that describe the body, such as
-    /// <c>Content-Type</c>, among the content's, so it refuses them as request headers itself.
-    /// </summary>
-    private static readonly HashSet<string> OwnHeaders = new(StringComparer.OrdinalIgnoreCase)
-    {
-        HeaderNames.Authorization,
-        HeaderNames.Cookie,
-        HeaderNames.Host,
-        LoopPreventionHeader,
-        HeaderNames.TransferEncoding,
-        HeaderNames.TraceParent,
-        HeaderNames.TraceState,
-        HeaderNames.Baggage,
-        HeaderNames.CorrelationContext
-    };
 
     private readonly HttpClient _httpClient;
     private readonly ISelfBaseUrlProvider _baseUrlProvider;
@@ -150,7 +130,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     {
         foreach (var (name, value) in headers)
         {
-            if (OwnHeaders.Contains(name))
+            if (ToolRequestHeaders.IsNeverSetFromArguments(name))
             {
                 throw new ArgumentException($"The tool's request carries the header '{name}' of its own, or never from a tool.", nameof(headers));
             }

@@ -40,42 +40,6 @@ namespace Api.ToMcp.Generator.Parsing
         private const string MicrosoftNamespaceName = "Microsoft";
 
         /// <summary>
-        /// The characters besides letters and digits that HTTP allows in a token (RFC 9110, section 5.6.2).
-        /// </summary>
-        private const string TokenSymbols = "!#$%&'*+-.^_`|~";
-
-        /// <summary>
-        /// The request headers a tool never sends from an argument, compared ignoring case, as HTTP compares header
-        /// names: those that carry the caller's credentials, which the invoker forwards from the MCP request or never
-        /// sends; those the tool's request carries of its own, the loop prevention header and, over HTTP, the host and
-        /// the trace context <c>HttpClient</c> sends; and those that frame or describe the body the tool writes, which
-        /// <c>HttpClient</c> keeps among the content's headers.
-        /// </summary>
-        private static readonly HashSet<string> HeadersNeverSetFromArguments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            HttpHeaderNames.Authorization,
-            HttpHeaderNames.Cookie,
-            HttpHeaderNames.Host,
-            HttpHeaderNames.LoopPrevention,
-            HttpHeaderNames.TraceParent,
-            HttpHeaderNames.TraceState,
-            HttpHeaderNames.Baggage,
-            HttpHeaderNames.CorrelationContext,
-            HttpHeaderNames.TransferEncoding,
-            HttpHeaderNames.ContentType,
-            HttpHeaderNames.ContentLength,
-            HttpHeaderNames.ContentEncoding,
-            HttpHeaderNames.ContentLanguage,
-            HttpHeaderNames.ContentLocation,
-            HttpHeaderNames.ContentMD5,
-            HttpHeaderNames.ContentRange,
-            HttpHeaderNames.ContentDisposition,
-            HttpHeaderNames.Allow,
-            HttpHeaderNames.Expires,
-            HttpHeaderNames.LastModified
-        };
-
-        /// <summary>
         /// The HTTP methods a tool calls an action with, the ones <c>IMcpHttpInvoker</c> sends.
         /// </summary>
         private static readonly HashSet<string> ToolHttpMethods = new HashSet<string>(StringComparer.Ordinal)
@@ -476,6 +440,7 @@ namespace Api.ToMcp.Generator.Parsing
             var builder = ImmutableArray.CreateBuilder<ParameterInfoModel>();
             var paramDocs = XmlDocParams.GetOrAdd(compilation, method.OriginalDefinition, GetXmlDocParams);
             string? problem = null;
+            var withheldHeaders = new List<(string ParameterName, string HeaderName, bool IsRequired)>();
 
             foreach (var param in method.Parameters)
             {
@@ -496,7 +461,6 @@ namespace Api.ToMcp.Generator.Parsing
 
                 var isSimpleType = SimpleTypeClassifier.IsSimpleType(param.Type);
                 var modelName = modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null);
-                problem ??= GetParameterProblem(param, declaredSource, modelName ?? param.Name, compilation);
 
                 // A [FromRoute] or [FromBody] parameter's properties fill route values whatever its type, as a body is JSON
                 // even for a type MVC reads from one string. A complex parameter's also decide whether MVC reads it from
@@ -504,6 +468,18 @@ namespace Api.ToMcp.Generator.Parsing
                 var properties = isSimpleType && declaredSource is not (ParameterSourceModel.Route or ParameterSourceModel.Body)
                     ? ImmutableArray<PropertyInfoModel>.Empty
                     : ExtractProperties(param.Type, compilation);
+                var source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties);
+
+                // The AI never chooses such a header, so it is no argument: the action gets the value the tool's request
+                // carries of its own, or none, as it gets a service.
+                var headerName = modelName ?? param.Name;
+                if (source == ParameterSourceModel.Header && RequestHeaderRules.IsValidName(headerName) && RequestHeaderRules.IsNeverSetFromArguments(headerName))
+                {
+                    withheldHeaders.Add((param.Name, headerName, IsRequiredByMvc(param, bindingRequirement)));
+                    continue;
+                }
+
+                problem ??= GetParameterProblem(param, source, headerName, compilation);
 
                 builder.Add(new ParameterInfoModel
                 {
@@ -514,7 +490,7 @@ namespace Api.ToMcp.Generator.Parsing
                     IsValueType = param.Type.IsValueType,
                     HasDefaultValue = param.HasExplicitDefaultValue,
                     DefaultValueExpression = param.HasExplicitDefaultValue ? DefaultValueExpressionBuilder.Build(param.ExplicitDefaultValue, param.Type) : null,
-                    Source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties),
+                    Source = source,
                     IsBindingRequired = bindingRequirement == true,
                     IsBindingRequirementUnknown = bindingRequirement is null,
                     IsDefaultRefusedAsText = param.HasExplicitDefaultValue && IsRefusedAsText(param.Type, param.ExplicitDefaultValue),
@@ -536,15 +512,43 @@ namespace Api.ToMcp.Generator.Parsing
                 problem ??= $"it reads '{body.Name}' from a JSON body and '{formField.Name}' from a form, which one request cannot carry";
             }
 
+            var hasBody = formField is not null || (body is not null && httpMethod is HttpMethodNames.Post or HttpMethodNames.Put or HttpMethodNames.Patch);
+            var missingHeader = withheldHeaders.FirstOrDefault(x => x.IsRequired && !RequestHeaderRules.MayBeCarriedByTheRequest(x.HeaderName, hasBody));
+            if (missingHeader.ParameterName is not null)
+            {
+                problem ??= $"its parameter '{missingHeader.ParameterName}' is read from the request header '{missingHeader.HeaderName}', {HeaderNeverCarried}";
+            }
+
             return (parameters, problem);
         }
 
         /// <summary>
-        /// Why a tool cannot send the parameter, as a clause of MCP009's message, or null when it can: a form file, which
-        /// the tool's form cannot carry; a header of a type MVC reads from no header value (<c>HeaderModelBinderProvider</c>
-        /// takes a simple type or a collection of one); or a header a tool never sets.
+        /// Whether MVC refuses a request without a value for the parameter: one with <c>[BindRequired]</c> or
+        /// <c>[Required]</c>, or of a reference type that is not nullable, for which it adds <c>[Required]</c> itself.
         /// </summary>
-        private static string? GetParameterProblem(IParameterSymbol parameter, ParameterSourceModel? declaredSource, string headerName, Compilation compilation)
+        private static bool IsRequiredByMvc(IParameterSymbol parameter, bool? bindingRequirement)
+        {
+            return bindingRequirement == true ||
+                (parameter.Type.IsReferenceType && parameter.Type.NullableAnnotation == NullableAnnotation.NotAnnotated && !parameter.HasExplicitDefaultValue);
+        }
+
+        /// <summary>
+        /// The end of MCP009's or MCP010's clause about a required header that the AI never sets and the tool's request does
+        /// not carry, so MVC or the Minimal API refuses every call.
+        /// </summary>
+        private const string HeaderNeverCarried = "which a tool never sets from an argument and its request does not carry";
+
+        /// <summary>
+        /// The end of MCP009's or MCP010's clause about a header whose name HTTP does not allow.
+        /// </summary>
+        private const string InvalidHeaderName = "which is no valid HTTP header name";
+
+        /// <summary>
+        /// Why a tool cannot send the parameter, as a clause of MCP009's message, or null when it can: a form file, which
+        /// the tool's form cannot carry; or a header of a type MVC reads from no header value
+        /// (<c>HeaderModelBinderProvider</c> takes a simple type or a collection of one), or whose name HTTP does not allow.
+        /// </summary>
+        private static string? GetParameterProblem(IParameterSymbol parameter, ParameterSourceModel source, string headerName, Compilation compilation)
         {
             var formFilePath = FormFilePaths.GetOrAdd(compilation, parameter.Type, x => FindFormFile(x, compilation, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default)));
             if (formFilePath is not null)
@@ -554,7 +558,7 @@ namespace Api.ToMcp.Generator.Parsing
                     : $"its parameter '{parameter.Name}' holds a form file in its property '{formFilePath}', which a tool cannot send";
             }
 
-            if (declaredSource != ParameterSourceModel.Header)
+            if (source != ParameterSourceModel.Header)
             {
                 return null;
             }
@@ -565,34 +569,9 @@ namespace Api.ToMcp.Generator.Parsing
                 return $"its parameter '{parameter.Name}' is read from a header as {parameter.Type.ToDisplayString()}, and a tool sends a header only for a type MVC reads from one string, or an array of such";
             }
 
-            var headerProblem = GetHeaderProblem(headerName);
-            return headerProblem is null
+            return RequestHeaderRules.IsValidName(headerName)
                 ? null
-                : $"its parameter '{parameter.Name}' is read from the request header '{headerName}', {headerProblem}";
-        }
-
-        /// <summary>
-        /// Why a tool cannot send a header of the name from an argument, as the end of a clause that names the header, or
-        /// null when it can. The name has to be a token, as HTTP defines it, and none of
-        /// <see cref="HeadersNeverSetFromArguments"/>.
-        /// </summary>
-        internal static string? GetHeaderProblem(string headerName)
-        {
-            if (headerName.Length == 0 || headerName.Any(x => !IsTokenCharacter(x)))
-            {
-                return "which is no valid HTTP header name";
-            }
-
-            return HeadersNeverSetFromArguments.Contains(headerName) ? "which a tool never sets from an argument" : null;
-        }
-
-        /// <summary>
-        /// Whether HTTP allows the character in a token, which a header's name is (RFC 9110, section 5.6.2).
-        /// </summary>
-        private static bool IsTokenCharacter(char character)
-        {
-            return character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' ||
-                TokenSymbols.IndexOf(character) >= 0;
+                : $"its parameter '{parameter.Name}' is read from the request header '{headerName}', {InvalidHeaderName}";
         }
 
         /// <summary>

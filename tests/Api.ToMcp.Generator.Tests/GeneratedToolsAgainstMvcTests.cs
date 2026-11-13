@@ -161,6 +161,11 @@ namespace TestApi
         [HttpPost(""form-header/{id}"")]
         public object PostFormHeader(int id, [FromForm] Shipment shipment, [FromHeader(Name = ""Idempotency-Key"")] string key) => new { id, shipment.Note, key };
 
+        // The AI never sets these headers, so the tool takes no argument for them and sends the request's own.
+        [HttpGet(""own-headers"")]
+        public object GetOwnHeaders([FromHeader(Name = ""Authorization"")] string? auth, [FromHeader(Name = ""X-MS-CLIENT-PRINCIPAL-ID"")] string? userId, [FromHeader(Name = ""X-Forwarded-For"")] string? clientIp)
+            => new { auth, userId, clientIp };
+
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
             => new { isNaN = double.IsNaN(value), inf = float.IsPositiveInfinity(inf), negInf = double.IsNegativeInfinity(negInf), query = Request.QueryString.Value };
@@ -544,6 +549,7 @@ namespace TestApi
     [InlineData("EchoController_PostNullableBinderTool", @"{""q"":{""ref"":{""value"":5},""city"":""Brno""}}", @"{""ref"":{""value"":5},""city"":""Brno""}")]
     [InlineData("EchoController_GetHeaderTool", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}", @"{""tenant"":""t 1"",""ids"":[1,2],""tags"":[""a,b"",""c""],""status"":1}")]
     [InlineData("EchoController_GetHeaderTool", @"{}", @"{""tenant"":null,""ids"":[],""tags"":[],""status"":null}")]
+    [InlineData("EchoController_GetOwnHeadersTool", @"{""auth"":""Bearer forged"",""userId"":""bob"",""clientIp"":""10.0.0.5""}", @"{""auth"":null,""userId"":null,""clientIp"":null}")]
     [InlineData("EchoController_GetHeaderDefaultTool", @"{""page"":3}", @"{""page"":3,""sent"":true}")]
     [InlineData("EchoController_GetHeaderDefaultTool", @"{}", @"{""page"":2,""sent"":false}")]
     [InlineData("EchoController_PostFormTool", @"{""name"":""a b&c=d+e"",""filter"":{""city"":""Brno""},""ids"":[1,2],""status"":0}", @"{""name"":""a b&c=d+e"",""city"":""Brno"",""ids"":[1,2],""status"":0,""isForm"":true}")]
@@ -819,13 +825,18 @@ namespace TestApi
         /// Calls a generated tool with arguments deserialized from JSON, as the MCP server does, and returns what the
         /// action answered.
         /// </summary>
-        public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments)
+        public Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments)
+        {
+            return InvokeToolAsync(toolClassName, arguments, _invoker);
+        }
+
+        private async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, RecordingInvoker invoker)
         {
             var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
             var argumentValues = JsonNode.Parse(arguments)!.AsObject();
             var parameterValues = toolMethod
                 .GetParameters()
-                .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? _invoker
+                .Select(x => x.ParameterType == typeof(IMcpHttpInvoker) ? invoker
                     : x.ParameterType == typeof(CancellationToken) ? CancellationToken.None
                     : argumentValues.TryGetPropertyValue(x.Name!, out var argument) ? argument?.Deserialize(x.ParameterType, ArgumentOptions)
                     : GetDefaultArgument(x))
@@ -833,7 +844,7 @@ namespace TestApi
 
             await (Task)toolMethod.Invoke(null, parameterValues)!;
 
-            return _invoker.LastResponse;
+            return invoker.LastResponse;
         }
 
         /// <summary>
