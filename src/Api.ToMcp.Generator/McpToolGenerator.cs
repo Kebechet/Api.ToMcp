@@ -33,16 +33,16 @@ namespace Api.ToMcp.Generator
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
             // Step 1: Read the config: the additional file at the path the build targets pass from ApiToMcpConfigPath,
-            // whatever its name, else the first whose name ends in generator.json, as a project without the targets, or
-            // with no file at that path, lists its config by hand.
+            // whatever its name, else the first named generator.json, as a project without the targets, or with no file
+            // at that path, lists its config by hand.
             var configPathProvider = context.AnalyzerConfigOptionsProvider
                 .Select((options, _) => GetConfigPath(options.GlobalOptions));
 
             var configProvider = context.AdditionalTextsProvider
                 .Combine(configPathProvider)
-                .Select((source, _) => (File: source.Left, IsAtConfigPath: IsAtConfigPath(source.Left.Path, source.Right)))
-                .Where(x => x.IsAtConfigPath || x.File.Path.EndsWith(ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase))
-                .Select((x, ct) => (x.IsAtConfigPath, Config: ConfigParser.Parse(x.File.GetText(ct)?.ToString()) with { FilePath = x.File.Path }))
+                .Select((source, _) => (File: source.Left, Match: MatchConfigFile(source.Left.Path, source.Right)))
+                .Where(x => x.Match != ConfigFileMatch.None)
+                .Select((x, ct) => (x.Match, Config: ConfigParser.Parse(x.File.GetText(ct)?.ToString()) with { FilePath = x.File.Path }))
                 .Collect()
                 .Select((configs, _) => SelectConfig(configs))
                 .WithTrackingName(TrackingNames.Config);
@@ -117,13 +117,35 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// Whether the additional file is the configured one. The case of the paths does not count, as it does not for
-        /// MSBuild, which hands the generator a config whose path differs from the configured one only in case on a
-        /// case-sensitive file system (MCP101).
+        /// How the additional file can be the config. A path that differs from the configured one only in case counts, as
+        /// on a case-sensitive file system MSBuild hands the generator such a file when the configured one is missing
+        /// (MCP101), but after the configured file itself, which can be among the additional files as well. The name
+        /// matches only in full: a file such as openapi-generator.json is another tool's.
         /// </summary>
-        private static bool IsAtConfigPath(string filePath, string? configPath)
+        private static ConfigFileMatch MatchConfigFile(string filePath, string? configPath)
         {
-            return configPath is not null && string.Equals(NormalizePath(filePath), configPath, StringComparison.OrdinalIgnoreCase);
+            if (configPath is not null)
+            {
+                var fullPath = NormalizePath(filePath);
+                if (string.Equals(fullPath, configPath, StringComparison.Ordinal))
+                    return ConfigFileMatch.ConfiguredPath;
+
+                if (string.Equals(fullPath, configPath, StringComparison.OrdinalIgnoreCase))
+                    return ConfigFileMatch.ConfiguredPathInAnotherCase;
+            }
+
+            return string.Equals(GetFileName(filePath), ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase)
+                ? ConfigFileMatch.FileName
+                : ConfigFileMatch.None;
+        }
+
+        /// <summary>
+        /// The file name, cut at the platform's separators rather than by <see cref="Path.GetFileName(string)"/>, which on
+        /// .NET Framework, where an IDE can run the generator, throws for a character it does not allow in paths.
+        /// </summary>
+        private static string GetFileName(string path)
+        {
+            return path.Substring(path.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }) + 1);
         }
 
         /// <summary>
@@ -143,13 +165,12 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// The config at the configured path, else the first whose name ends in generator.json, else the default config.
+        /// The config at the configured path, else at that path in another case, else the first named generator.json,
+        /// else the default config.
         /// </summary>
-        private static GeneratorConfigModel SelectConfig(ImmutableArray<(bool IsAtConfigPath, GeneratorConfigModel Config)> configs)
+        private static GeneratorConfigModel SelectConfig(ImmutableArray<(ConfigFileMatch Match, GeneratorConfigModel Config)> configs)
         {
-            var configured = configs.Where(x => x.IsAtConfigPath).Select(x => x.Config).FirstOrDefault();
-
-            return configured ?? configs.Select(x => x.Config).FirstOrDefault() ?? new GeneratorConfigModel();
+            return configs.OrderBy(x => x.Match).Select(x => x.Config).FirstOrDefault() ?? new GeneratorConfigModel();
         }
 
         /// <summary>
@@ -870,6 +891,17 @@ namespace Api.ToMcp.Generator
             return quoted.Count == 1
                 ? quoted[0]
                 : $"{string.Join(", ", quoted.Take(quoted.Count - 1))} and {quoted[quoted.Count - 1]}";
+        }
+
+        /// <summary>
+        /// How an additional file can be the config, in the order the generator prefers them.
+        /// </summary>
+        private enum ConfigFileMatch
+        {
+            ConfiguredPath,
+            ConfiguredPathInAnotherCase,
+            FileName,
+            None
         }
     }
 }

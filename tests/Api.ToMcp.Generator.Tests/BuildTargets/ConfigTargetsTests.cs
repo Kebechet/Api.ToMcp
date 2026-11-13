@@ -170,6 +170,19 @@ public sealed class ConfigTargetsTests : IDisposable
     }
 
     [Fact]
+    public void Build_RegistersTheConfiguredConfig_BesideAnItemWhosePathDiffersOnlyInCase()
+    {
+        // On a case-sensitive file system the item is another file, so only an item at exactly the configured path keeps
+        // the build from adding the configured file. Elsewhere it is the same file, which the generator takes once.
+        var configPath = WriteConfig("Config", "tools.json");
+        WriteConfig("Config", "TOOLS.json");
+
+        var result = Build("ApiToMcpConfigPath=Config/tools.json", @"<AdditionalFiles Include=""Config\TOOLS.json"" />");
+
+        Assert.Equal(new[] { Path.Combine(_projectDirectory, "Config", "TOOLS.json"), configPath }, result.AdditionalFiles);
+    }
+
+    [Fact]
     public void Build_PassesTheGeneratorTheDefaultConfigPath_WhenThePropertyIsNotSet()
     {
         var configPath = WriteConfig("Mcp");

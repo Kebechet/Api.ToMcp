@@ -96,15 +96,20 @@
           Condition="Exists('$(ApiToMcpConfigPath)') OR '@(_McpCaseVariantConfig)' != ''">
 
     <!-- An item is the config by its path, not by a name ending in generator.json: the config may be named otherwise,
-         and another file, such as openapi-generator.json, may end so. See https://github.com/Kebechet/Api.ToMcp/issues/55 -->
-    <ItemGroup>
+         and another file, such as openapi-generator.json, may end so. See https://github.com/Kebechet/Api.ToMcp/issues/55
+         While the configured file exists, only an item at exactly its path is it: on a case-sensitive file system, an
+         item whose path differs in case is another file. Conditions compare case-insensitively, String.Equals does not. -->
+    <ItemGroup Condition="'@(_McpCaseVariantConfig)' == ''">
       <_ExistingMcpConfig Include="@(AdditionalFiles)"
-                          Condition="'%(FullPath)' == '$(_McpConfigFullPath)'" />
+                          Condition="$([System.String]::Equals('%(FullPath)', '$(_McpConfigFullPath)'))" />
     </ItemGroup>
 
-    <!-- A config listed by hand at the configured path names no file when only its case variant exists; left in, it
-         would keep the variant out and hand the generator a file it cannot read. -->
+    <!-- While only a case variant exists, an item whose path differs from the configured one only in case is the variant
+         or names no file. A config listed by hand at the configured path names no file then; left in, it would keep the
+         variant out and hand the generator a file it cannot read. -->
     <ItemGroup Condition="'@(_McpCaseVariantConfig)' != ''">
+      <_ExistingMcpConfig Include="@(AdditionalFiles)"
+                          Condition="'%(FullPath)' == '$(_McpConfigFullPath)'" />
       <_StaleMcpConfig Include="@(_ExistingMcpConfig)"
                        Condition="!Exists('%(FullPath)')" />
       <AdditionalFiles Remove="@(_StaleMcpConfig)" />

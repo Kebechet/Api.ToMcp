@@ -99,20 +99,59 @@ public partial class McpToolGeneratorTests
         Assert.Equal(configPath, diagnostic.Location.GetLineSpan().Path);
     }
 
-    private static string RunGeneratorWithConfigPath(string configPath, params AdditionalText[] additionalFiles)
+    [Fact]
+    public void Generator_ReadsTheConfigAtExactlyTheConfiguredPath_BeforeOneWhosePathDiffersOnlyInCase()
+    {
+        // On a case-sensitive file system both are files of their own. The case variant stands in for the configured file
+        // only while that one is missing (MCP101).
+        var configPath = Path.Combine(ProjectDirectory, "Config", "tools.json");
+
+        var generated = RunGeneratorWithConfigPath(
+            configPath,
+            new InMemoryAdditionalText(Path.Combine(ProjectDirectory, "Config", "TOOLS.json"), GetByIdConfig),
+            new InMemoryAdditionalText(configPath, GetAllConfig));
+
+        Assert.Contains("class ProductsController_GetAllTool", generated);
+        Assert.DoesNotContain("class ProductsController_GetByIdTool", generated);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Generator_ReadsOnlyAFileNamedGeneratorJson_WhenNoFileIsAtTheConfiguredPath(bool hasConfigPath)
+    {
+        // openapi-generator.json, listed first, used to be read as the config.
+        var configPath = hasConfigPath ? Path.Combine(ProjectDirectory, "Mcp", "generator.json") : null;
+
+        var generated = RunGeneratorWithConfigPath(
+            configPath,
+            new InMemoryAdditionalText(Path.Combine(ProjectDirectory, "openapi-generator.json"), OpenApiGeneratorConfig),
+            new InMemoryAdditionalText(Path.Combine(ProjectDirectory, "Legacy", "GENERATOR.json"), GetAllConfig));
+
+        Assert.Contains("class ProductsController_GetAllTool", generated);
+    }
+
+    private static string RunGeneratorWithConfigPath(string? configPath, params AdditionalText[] additionalFiles)
     {
         RunGeneratorWithConfigPath(configPath, out var generated, additionalFiles);
 
         return generated;
     }
 
-    private static ImmutableArray<Diagnostic> RunGeneratorWithConfigPath(string configPath, out string generated, params AdditionalText[] additionalFiles)
+    /// <param name="configPath">The path the build passes, or null for a project without the package's build targets.</param>
+    private static ImmutableArray<Diagnostic> RunGeneratorWithConfigPath(string? configPath, out string generated, params AdditionalText[] additionalFiles)
     {
+        var globalOptions = new Dictionary<string, string>();
+        if (configPath is not null)
+        {
+            globalOptions[ConfigPathBuildProperty] = configPath;
+        }
+
         var runResult = CSharpGeneratorDriver
             .Create(
                 new[] { new McpToolGenerator().AsSourceGenerator() },
                 additionalFiles,
-                optionsProvider: new GlobalOptionsProvider(new Dictionary<string, string> { [ConfigPathBuildProperty] = configPath }))
+                optionsProvider: new GlobalOptionsProvider(globalOptions))
             .RunGenerators(CreateCompilation(Usings + ProductsController))
             .GetRunResult();
 
