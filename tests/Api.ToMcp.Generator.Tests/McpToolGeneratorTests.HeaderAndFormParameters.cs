@@ -200,6 +200,22 @@ namespace TestApi
         Assert.Contains("ChangesThePath(routeid, isRequired: true)", tool);
     }
 
+    [Fact]
+    public void Endpoint_SendsAHeaderItParsesFromOneString_AsARequestHeader()
+    {
+        var source = MinimalApi(@"
+            app.MapGet(""/x"", ([FromHeader(Name = ""X-Tenant"")] string tenant, [FromHeader] int? page) => 1).WithName(""X"");");
+
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Endpoints_XTool");
+
+        Assert.Contains("[Description(\"Parameter: tenant\")] string tenant,", tool);
+        Assert.Contains("[Description(\"Parameter: page\")] int? page = null,", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"X-Tenant\", tenant))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"page\", page))", tool);
+        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Get, route) {{ Headers = headers }};", tool);
+        Assert.DoesNotContain("queryParts", tool);
+    }
+
     private static string SimpleTypeSource(string actions)
     {
         return SimpleTypeSources.Usings + SimpleTypeSources.Types + $@"

@@ -873,7 +873,7 @@ namespace TestApi
     public void Endpoint_OfNullableObliviousCode_TakesAReferenceParameterForOptional()
     {
         // ASP.NET Core takes a parameter whose nullability is not known to be not-null for optional, so the endpoint
-        // does without the header, and the tool without the name.
+        // does without the header and the name, and the tool declares both optional.
         var source = MinimalApiClass(@"
 #nullable disable
         public static void Map(WebApplication app)
@@ -890,7 +890,7 @@ namespace TestApi
 
         Assert.Empty(generatorDiagnostics);
         Assert.Contains("[Description(\"Parameter: name\")] string? name = null,", tool);
-        Assert.DoesNotContain("tenant", tool);
+        Assert.Contains("[Description(\"Parameter: tenant\")] string? tenant = null,", tool);
         Assert.False(generatedWarnings.Any(), string.Join(Environment.NewLine, generatedWarnings));
     }
 
@@ -953,7 +953,7 @@ namespace Microsoft.EntityFrameworkCore
     }
 
     [Theory]
-    [InlineData(@"(int id, OrderService service, IOrderRepository repository, HttpContext context, HttpRequest request, CancellationToken ct, System.Security.Claims.ClaimsPrincipal user, [FromHeader] string? tenant) => 1", "GET")]
+    [InlineData(@"(int id, OrderService service, IOrderRepository repository, HttpContext context, HttpRequest request, CancellationToken ct, System.Security.Claims.ClaimsPrincipal user, [FromHeader] int[]? tenants) => 1", "GET")]
     [InlineData(@"(int id, Order filter) => 1", "GET")]
     [InlineData(@"(int id, Order filter) => 1", "DELETE")]
     [InlineData(@"(int id, [FromServices] Order order, [Microsoft.Extensions.DependencyInjection.FromKeyedServices(""k"")] Order keyed) => 1", "POST")]
@@ -980,7 +980,9 @@ namespace TestApi
     [Theory]
     [InlineData(@"([FromForm] string name) => 1", "it reads 'name' from a form, which a tool does not send")]
     [InlineData(@"(IFormFile file) => 1", "it reads 'file' from a form, which a tool does not send")]
-    [InlineData(@"([FromHeader(Name = ""X-Tenant"")] string tenant) => 1", "it reads 'tenant' from a header, which a tool does not send")]
+    [InlineData(@"([FromHeader(Name = ""X-Ids"")] int[] ids) => 1", "it reads 'ids' from a header as int[], which a tool does not send")]
+    [InlineData(@"([FromHeader(Name = ""Authorization"")] string auth) => 1", "it reads 'auth' from the request header 'Authorization', which a tool never sets from an argument")]
+    [InlineData(@"([FromHeader] string? cookie) => 1", "it reads 'cookie' from the request header 'cookie', which a tool never sets from an argument")]
     [InlineData(@"(Stream body) => 1", "it reads the request body of 'body' as a stream, whose format the generator cannot know")]
     [InlineData(@"(Paging paging) => 1", "it binds 'paging' through TestApi.Paging.BindAsync, which reads the request in a way the generator cannot know")]
     [InlineData(@"(Order order, OrderService service) => 1", "the generator cannot tell which of 'order' and 'service' it reads from the body and which are services: mark the services [FromServices], or the body [FromBody]")]

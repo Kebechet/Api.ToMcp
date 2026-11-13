@@ -414,8 +414,9 @@ namespace Api.ToMcp.Generator.Models
         /// The name MVC binds the parameter under, or null when it binds it under its own: the name the first of its
         /// attributes, then of its type's, implementing <c>IModelNameProvider</c> gives, such as <c>[FromQuery(Name = "q")]</c>,
         /// <c>[FromRoute(Name = "productId")]</c>, <c>[ModelBinder(Name = "q")]</c> or <c>[Bind(Prefix = "f")]</c>. It is the
-        /// query key, the route value the parameter fills and the prefix of its properties; the tool's argument keeps the
-        /// parameter's own name. Of a Minimal API endpoint, the <c>Name</c> of its <c>[FromQuery]</c> or <c>[FromRoute]</c>.
+        /// query key, the header, the form key, the route value the parameter fills and the prefix of its properties; the
+        /// tool's argument keeps the parameter's own name. Of a Minimal API endpoint, the <c>Name</c> of its <c>[FromQuery]</c>
+        /// or <c>[FromRoute]</c>, and the header of its <c>[FromHeader]</c>.
         /// </summary>
         public string? ModelName { get; init; }
     }

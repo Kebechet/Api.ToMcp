@@ -107,6 +107,9 @@ namespace TestApi
             app.MapGet(""/special/{id}"", (HttpContext context, HttpRequest request, CancellationToken ct, ClaimsPrincipal user, int id) => new { id, path = request.Path.Value })
                 .WithName(""Special"");
             app.MapGet(""/header"", ([FromHeader(Name = ""X-Tenant"")] string? tenant) => new { tenant }).WithName(""OptionalHeader"");
+            app.MapGet(""/required-header"", ([FromHeader(Name = ""X-Code"")] EchoCode code, [FromHeader] EchoStatus status) => new { code = code.Value, status })
+                .WithName(""RequiredHeader"");
+            app.MapGet(""/array-header"", ([FromHeader(Name = ""X-Ids"")] int[]? ids) => new { ids }).WithName(""ArrayHeader"");
             app.MapGet(""/tags"", (string[] tags, int[] ids) => new { tags, ids }).WithName(""Tags"");
             app.MapGet(""/typed/{date}"", (DateOnly date, Guid id, EchoStatus status, EchoCode code) => new { date, id, status, code = code.Value })
                 .WithName(""Typed"");
@@ -169,6 +172,9 @@ namespace TestApi
     [InlineData("EchoEndpoints_RouteAndQueryTool", @"{""q"":1,""orderId"":2}", @"{""q"":1,""orderId"":2}")]
     [InlineData("EchoEndpoints_SpecialTool", @"{""id"":7}", @"{""id"":7,""path"":""/special/7""}")]
     [InlineData("EchoEndpoints_OptionalHeaderTool", @"{}", @"{""tenant"":null}")]
+    [InlineData("EchoEndpoints_OptionalHeaderTool", @"{""tenant"":""t 1, t2""}", @"{""tenant"":""t 1, t2""}")]
+    [InlineData("EchoEndpoints_RequiredHeaderTool", @"{""code"":{""value"":""A-7""},""status"":2}", @"{""code"":""A-7"",""status"":2}")]
+    [InlineData("EchoEndpoints_ArrayHeaderTool", @"{}", @"{""ids"":[]}")]
     [InlineData("EchoEndpoints_TagsTool", @"{""tags"":[""a"",""b c""],""ids"":[1,2]}", @"{""tags"":[""a"",""b c""],""ids"":[1,2]}")]
     [InlineData("EchoEndpoints_TypedTool", @"{""date"":""2026-09-28"",""id"":""" + OrderGuid + @""",""status"":2,""code"":{""value"":""A-7""}}", @"{""date"":""2026-09-28"",""id"":""" + OrderGuid + @""",""status"":2,""code"":""A-7""}")]
     [InlineData("EchoEndpoints_OptionalRouteTool", @"{""id"":5}", @"{""id"":5,""path"":""/optional/5""}")]
@@ -204,7 +210,9 @@ namespace TestApi
 
     [Theory]
     [InlineData("EchoEndpoints_SpecialTool", new[] { "id" })]
-    [InlineData("EchoEndpoints_OptionalHeaderTool", new string[0])]
+    [InlineData("EchoEndpoints_OptionalHeaderTool", new[] { "tenant" })]
+    [InlineData("EchoEndpoints_RequiredHeaderTool", new[] { "code", "status" })]
+    [InlineData("EchoEndpoints_ArrayHeaderTool", new string[0])]
     [InlineData("EchoEndpoints_GetServicesTool", new[] { "take" })]
     [InlineData("EchoEndpoints_BodyAndServicesTool", new[] { "dto" })]
     [InlineData("EchoEndpoints_AsRecordTool", new[] { "Id", "Page" })]
@@ -219,7 +227,7 @@ namespace TestApi
     [Fact]
     public void EveryGeneratedTool_IsRegisteredByAddMcpTools()
     {
-        Assert.Equal(29, _host.ToolClassNames.Count);
+        Assert.Equal(31, _host.ToolClassNames.Count);
         Assert.Equal(_host.ToolClassNames.Count, _host.Tools.Count);
         Assert.False(_host.GetToolType("EchoEndpoints_InternalTool").IsPublic);
     }
@@ -340,7 +348,7 @@ namespace TestApi
         }
     }
 
-    private sealed class RecordingInvoker(HttpClient client) : IMcpHttpInvoker
+    private sealed class RecordingInvoker(HttpClient client) : IMcpHttpRequestInvoker
     {
         public (int StatusCode, string Body)? LastResponse { get; private set; }
 
@@ -353,12 +361,22 @@ namespace TestApi
         public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default) => SendAsync(HttpMethod.Delete, route, null, ct);
         public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
 
-        private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct)
+        public Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
+        {
+            return SendAsync(request.Method, request.Route, request.JsonBody, ct, request.Headers);
+        }
+
+        private async Task<CallToolResult> SendAsync(HttpMethod method, string route, string? jsonBody, CancellationToken ct, IReadOnlyList<KeyValuePair<string, string>>? headers = null)
         {
             using var request = new HttpRequestMessage(method, route);
             if (jsonBody is not null)
             {
                 request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
+            }
+
+            foreach (var (name, value) in headers ?? [])
+            {
+                Assert.True(request.Headers.TryAddWithoutValidation(name, value), name);
             }
 
             using var response = await client.SendAsync(request, ct);

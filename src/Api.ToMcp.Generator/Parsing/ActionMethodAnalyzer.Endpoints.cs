@@ -109,7 +109,7 @@ namespace Api.ToMcp.Generator.Parsing
         private enum EndpointBinding
         {
             /// <summary>
-            /// Not an input of the tool: a service, the request itself, or an optional header.
+            /// Not an input of the tool: a service, the request itself, or an optional header the tool cannot send.
             /// </summary>
             None,
 
@@ -121,6 +121,7 @@ namespace Api.ToMcp.Generator.Parsing
             Route,
             Query,
             Body,
+            Header,
 
             /// <summary>
             /// A complex parameter without an attribute on an endpoint that infers a body: the body, unless the app
@@ -693,7 +694,8 @@ namespace Api.ToMcp.Generator.Parsing
         /// <summary>
         /// Where a Minimal API binds an input from (<c>RequestDelegateFactory.CreateArgument</c>), in its order: a binding
         /// attribute, a type it fills itself, a <c>BindAsync</c>, a type it parses from one string, an array of those on an
-        /// endpoint without a body, and otherwise a service or the body.
+        /// endpoint without a body, and otherwise a service or the body, with the query key, route value or header a binding
+        /// attribute's <c>Name</c> gives.
         /// </summary>
         private static (EndpointBinding Binding, string? ModelName, string? Problem) GetEndpointBinding(EndpointInput input, bool isBodyInferred)
         {
@@ -706,11 +708,22 @@ namespace Api.ToMcp.Generator.Parsing
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromQueryMetadata)))
                 return (EndpointBinding.Query, GetMetadataName(attributes, MinimalApiNames.FromQueryMetadata), null);
 
-            // The tool sends no headers. An optional one the endpoint does without; a required one it refuses with 400.
+            // A Minimal API reads an array from a header one value per header line, which HttpClient joins into one, so the
+            // tool sends only a value parsed from one string. An optional array the endpoint does without; a required one it
+            // refuses with 400.
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromHeaderMetadata)))
-                return input.IsOptional
-                    ? (EndpointBinding.None, null, null)
-                    : (EndpointBinding.None, null, $"it reads '{input.Name}' from a header, which a tool does not send");
+            {
+                if (!SimpleTypeClassifier.IsParsable(type))
+                    return input.IsOptional
+                        ? (EndpointBinding.None, null, null)
+                        : (EndpointBinding.None, null, $"it reads '{input.Name}' from a header as {type.ToDisplayString()}, which a tool does not send");
+
+                var headerName = GetMetadataName(attributes, MinimalApiNames.FromHeaderMetadata) ?? input.Name;
+                var headerProblem = GetHeaderProblem(headerName);
+                return headerProblem is null
+                    ? (EndpointBinding.Header, headerName, null)
+                    : (EndpointBinding.None, null, $"it reads '{input.Name}' from the request header '{headerName}', {headerProblem}");
+            }
 
             if (attributes.Any(x => Implements(x, MinimalApiNames.FromBodyMetadata)))
                 return (EndpointBinding.Body, null, null);
@@ -760,6 +773,8 @@ namespace Api.ToMcp.Generator.Parsing
                     return ParameterSourceModel.Query;
                 case EndpointBinding.Body:
                     return ParameterSourceModel.Body;
+                case EndpointBinding.Header:
+                    return ParameterSourceModel.Header;
                 default:
                     // A value parsed from one string goes where MVC's inference sends a simple type: the route value of
                     // its name, else the query string, which is where a Minimal API reads it from too.
