@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -90,22 +91,22 @@ namespace Api.ToMcp.Generator.Parsing
         /// </summary>
         public static EquatableArray<string> GetBodiesNeverEmpty(EquatableArray<string> methodIds, Compilation compilation, CancellationToken ct)
         {
-            // One semantic model per file, which the actions declared in it share, kept only for this analysis.
-            var semanticModels = new Dictionary<SyntaxTree, SemanticModel>();
+            // One semantic model per file, which the actions declared in it share, kept only for this analysis. Each body is
+            // bound on its own, so they are analyzed in parallel: with many tools, this is most of a run after an edit.
+            var semanticModels = new ConcurrentDictionary<SyntaxTree, SemanticModel>();
+            var canBeEmpty = new bool[methodIds.Length];
+            Parallel.For(0, methodIds.Length, new ParallelOptions { CancellationToken = ct }, i =>
+                canBeEmpty[i] = CanBodySucceedWithoutBody(methodIds[i], compilation, semanticModels, ct));
 
-            return methodIds
-                .Where(x => !CanBodySucceedWithoutBody(x, compilation, semanticModels, ct))
-                .ToImmutableArray();
+            return methodIds.Where((_, i) => !canBeEmpty[i]).ToImmutableArray();
         }
 
         private static bool CanBodySucceedWithoutBody(
             string methodId,
             Compilation compilation,
-            Dictionary<SyntaxTree, SemanticModel> semanticModels,
+            ConcurrentDictionary<SyntaxTree, SemanticModel> semanticModels,
             CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();
-
             var methods = DocumentationCommentId.GetSymbolsForDeclarationId(methodId, compilation);
             var method = methods.Length == 1 ? methods[0] as IMethodSymbol : null;
             if (method is null)
@@ -115,11 +116,7 @@ namespace Api.ToMcp.Generator.Parsing
             if (declaration == null)
                 return true;
 
-            if (!semanticModels.TryGetValue(declaration.SyntaxTree, out var semanticModel))
-            {
-                semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
-                semanticModels.Add(declaration.SyntaxTree, semanticModel);
-            }
+            var semanticModel = semanticModels.GetOrAdd(declaration.SyntaxTree, x => compilation.GetSemanticModel(x));
 
             return GetReturnedExpressions(declaration)
                 .SelectMany(x => GetPossibleResults(x, semanticModel, ct))
