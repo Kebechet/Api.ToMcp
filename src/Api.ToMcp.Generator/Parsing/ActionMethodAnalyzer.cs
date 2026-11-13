@@ -115,6 +115,7 @@ namespace Api.ToMcp.Generator.Parsing
                     (IsAbsoluteTemplate(httpInfo.Value.Template) ? null : routePrefixProblem);
 
                 var (parameters, parameterProblem) = AnalyzeParameters(method, httpInfo.Value.Method, isApiController, compilation, ct);
+                parameterProblem ??= GetFormProblem(method, controller, parameters, httpInfo.Value.Method);
                 var returnType = AnalyzeReturnType(method);
                 var responseType = ResponseTypeResolver.Resolve(method, controller, compilation);
 
@@ -523,6 +524,97 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
+        /// Why the action refuses every form a tool sends, as a clause of MCP009's message, or null when it takes one: its
+        /// <c>[Consumes]</c> takes no <c>application/x-www-form-urlencoded</c>, so MVC answers 415, or it checks an
+        /// antiforgery token, which a tool's request does not carry, so MVC answers 400. The attribute nearest the action
+        /// counts, its own before its controller's, as MVC applies them. A global filter the generator cannot see.
+        /// </summary>
+        private static string? GetFormProblem(IMethodSymbol method, INamedTypeSymbol controller, ImmutableArray<ParameterInfoModel> parameters, string httpMethod)
+        {
+            var formField = parameters.FirstOrDefault(x => x.Source == ParameterSourceModel.Form);
+            if (formField is null)
+            {
+                return null;
+            }
+
+            var consumes = FindNearestAttribute(method, x => x.OverriddenMethod, IsConsumesAttribute) ??
+                FindNearestAttribute(controller, x => x.BaseType, IsConsumesAttribute);
+            if (consumes is not null && !GetConsumedContentTypes(consumes).Any(AcceptsUrlEncodedForm))
+            {
+                return $"it reads '{formField.Name}' from a form, which its [{RouteAttributeReader.GetDisplayName(consumes.AttributeClass!)}] does not accept: a tool sends {FormContentTypes.UrlEncoded}";
+            }
+
+            var antiforgery = FindNearestAttribute(method, x => x.OverriddenMethod, IsAntiforgeryAttribute) ??
+                FindNearestAttribute(controller, x => x.BaseType, IsAntiforgeryAttribute);
+
+            return antiforgery is not null && ChecksAntiforgeryToken(antiforgery, httpMethod)
+                ? $"it reads '{formField.Name}' from a form, and its [{RouteAttributeReader.GetDisplayName(antiforgery.AttributeClass!)}] checks an antiforgery token, which a tool's request does not carry"
+                : null;
+        }
+
+        private static bool IsConsumesAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass is not null && ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, KnownTypeNames.Consumes);
+        }
+
+        /// <summary>
+        /// The content types a <c>[Consumes]</c> names: every string among its constructor arguments, its <c>params</c> array
+        /// included.
+        /// </summary>
+        private static IEnumerable<string> GetConsumedContentTypes(AttributeData consumes)
+        {
+            return consumes.ConstructorArguments
+                .SelectMany(x => x.Kind == TypedConstantKind.Array ? x.Values : ImmutableArray.Create(x))
+                .Select(x => x.Value as string)
+                .Where(x => x is not null)
+                .Select(x => x!);
+        }
+
+        private static bool AcceptsUrlEncodedForm(string contentType)
+        {
+            var mediaType = contentType.Split(FormContentTypes.ParameterSeparator)[0].Trim();
+
+            return string.Equals(mediaType, FormContentTypes.UrlEncoded, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(mediaType, FormContentTypes.AnyApplication, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(mediaType, FormContentTypes.Any, StringComparison.Ordinal);
+        }
+
+        private static bool IsAntiforgeryAttribute(AttributeData attribute)
+        {
+            return attribute.AttributeClass is not null &&
+                (ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, KnownTypeNames.ValidateAntiForgeryToken) ||
+                    ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, KnownTypeNames.AutoValidateAntiforgeryToken) ||
+                    ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, KnownTypeNames.IgnoreAntiforgeryToken) ||
+                    ResponseTypeResolver.IsOrImplements(attribute.AttributeClass, KnownTypeNames.RequireAntiforgeryToken));
+        }
+
+        /// <summary>
+        /// Whether the antiforgery attribute makes MVC check a token: <c>[ValidateAntiForgeryToken]</c> always,
+        /// <c>[AutoValidateAntiforgeryToken]</c> for every method a tool sends but GET, and <c>[RequireAntiforgeryToken]</c>
+        /// unless its argument is false; <c>[IgnoreAntiforgeryToken]</c> never.
+        /// </summary>
+        private static bool ChecksAntiforgeryToken(AttributeData antiforgery, string httpMethod)
+        {
+            var attributeClass = antiforgery.AttributeClass!;
+            if (ResponseTypeResolver.IsOrImplements(attributeClass, KnownTypeNames.IgnoreAntiforgeryToken))
+            {
+                return false;
+            }
+
+            if (ResponseTypeResolver.IsOrImplements(attributeClass, KnownTypeNames.AutoValidateAntiforgeryToken))
+            {
+                return httpMethod != HttpMethodNames.Get;
+            }
+
+            if (ResponseTypeResolver.IsOrImplements(attributeClass, KnownTypeNames.RequireAntiforgeryToken))
+            {
+                return antiforgery.ConstructorArguments.FirstOrDefault().Value is not false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// Whether MVC refuses a request without a value for the parameter: one with <c>[BindRequired]</c> or
         /// <c>[Required]</c>, or of a reference type that is not nullable, for which it adds <c>[Required]</c> itself.
         /// </summary>
@@ -545,13 +637,15 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// Why a tool cannot send the parameter, as a clause of MCP009's message, or null when it can: a form file, which
-        /// the tool's form cannot carry; or a header of a type MVC reads from no header value
+        /// the tool's form cannot carry, or a type holding one that MVC reads from the form or the value providers rather
+        /// than from the JSON body, where it never fills a file; or a header of a type MVC reads from no header value
         /// (<c>HeaderModelBinderProvider</c> takes a simple type or a collection of one), or whose name HTTP does not allow.
         /// </summary>
         private static string? GetParameterProblem(IParameterSymbol parameter, ParameterSourceModel source, string headerName, Compilation compilation)
         {
+            // MVC binds a form file type from the form's files whatever [ApiController] infers for a complex type.
             var formFilePath = FormFilePaths.GetOrAdd(compilation, parameter.Type, x => FindFormFile(x, compilation, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default)));
-            if (formFilePath is not null)
+            if (formFilePath is not null && (formFilePath.Length == 0 || source != ParameterSourceModel.Body))
             {
                 return formFilePath.Length == 0
                     ? $"its parameter '{parameter.Name}' is a form file, which a tool cannot send"

@@ -224,7 +224,7 @@ public partial class McpToolGeneratorTests
     [InlineData("List<Microsoft.AspNetCore.Http.IFormFile> files", "its parameter 'files' is a form file, which a tool cannot send")]
     [InlineData("FileQuery q", "its parameter 'q' holds a form file in its property 'Attachment', which a tool cannot send")]
     [InlineData("[FromForm] FileListQuery q", "its parameter 'q' holds a form file in its property 'Attachments', which a tool cannot send")]
-    [InlineData("[FromBody] FileOrder order", "its parameter 'order' holds a form file in its property 'Lines.Attachment', which a tool cannot send")]
+    [InlineData("[FromForm] FileOrder order", "its parameter 'order' holds a form file in its property 'Lines.Attachment', which a tool cannot send")]
     [InlineData("[FromBody] ProductFilter filter, [FromForm] string name", "it reads 'filter' from a JSON body and 'name' from a form, which one request cannot carry")]
     public void Generator_GivesNoTool_ToAnActionWhoseRequestAToolCannotSend(string parameters, string reason)
     {
@@ -249,6 +249,55 @@ namespace TestApi
 
         Assert.Equal($"No MCP tool is generated for action 'OrdersController.Find': {reason}", warning.GetMessage());
         Assert.DoesNotContain(SimpleTypeToolClassName, generated);
+    }
+
+    [Theory]
+    [InlineData("[FromBody] FileQuery q")]
+    [InlineData("FileOrderBox q")]
+    public void Generator_GivesATool_ToAnActionWhoseJsonBodyHoldsAFormFile(string parameter)
+    {
+        // MVC reads the body from JSON and never reads a file into it, so the tool sends the other properties. An
+        // [ApiController] infers the body for a type no property of which names a binding source of its own.
+        var tool = GenerateCompilingSimpleTypeTool($"[HttpPost(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
+
+        Assert.Contains("var bodyJson = JsonSerializer.Serialize(q);", tool);
+    }
+
+    [Theory]
+    [InlineData("[Consumes(\"multipart/form-data\")]", "", "it reads 'name' from a form, which its [Consumes] does not accept: a tool sends application/x-www-form-urlencoded")]
+    [InlineData("", "[Consumes(\"application/json\", \"text/plain\")]", "it reads 'name' from a form, which its [Consumes] does not accept: a tool sends application/x-www-form-urlencoded")]
+    [InlineData("[ValidateAntiForgeryToken]", "", "it reads 'name' from a form, and its [ValidateAntiForgeryToken] checks an antiforgery token, which a tool's request does not carry")]
+    [InlineData("", "[AutoValidateAntiforgeryToken]", "it reads 'name' from a form, and its [AutoValidateAntiforgeryToken] checks an antiforgery token, which a tool's request does not carry")]
+    [InlineData("[Microsoft.AspNetCore.Antiforgery.RequireAntiforgeryToken]", "", "it reads 'name' from a form, and its [RequireAntiforgeryToken] checks an antiforgery token, which a tool's request does not carry")]
+    public void Generator_GivesNoTool_ToAFormActionThatRefusesTheToolsForm(string actionAttribute, string controllerAttribute, string reason)
+    {
+        var source = SimpleTypeSources.Usings + SimpleTypeSources.Types + $@"
+namespace TestApi
+{{
+    {controllerAttribute} {ApiControllerDeclaration}
+    {{
+        {actionAttribute} [HttpPost(""x"")] public Task<string> Find([FromForm] string name) => Task.FromResult(string.Empty);
+    }}
+}}
+";
+        var warning = Assert.Single(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UnbuildableRouteId);
+
+        Assert.Equal($"No MCP tool is generated for action 'OrdersController.Find': {reason}", warning.GetMessage());
+    }
+
+    [Theory]
+    [InlineData("[Consumes(\"application/x-www-form-urlencoded\", \"multipart/form-data\")]", "", "HttpPost")]
+    [InlineData("[Consumes(\"application/*\")]", "[Consumes(\"multipart/form-data\")]", "HttpPost")]
+    [InlineData("[IgnoreAntiforgeryToken]", "[ValidateAntiForgeryToken]", "HttpPost")]
+    [InlineData("", "[AutoValidateAntiforgeryToken]", "HttpGet")]
+    [InlineData("[Microsoft.AspNetCore.Antiforgery.RequireAntiforgeryToken(false)]", "", "HttpPost")]
+    public void Generator_GivesATool_ToAFormActionThatTakesTheToolsForm(string actionAttribute, string controllerAttribute, string httpAttribute)
+    {
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"{actionAttribute} [{httpAttribute}(\"x\")] public Task<string> Find([FromForm] string name) => Task.FromResult(string.Empty);",
+            $"{controllerAttribute} {ApiControllerDeclaration}");
+
+        Assert.Contains($"{Formatter}.AddFormValue(formParts, \"name\", name);", tool);
     }
 
     [Fact]

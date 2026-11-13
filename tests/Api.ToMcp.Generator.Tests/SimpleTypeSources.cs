@@ -418,6 +418,14 @@ namespace TestApi
         public string? City { get; set; }
     }
 
+    // No property names a binding source of its own, so [ApiController] reads it from the JSON body, files and all.
+    public sealed class FileOrderBox
+    {
+        public FileQuery? Inner { get; set; }
+
+        public string? Note { get; set; }
+    }
+
     public sealed class KeywordQuery
     {
         [FromRoute]
