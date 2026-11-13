@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 using Api.ToMcp.Generator.Diagnostics;
 using Api.ToMcp.Generator.Emitting;
@@ -21,16 +23,28 @@ namespace Api.ToMcp.Generator
         private const string GeneratedSourceSuffix = ".g.cs";
         private const string RegistrationSourceName = "McpToolsRegistration";
 
+        /// <summary>
+        /// The full path of ApiToMcpConfigPath, which the build targets make a compiler-visible property.
+        /// </summary>
+        private const string ConfigPathBuildProperty = "build_property._McpConfigFullPath";
+
         private const char EntryActionSeparator = ConventionNames.EntryActionSeparator;
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            // Step 1: Read generator.json configuration
+            // Step 1: Read the config: the additional file at the path the build targets pass from ApiToMcpConfigPath,
+            // whatever its name, else the first whose name ends in generator.json, as a project without the targets, or
+            // with no file at that path, lists its config by hand.
+            var configPathProvider = context.AnalyzerConfigOptionsProvider
+                .Select((options, _) => GetConfigPath(options.GlobalOptions));
+
             var configProvider = context.AdditionalTextsProvider
-                .Where(file => file.Path.EndsWith(ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase))
-                .Select((file, ct) => ConfigParser.Parse(file.GetText(ct)?.ToString()) with { FilePath = file.Path })
+                .Combine(configPathProvider)
+                .Select((source, _) => (File: source.Left, IsAtConfigPath: IsAtConfigPath(source.Left.Path, source.Right)))
+                .Where(x => x.IsAtConfigPath || x.File.Path.EndsWith(ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase))
+                .Select((x, ct) => (x.IsAtConfigPath, Config: ConfigParser.Parse(x.File.GetText(ct)?.ToString()) with { FilePath = x.File.Path }))
                 .Collect()
-                .Select((configs, _) => configs.FirstOrDefault() ?? new GeneratorConfigModel())
+                .Select((configs, _) => SelectConfig(configs))
                 .WithTrackingName(TrackingNames.Config);
 
             // Step 2: Find all controller classes
@@ -89,6 +103,53 @@ namespace Api.ToMcp.Generator
                     ctx.ReportDiagnostic(diagnostic.ToDiagnostic(compilation));
                 }
             });
+        }
+
+        /// <summary>
+        /// The full path of the config the build targets pass from ApiToMcpConfigPath, or null when the project does not
+        /// import them.
+        /// </summary>
+        private static string? GetConfigPath(AnalyzerConfigOptions options)
+        {
+            return options.TryGetValue(ConfigPathBuildProperty, out var configPath) && !string.IsNullOrWhiteSpace(configPath)
+                ? NormalizePath(configPath)
+                : null;
+        }
+
+        /// <summary>
+        /// Whether the additional file is the configured one. The case of the paths does not count, as it does not for
+        /// MSBuild, which hands the generator a config whose path differs from the configured one only in case on a
+        /// case-sensitive file system (MCP101).
+        /// </summary>
+        private static bool IsAtConfigPath(string filePath, string? configPath)
+        {
+            return configPath is not null && string.Equals(NormalizePath(filePath), configPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The path written one way, as the build and the IDE write the same path differently: with <c>/</c> or <c>\</c>,
+        /// or with a <c>..</c> segment from a relative item. A path the platform rejects stays as it is.
+        /// </summary>
+        private static string NormalizePath(string path)
+        {
+            try
+            {
+                return Path.GetFullPath(path);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return path;
+            }
+        }
+
+        /// <summary>
+        /// The config at the configured path, else the first whose name ends in generator.json, else the default config.
+        /// </summary>
+        private static GeneratorConfigModel SelectConfig(ImmutableArray<(bool IsAtConfigPath, GeneratorConfigModel Config)> configs)
+        {
+            var configured = configs.Where(x => x.IsAtConfigPath).Select(x => x.Config).FirstOrDefault();
+
+            return configured ?? configs.Select(x => x.Config).FirstOrDefault() ?? new GeneratorConfigModel();
         }
 
         /// <summary>

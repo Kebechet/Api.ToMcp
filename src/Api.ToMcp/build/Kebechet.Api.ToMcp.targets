@@ -5,7 +5,15 @@
     <ApiToMcpAutoCreateConfig Condition="'$(ApiToMcpAutoCreateConfig)' == ''">true</ApiToMcpAutoCreateConfig>
     <ApiToMcpConfigPath Condition="'$(ApiToMcpConfigPath)' == ''">$(MSBuildProjectDirectory)\Mcp\generator.json</ApiToMcpConfigPath>
     <ApiToMcpConfigDirectory>$([System.IO.Path]::GetDirectoryName('$(ApiToMcpConfigPath)'))</ApiToMcpConfigDirectory>
+    <_McpConfigFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(ApiToMcpConfigPath)'))</_McpConfigFullPath>
   </PropertyGroup>
+
+  <!-- The generator reads its config from the AdditionalFiles item at this path, whatever the file is named. Set at
+       evaluation: the compiler-visible properties are written out before the targets below run.
+       See https://github.com/Kebechet/Api.ToMcp/issues/55 -->
+  <ItemGroup>
+    <CompilerVisibleProperty Include="_McpConfigFullPath" />
+  </ItemGroup>
 
   <!-- On a case-sensitive file system the config can sit at a path that differs only in case, such as mcp/ for the
        default Mcp/, and Exists() misses it. Conditions compare case-insensitively, so this finds it, if the difference
@@ -18,7 +26,6 @@
           Condition="!Exists('$(ApiToMcpConfigPath)')">
 
     <PropertyGroup>
-      <_McpConfigFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(ApiToMcpConfigPath)'))</_McpConfigFullPath>
       <_McpConfigSearchDirectory>$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetDirectoryName('$(_McpConfigFullPath)'))))</_McpConfigSearchDirectory>
     </PropertyGroup>
 
@@ -76,9 +83,11 @@
           AfterTargets="CreateMcpGeneratorConfig"
           Condition="Exists('$(ApiToMcpConfigPath)') OR '@(_McpCaseVariantConfig)' != ''">
 
+    <!-- An item is the config by its path, not by a name ending in generator.json: the config may be named otherwise,
+         and another file, such as openapi-generator.json, may end so. See https://github.com/Kebechet/Api.ToMcp/issues/55 -->
     <ItemGroup>
       <_ExistingMcpConfig Include="@(AdditionalFiles)"
-                          Condition="$([System.String]::new('%(Identity)').EndsWith('generator.json'))" />
+                          Condition="'%(FullPath)' == '$(_McpConfigFullPath)'" />
     </ItemGroup>
 
     <!-- A config listed by hand at the configured path names no file when only its case variant exists; left in, it

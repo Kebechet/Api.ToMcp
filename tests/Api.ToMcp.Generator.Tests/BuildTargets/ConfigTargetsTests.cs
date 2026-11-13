@@ -20,6 +20,14 @@ public sealed class ConfigTargetsTests : IDisposable
     private const string PackageTargetsFileName = "Kebechet.Api.ToMcp.targets";
     private const string GeneratorTargetsFileName = "Api.ToMcp.Generator.targets";
     private const string AdditionalFileMarker = "AdditionalFile=";
+    private const string CompilerVisiblePropertyMarker = "CompilerVisibleProperty=";
+
+    /// <summary>
+    /// The property the generator reads the configured path from, as <c>build_property._McpConfigFullPath</c>.
+    /// </summary>
+    private const string ConfigPathProperty = "_McpConfigFullPath";
+
+    private const string UnrelatedGeneratorJsonItem = @"<AdditionalFiles Include=""openapi-generator.json"" />";
     private const string Config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""ProductsController""] }";
 
     private readonly string _projectDirectory = Path.Combine(Path.GetTempPath(), "ApiToMcp.TargetsTests", Guid.NewGuid().ToString("N"));
@@ -91,6 +99,65 @@ public sealed class ConfigTargetsTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Build_RegistersTheConfigAtTheConfiguredPath_WhateverItsName(bool isAbsolute)
+    {
+        // The configured file used to be left out while another item's name ended in generator.json.
+        var configPath = WriteConfig("Config", "mcp-tools.json");
+        var unrelatedPath = Path.Combine(_projectDirectory, "openapi-generator.json");
+        File.WriteAllText(unrelatedPath, "{}");
+        var configuredPath = isAbsolute ? configPath : "Config/mcp-tools.json";
+
+        var result = Build($"ApiToMcpConfigPath={configuredPath}", UnrelatedGeneratorJsonItem);
+
+        Assert.Equal(new[] { unrelatedPath, configPath }, result.AdditionalFiles);
+        Assert.Equal(configPath, result.GetCompilerVisibleProperty(ConfigPathProperty));
+        Assert.Null(result.GetWarning("MCP100"));
+        Assert.False(Directory.Exists(Path.Combine(_projectDirectory, "Mcp")), result.Output);
+    }
+
+    [Fact]
+    public void Build_GivesTheGeneratorAConfigOfAnotherNameInALowerCaseFolder()
+    {
+        // The generator takes the variant as the configured file, as their paths differ only in case.
+        var configPath = WriteConfig("config", "mcp-tools.json");
+
+        var result = Build("ApiToMcpConfigPath=Config/mcp-tools.json");
+
+        var additionalFile = Assert.Single(result.AdditionalFiles);
+        Assert.Equal(configPath, additionalFile, ignoreCase: true);
+        Assert.True(File.Exists(additionalFile), $"The generator gets {additionalFile}, which does not exist.{Environment.NewLine}{result.Output}");
+        Assert.Equal(Path.Combine(_projectDirectory, "Config", "mcp-tools.json"), result.GetCompilerVisibleProperty(ConfigPathProperty));
+        Assert.Null(result.GetWarning("MCP100"));
+        if (_isCaseSensitive)
+        {
+            Assert.StartsWith($"{configPath} : warning MCP101: ", result.GetWarning("MCP101"));
+        }
+    }
+
+    [Fact]
+    public void Build_PassesTheGeneratorTheDefaultConfigPath_WhenThePropertyIsNotSet()
+    {
+        var configPath = WriteConfig("Mcp");
+
+        var result = Build();
+
+        Assert.Equal(new[] { configPath }, result.AdditionalFiles);
+        Assert.Equal(configPath, result.GetCompilerVisibleProperty(ConfigPathProperty));
+    }
+
+    [Fact]
+    public void Build_RegistersTheConfigOnce_WhenTheProjectListsItByHand()
+    {
+        var configPath = WriteConfig("Mcp");
+
+        var result = Build(items: @"<AdditionalFiles Include=""Mcp\generator.json"" />");
+
+        Assert.Equal(new[] { configPath }, result.AdditionalFiles);
+    }
+
     [Fact]
     public void Build_WritesAStarterConfig_BesideAnUnrelatedGeneratorJson()
     {
@@ -122,10 +189,20 @@ public sealed class ConfigTargetsTests : IDisposable
     private BuildResult Build(string? properties = null, string? items = null)
     {
         var projectPath = Path.Combine(_projectDirectory, "Fixture.proj");
+        // The fake GenerateMSBuildEditorConfigFile reads the compiler-visible properties as the SDK's does, before the
+        // targets that run before CoreCompile: a property those targets set comes too late for the generator.
         File.WriteAllText(projectPath, $@"<Project>
   <ItemGroup>{items}</ItemGroup>
   <Import Project=""{GetTargetsPath(PackageTargetsFileName)}"" />
-  <Target Name=""CoreCompile"">
+  <Target Name=""GenerateMSBuildEditorConfigFile"">
+    <ItemGroup>
+      <_VisibleProperty Include=""@(CompilerVisibleProperty)"">
+        <Value>$(%(CompilerVisibleProperty.Identity))</Value>
+      </_VisibleProperty>
+    </ItemGroup>
+    <Message Importance=""high"" Text=""{CompilerVisiblePropertyMarker}%(_VisibleProperty.Identity)=%(_VisibleProperty.Value)"" Condition=""'@(_VisibleProperty)' != ''"" />
+  </Target>
+  <Target Name=""CoreCompile"" DependsOnTargets=""GenerateMSBuildEditorConfigFile"">
     <Message Importance=""high"" Text=""{AdditionalFileMarker}%(AdditionalFiles.FullPath)"" Condition=""'@(AdditionalFiles)' != ''"" />
   </Target>
 </Project>");
@@ -164,9 +241,9 @@ public sealed class ConfigTargetsTests : IDisposable
         return new BuildResult(output);
     }
 
-    private string WriteConfig(string folderName)
+    private string WriteConfig(string folderName, string fileName = "generator.json")
     {
-        var configPath = Path.Combine(_projectDirectory, folderName, "generator.json");
+        var configPath = Path.Combine(_projectDirectory, folderName, fileName);
         Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
         File.WriteAllText(configPath, Config);
 
@@ -239,6 +316,13 @@ public sealed class ConfigTargetsTests : IDisposable
             .Where(x => x.StartsWith(AdditionalFileMarker, StringComparison.Ordinal))
             .Select(x => x.Substring(AdditionalFileMarker.Length))
             .ToList();
+
+        public string? GetCompilerVisibleProperty(string name)
+        {
+            var prefix = $"{CompilerVisiblePropertyMarker}{name}=";
+
+            return _lines.Where(x => x.StartsWith(prefix, StringComparison.Ordinal)).Select(x => x.Substring(prefix.Length)).FirstOrDefault();
+        }
 
         public string? GetWarning(string code)
         {
