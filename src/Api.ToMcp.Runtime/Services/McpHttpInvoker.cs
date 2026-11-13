@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Mime;
 using System.Text;
@@ -8,8 +9,10 @@ using Api.ToMcp.Runtime.Options;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using HeaderNames = Microsoft.Net.Http.Headers.HeaderNames;
 
 namespace Api.ToMcp.Runtime.Services;
 
@@ -95,7 +98,9 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     /// <summary>
     /// Sends the request as the other methods do, with its headers next to the invoker's own and its JSON body or form.
     /// A request with a header that the app's middleware trusts from its proxy, under a name the app configured for
-    /// <c>UseForwardedHeaders</c> or <c>UseCertificateForwarding</c>, gets an error result instead, and is not sent.
+    /// <c>UseForwardedHeaders</c> or <c>UseCertificateForwarding</c>, gets an error result instead, and is not sent. When
+    /// the MCP request ran <c>UseRequestLocalization</c>, a request with a form names the culture it is written in, as
+    /// <see cref="McpHttpRequest.FormCulture"/> says.
     /// </summary>
     /// <exception cref="ArgumentException">
     /// The request has a JSON body and a form, or a header the invoker sets itself, a content header such as
@@ -112,6 +117,19 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         }
 
         var caller = _httpContextAccessor.HttpContext;
+
+        // Without UseRequestLocalization, the tool writes the form and the app reads it in the server's culture, whatever
+        // the request names.
+        var mcpRequestCulture = caller?.Features.Get<IRequestCultureFeature>();
+        if (request.FormBody is not null && request.FormCulture is not null && mcpRequestCulture is not null)
+        {
+            var cultureRefusal = request.RefuseAnotherCulture(request.FormCulture);
+            if (cultureRefusal is not null)
+            {
+                return ToResult(cultureRefusal, isError: true);
+            }
+        }
+
         var inProcessPipeline = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured
             ? _inProcessPipeline
             : null;
@@ -127,6 +145,11 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         }
 
         AddHeaders(message, request.Headers);
+        if (request.FormBody is not null && mcpRequestCulture is not null)
+        {
+            NameTheCulture(message, request.FormCulture ?? mcpRequestCulture.RequestCulture.Culture);
+        }
+
         message.Content = CreateContent(request);
 
         _logger.LogDebug("MCP invoking {Method} {Url}", request.Method.Method, url);
@@ -176,6 +199,20 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
             {
                 throw new ArgumentException($"'{name}' is no header the tool's request can carry: it describes the body, or is no valid header name.", nameof(headers));
             }
+        }
+    }
+
+    /// <summary>
+    /// Asks the app, through <c>Accept-Language</c>, to read the form in the culture it is written in, the MCP request's,
+    /// as it picked that culture for the MCP request, unless the request names a culture itself or the culture is the
+    /// invariant one, which no header names. Every request with a form gets it, so a form tool's request runs in the MCP
+    /// request's culture whatever the values of its form.
+    /// </summary>
+    private static void NameTheCulture(HttpRequestMessage message, CultureInfo culture)
+    {
+        if (culture.Name.Length > 0 && !message.Headers.Contains(HeaderNames.AcceptLanguage))
+        {
+            message.Headers.TryAddWithoutValidation(HeaderNames.AcceptLanguage, culture.Name);
         }
     }
 

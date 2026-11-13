@@ -271,12 +271,13 @@ namespace Api.ToMcp.Generator.Emitting
             if (formParameters.Any())
             {
                 sb.AppendLine($"            var {names.FormParts} = new {names.SystemNamespace}.Collections.Generic.List<string>();");
+                sb.AppendLine($"            {names.SystemNamespace}.Globalization.CultureInfo? {names.FormCulture} = null;");
                 foreach (var parameter in formParameters)
                 {
                     var message = $"The argument '{parameter.Name}' holds a date that the tool cannot write in the calendar of the MCP request's culture, in which it writes the form. Give a date that calendar holds; a date left out counts as 0001-01-01.";
                     foreach (var (key, expression) in GetFormValues(parameter, routeValues.RouteProperties))
                     {
-                        sb.AppendLine($"            if (!{RequestValueFormatter}.TryAddFormValue({names.FormParts}, {SymbolDisplay.FormatLiteral(key, quote: true)}, {expression}))");
+                        sb.AppendLine($"            if (!{RequestValueFormatter}.TryAddFormValue({names.FormParts}, {SymbolDisplay.FormatLiteral(key, quote: true)}, {expression}, ref {names.FormCulture}))");
                         sb.AppendLine($"                return new CallToolResult {{ IsError = true, Content = {{ new TextContentBlock {{ Text = {SymbolDisplay.FormatLiteral(message, quote: true)} }} }} }};");
                     }
                 }
@@ -812,6 +813,7 @@ namespace Api.ToMcp.Generator.Emitting
                 if (hasForm)
                 {
                     initializers.Add($"FormBody = string.Join(\"&\", {names.FormParts})");
+                    initializers.Add($"FormCulture = {names.FormCulture}");
                 }
 
                 sb.AppendLine($"            var {names.Request} = new {HttpRequestType}({names.SystemNamespace}.Net.Http.HttpMethod.{httpMethodName}, {route}) {{ {string.Join(", ", initializers)} }};");
@@ -1106,6 +1108,7 @@ namespace Api.ToMcp.Generator.Emitting
                 BodyJson = Declare("bodyJson");
                 Headers = Declare("headers");
                 FormParts = Declare("formParts");
+                FormCulture = Declare("formCulture");
                 Request = Declare("request");
                 SystemNamespace = parameterNames.Contains(SystemNamespaceName) ? "global::System" : SystemNamespaceName;
                 JsonSerializer = parameterNames.Contains(JsonSerializerName) ? "global::System.Text.Json.JsonSerializer" : JsonSerializerName;
@@ -1119,6 +1122,7 @@ namespace Api.ToMcp.Generator.Emitting
             public string BodyJson { get; }
             public string Headers { get; }
             public string FormParts { get; }
+            public string FormCulture { get; }
             public string Request { get; }
             public string SystemNamespace { get; }
             public string JsonSerializer { get; }

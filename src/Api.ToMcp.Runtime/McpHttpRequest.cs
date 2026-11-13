@@ -49,6 +49,19 @@ public sealed class McpHttpRequest
     public string? FormBody { get; init; }
 
     /// <summary>
+    /// The culture <see cref="Services.McpRequestValueFormatter.TryAddFormValue"/> wrote the form's dates and numbers in,
+    /// or null when the form holds none whose text another culture may read otherwise.
+    /// </summary>
+    /// <remarks>
+    /// MVC reads a form in the culture of the API request, which <c>UseRequestLocalization</c> picks from what the request
+    /// carries. So when the MCP request ran it, <c>McpHttpInvoker</c> names the culture of the form, or of the MCP request,
+    /// in the <c>Accept-Language</c> of a request with a form, and answers a request whose own <c>Accept-Language</c>,
+    /// <c>culture</c> or <c>ui-culture</c> query value names another culture than this one with an error result: 1.5
+    /// written in <c>en-US</c> is 15 in <c>de-DE</c>.
+    /// </remarks>
+    public CultureInfo? FormCulture { get; init; }
+
+    /// <summary>
     /// The request headers, each value under its header's name; a name may come several times, once per value.
     /// </summary>
     public IReadOnlyList<KeyValuePair<string, string>> Headers { get; init; } = [];
@@ -69,33 +82,50 @@ public sealed class McpHttpRequest
     }
 
     /// <summary>
+    /// Why the app would read the form in another culture than <paramref name="formCulture"/>, which it is written in,
+    /// when it picks the request's culture with <c>UseRequestLocalization</c>: the request names a culture of its own in
+    /// an <c>Accept-Language</c> header or a <c>culture</c> or <c>ui-culture</c> query value, and not that same culture.
+    /// Null when nothing in the request names another.
+    /// </summary>
+    internal string? RefuseAnotherCulture(CultureInfo formCulture)
+    {
+        var languages = Headers
+            .Where(x => string.Equals(x.Key, HeaderNames.AcceptLanguage, StringComparison.OrdinalIgnoreCase))
+            .Select(x => (string?)x.Value)
+            .ToList();
+        if (languages.Count > 0 && !IsTheCulture(languages, formCulture))
+        {
+            var argument = FindHeaderArgument(HeaderNames.AcceptLanguage);
+            var subject = argument is null
+                ? $"The tool's request carries the header '{HeaderNames.AcceptLanguage}', which"
+                : $"The argument '{argument}' is sent as the request header '{HeaderNames.AcceptLanguage}', which";
+
+            return $"{subject} {DescribeCultureRefusal(formCulture, argument is null ? "it" : $"'{argument}'")}";
+        }
+
+        var queryStart = Route.IndexOf(QueryStart);
+        var query = queryStart < 0 ? [] : QueryHelpers.ParseQuery(Route[queryStart..]);
+        var cultureKey = query.ContainsKey(CultureQuery.QueryStringKey) ? CultureQuery.QueryStringKey
+            : query.ContainsKey(CultureQuery.UIQueryStringKey) ? CultureQuery.UIQueryStringKey
+            : null;
+        if (cultureKey is not null && !IsTheCulture(query[cultureKey].ToList(), formCulture))
+        {
+            return $"The query value '{cultureKey}' of the tool's request {DescribeCultureRefusal(formCulture, $"the argument that fills '{cultureKey}'")}";
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Sends the request through the invoker: through <see cref="IMcpHttpRequestInvoker.SendAsync"/> when it implements
     /// that interface, else through its <see cref="IMcpHttpInvoker"/> method for the HTTP method, which carries neither
     /// headers nor a form. A request with either gets an error result from an invoker that cannot send it.
     /// </summary>
-    /// <remarks>
-    /// MVC reads a form's numbers and dates in the culture of the API request, which <c>UseRequestLocalization</c> picks,
-    /// and <see cref="Services.McpRequestValueFormatter.TryAddFormValue"/> writes them in <see cref="CultureInfo.CurrentCulture"/>,
-    /// the culture of the MCP request. So a request with a form carries <c>Accept-Language</c> naming that culture, which the
-    /// app then picks for it as it did for the MCP request. A request that would pick another culture itself, through an
-    /// <c>Accept-Language</c> header or a <c>culture</c> or <c>ui-culture</c> query value of its own, gets an error result
-    /// instead, as the app would read its form in that culture: 1.5 written in <c>en-US</c> is 15 in <c>de-DE</c>.
-    /// </remarks>
     public Task<CallToolResult> SendAsync(IMcpHttpInvoker invoker, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(invoker);
 
         var requestInvoker = invoker as IMcpHttpRequestInvoker;
-        if (requestInvoker is not null && FormBody is not null)
-        {
-            var formCulture = CultureInfo.CurrentCulture;
-            var refusal = RefuseAnotherCulture(formCulture);
-
-            return refusal is not null
-                ? Task.FromResult(ToErrorResult(refusal))
-                : requestInvoker.SendAsync(WithTheCultureOfTheForm(formCulture), ct);
-        }
-
         if (requestInvoker is not null)
         {
             return requestInvoker.SendAsync(this, ct);
@@ -129,43 +159,18 @@ public sealed class McpHttpRequest
             }
         }
 
-        return Task.FromResult(ToErrorResult(
-            $"The tool sends a {Method.Method} request with headers or a body that the registered IMcpHttpInvoker, " +
-            $"{invoker.GetType().FullName}, cannot send: implement {nameof(IMcpHttpRequestInvoker)} as well."));
-    }
-
-    /// <summary>
-    /// Why the app would read the form in another culture than <paramref name="formCulture"/>, which it is written in:
-    /// the request names a culture of its own in an <c>Accept-Language</c> header or a <c>culture</c> query value, which
-    /// <c>UseRequestLocalization</c> picks, unless it names that same culture. Null when nothing in the request names one.
-    /// </summary>
-    private string? RefuseAnotherCulture(CultureInfo formCulture)
-    {
-        var languages = Headers
-            .Where(x => string.Equals(x.Key, HeaderNames.AcceptLanguage, StringComparison.OrdinalIgnoreCase))
-            .Select(x => (string?)x.Value)
-            .ToList();
-        if (languages.Count > 0 && !IsTheCulture(languages, formCulture))
+        return Task.FromResult(new CallToolResult
         {
-            var argument = FindHeaderArgument(HeaderNames.AcceptLanguage);
-            var subject = argument is null
-                ? $"The tool's request carries the header '{HeaderNames.AcceptLanguage}', which"
-                : $"The argument '{argument}' is sent as the request header '{HeaderNames.AcceptLanguage}', which";
-
-            return $"{subject} {DescribeCultureRefusal(formCulture, argument is null ? "it" : $"'{argument}'")}";
-        }
-
-        var queryStart = Route.IndexOf(QueryStart);
-        var query = queryStart < 0 ? [] : QueryHelpers.ParseQuery(Route[queryStart..]);
-        var cultureKey = query.ContainsKey(CultureQuery.QueryStringKey) ? CultureQuery.QueryStringKey
-            : query.ContainsKey(CultureQuery.UIQueryStringKey) ? CultureQuery.UIQueryStringKey
-            : null;
-        if (cultureKey is not null && !IsTheCulture(query[cultureKey].ToList(), formCulture))
-        {
-            return $"The query value '{cultureKey}' of the tool's request {DescribeCultureRefusal(formCulture, $"the argument that fills '{cultureKey}'")}";
-        }
-
-        return null;
+            IsError = true,
+            Content =
+            {
+                new TextContentBlock
+                {
+                    Text = $"The tool sends a {Method.Method} request with headers or a body that the registered IMcpHttpInvoker, " +
+                        $"{invoker.GetType().FullName}, cannot send: implement {nameof(IMcpHttpRequestInvoker)} as well."
+                }
+            }
+        });
     }
 
     private static bool IsTheCulture(List<string?> values, CultureInfo culture)
@@ -173,43 +178,18 @@ public sealed class McpHttpRequest
         return values.Count == 1 && culture.Name.Length > 0 && string.Equals(values[0]?.Trim(), culture.Name, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The rest of the error result, which tells the AI what the tool can send, without suggesting that the culture it
+    /// asked for comes some other way: dropping the argument runs the action in the MCP request's culture.
+    /// </summary>
     private static string DescribeCultureRefusal(CultureInfo formCulture, string argument)
     {
-        var cultureName = formCulture.Name.Length > 0 ? $"'{formCulture.Name}'" : "the invariant culture";
-        var withTheCulture = formCulture.Name.Length > 0 ? $", or with {cultureName}" : "";
+        var problem = "picks the culture the app reads the tool's form in, and the tool writes the form's numbers and dates in the " +
+            "culture of the MCP request, ";
 
-        return "picks the culture the app reads the tool's form in, and the tool writes the form's numbers and dates in the " +
-            $"culture of the MCP request, {cultureName}. Call the tool without {argument}{withTheCulture}.";
-    }
-
-    /// <summary>
-    /// The request with an <c>Accept-Language</c> naming the culture the form is written in, so the app's request
-    /// localization reads the form in it, unless the request names that culture itself or the culture is the invariant
-    /// one, which no header can name.
-    /// </summary>
-    private McpHttpRequest WithTheCultureOfTheForm(CultureInfo formCulture)
-    {
-        var hasLanguage = Headers.Any(x => string.Equals(x.Key, HeaderNames.AcceptLanguage, StringComparison.OrdinalIgnoreCase));
-        if (hasLanguage || formCulture.Name.Length == 0)
-        {
-            return this;
-        }
-
-        return new McpHttpRequest(Method, Route)
-        {
-            JsonBody = JsonBody,
-            FormBody = FormBody,
-            Headers = [.. Headers, new(HeaderNames.AcceptLanguage, formCulture.Name)],
-            HeaderArguments = HeaderArguments
-        };
-    }
-
-    private static CallToolResult ToErrorResult(string text)
-    {
-        return new CallToolResult
-        {
-            IsError = true,
-            Content = { new TextContentBlock { Text = text } }
-        };
+        return formCulture.Name.Length > 0
+            ? $"{problem}'{formCulture.Name}'. The tool sends {argument} only with the value '{formCulture.Name}': another culture " +
+                "needs an MCP request that runs in it, as one whose own Accept-Language header asks for it does."
+            : $"{problem}the invariant culture. The tool cannot send {argument} with a value, as no culture name stands for that culture.";
     }
 }

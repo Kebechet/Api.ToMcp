@@ -14,6 +14,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime;
+using Api.ToMcp.Runtime.Options;
+using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -25,6 +27,8 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Xunit;
@@ -187,6 +191,15 @@ namespace TestApi
 
         [HttpPost(""dated"")]
         public object PostDated([FromForm] DatedAmount a) => a;
+
+        // A form of text alone reads the same in every culture, so the language and the culture are the action's own data.
+        [HttpPost(""translate"")]
+        public object PostTranslate([FromHeader(Name = ""Accept-Language"")] string? language, [FromForm] string text)
+            => new { language, text, culture = System.Globalization.CultureInfo.CurrentCulture.Name };
+
+        [HttpPost(""names"")]
+        public object PostNames([FromQuery] string? culture, [FromForm] string name)
+            => new { culture, name, requestCulture = System.Globalization.CultureInfo.CurrentCulture.Name };
 
         [HttpGet(""nan"")]
         public object GetNan(double value = double.NaN, float inf = float.PositiveInfinity, double negInf = double.NegativeInfinity)
@@ -807,6 +820,43 @@ namespace TestApi
         Assert.Contains("the tool writes the form's numbers and dates in the culture of the MCP request, 'de-DE'.", GetText(result));
     }
 
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("")]
+    public async Task Tool_SendsACultureArgumentAsItIs_WhenTheAppRunsNoRequestLocalization(string serverCultureName)
+    {
+        // The app reads the form in the server's culture, which the tool call runs under and writes the form in, so the
+        // AI's language or culture is the action's own data, also under invariant globalization, whose culture has no name.
+        var serverCulture = CultureInfo.GetCultureInfo(serverCultureName);
+        (string ToolClassName, string Arguments, string Expected)[] calls =
+        [
+            ("EchoController_PostTranslateTool", @"{""text"":""hello"",""language"":""de-DE""}", $@"{{""language"":""de-DE"",""text"":""hello"",""culture"":""{serverCultureName}""}}"),
+            ("EchoController_PostNamesTool", @"{""name"":""Ann"",""culture"":""fr-FR""}", $@"{{""culture"":""fr-FR"",""name"":""Ann"",""requestCulture"":""{serverCultureName}""}}"),
+            ("EchoController_PostLocalizedTool", @"{""amount"":1.5,""language"":""de-DE""}", $@"{{""language"":""de-DE"",""amount"":1.5,""culture"":""{serverCultureName}""}}")
+        ];
+
+        foreach (var (toolClassName, arguments, expected) in calls)
+        {
+            var (statusCode, body, result) = await _host.CallToolWithoutLocalizationAsync(toolClassName, arguments, serverCulture);
+
+            Assert.True(result.IsError != true, $"{toolClassName}: {GetText(result)}");
+            Assert.True(statusCode == StatusCodes.Status200OK, $"{toolClassName}: {statusCode} {body}");
+            Assert.Equal(expected, body);
+        }
+    }
+
+    [Theory]
+    [InlineData("EchoController_PostTranslateTool", @"{""text"":""hello"",""language"":""en-US""}", @"{""language"":""en-US"",""text"":""hello"",""culture"":""en-US""}")]
+    [InlineData("EchoController_PostNamesTool", @"{""name"":""Ann"",""culture"":""en-US""}", @"{""culture"":""en-US"",""name"":""Ann"",""requestCulture"":""en-US""}")]
+    public async Task Tool_SendsACultureArgumentAsItIs_ForAFormOfTextAlone_UnderRequestLocalization(string toolClassName, string arguments, string expected)
+    {
+        // The app reads the text in en-US, as the AI asked, and a text reads the same in every culture.
+        var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments, MvcHost.GermanCulture);
+
+        Assert.True(statusCode == StatusCodes.Status200OK, $"{statusCode} {body}");
+        Assert.Equal(expected, body);
+    }
+
     [Fact]
     public async Task Tool_WritesAFormDate_InTheCalendarOfTheCultureItWritesTheFormIn()
     {
@@ -947,13 +997,18 @@ namespace TestApi
         /// </summary>
         public static readonly CultureInfo PersianCulture = CultureInfo.GetCultureInfo("fa-IR");
 
+        private readonly RecordingHandler _serverCultureRecorder = new();
+        private readonly RecordingHandler _germanRecorder = new();
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
+        private string _address = null!;
         private HttpClient _client = null!;
         private RecordingInvoker _invoker = null!;
+        private HttpClient _serverCultureClient = null!;
+        private CultureInfo? _serverCulture;
         private WebApplication _germanApp = null!;
+        private string _germanAddress = null!;
         private HttpClient _germanClient = null!;
-        private RecordingInvoker _germanInvoker = null!;
 
         public async Task InitializeAsync()
         {
@@ -964,12 +1019,14 @@ namespace TestApi
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddControllers().AddApplicationPart(_assembly);
             _app = builder.Build();
+            _app.Use(RunInTheServerCulture);
             _app.MapControllers();
             await _app.StartAsync();
 
-            var address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-            _client = new HttpClient { BaseAddress = new Uri(address) };
+            _address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+            _client = new HttpClient { BaseAddress = new Uri(_address) };
             _invoker = new RecordingInvoker(_client);
+            _serverCultureClient = new HttpClient(_serverCultureRecorder);
 
             var germanBuilder = WebApplication.CreateBuilder();
             germanBuilder.Logging.ClearProviders();
@@ -985,14 +1042,14 @@ namespace TestApi
             _germanApp.MapControllers();
             await _germanApp.StartAsync();
 
-            var germanAddress = _germanApp.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-            _germanClient = new HttpClient { BaseAddress = new Uri(germanAddress) };
-            _germanInvoker = new RecordingInvoker(_germanClient);
+            _germanAddress = _germanApp.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+            _germanClient = new HttpClient(_germanRecorder);
         }
 
         public async Task DisposeAsync()
         {
             _client.Dispose();
+            _serverCultureClient.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
             _germanClient.Dispose();
@@ -1001,32 +1058,83 @@ namespace TestApi
         }
 
         /// <summary>
-        /// Calls a generated tool as <see cref="InvokeToolAsync(string, string)"/> does, under the culture, against the app
-        /// whose request localization defaults to <see cref="GermanCulture"/>.
+        /// Calls a generated tool through <see cref="McpHttpInvoker"/> against the app whose request localization defaults
+        /// to <see cref="GermanCulture"/>, from an MCP request that it gave the culture, which the tool call runs under.
         /// </summary>
         public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, CultureInfo culture)
         {
             await CallToolAsync(toolClassName, arguments, culture);
 
-            return _germanInvoker.LastResponse;
+            return _germanRecorder.LastResponse;
         }
 
         /// <summary>
         /// Calls a generated tool as <see cref="InvokeToolAsync(string, string, CultureInfo)"/> does, and returns the tool's
         /// result.
         /// </summary>
-        public async Task<CallToolResult> CallToolAsync(string toolClassName, string arguments, CultureInfo culture)
+        public Task<CallToolResult> CallToolAsync(string toolClassName, string arguments, CultureInfo culture)
         {
+            var mcpRequest = new DefaultHttpContext();
+            mcpRequest.Features.Set<IRequestCultureFeature>(new RequestCultureFeature(new RequestCulture(culture), provider: null));
+
+            return CallToolThroughTheInvokerAsync(toolClassName, arguments, culture, _germanAddress, _germanClient, mcpRequest);
+        }
+
+        /// <summary>
+        /// Calls a generated tool through <see cref="McpHttpInvoker"/> against the first app, which runs no request
+        /// localization, but every request in the server's culture, as a server does in its own: the MCP request and the
+        /// tool call too.
+        /// </summary>
+        public async Task<(int StatusCode, string Body, CallToolResult Result)> CallToolWithoutLocalizationAsync(string toolClassName, string arguments, CultureInfo serverCulture)
+        {
+            _serverCulture = serverCulture;
+            try
+            {
+                var result = await CallToolThroughTheInvokerAsync(toolClassName, arguments, serverCulture, _address, _serverCultureClient, new DefaultHttpContext());
+
+                return (_serverCultureRecorder.LastResponse.StatusCode, _serverCultureRecorder.LastResponse.Body, result);
+            }
+            finally
+            {
+                _serverCulture = null;
+            }
+        }
+
+        private async Task<CallToolResult> CallToolThroughTheInvokerAsync(
+            string toolClassName,
+            string arguments,
+            CultureInfo culture,
+            string address,
+            HttpClient client,
+            HttpContext mcpRequest)
+        {
+            var invoker = new McpHttpInvoker(
+                client,
+                new FixedBaseUrl(address),
+                new FixedHttpContextAccessor(mcpRequest),
+                NullLogger<McpHttpInvoker>.Instance,
+                Options.Create(new McpScopeOptions()));
             var previousCulture = CultureInfo.CurrentCulture;
             CultureInfo.CurrentCulture = culture;
             try
             {
-                return await RunToolAsync(toolClassName, arguments, _germanInvoker);
+                return await RunToolAsync(toolClassName, arguments, invoker);
             }
             finally
             {
                 CultureInfo.CurrentCulture = previousCulture;
             }
+        }
+
+        private Task RunInTheServerCulture(HttpContext context, RequestDelegate next)
+        {
+            if (_serverCulture is not null)
+            {
+                CultureInfo.CurrentCulture = _serverCulture;
+                CultureInfo.CurrentUICulture = _serverCulture;
+            }
+
+            return next(context);
         }
 
         /// <summary>
@@ -1049,7 +1157,7 @@ namespace TestApi
         /// Runs a generated tool's method, and returns its result, or an empty one from a tool with an output schema,
         /// which returns what the action answered instead.
         /// </summary>
-        private async Task<CallToolResult> RunToolAsync(string toolClassName, string arguments, RecordingInvoker invoker)
+        private async Task<CallToolResult> RunToolAsync(string toolClassName, string arguments, IMcpHttpInvoker invoker)
         {
             var toolMethod = _assembly.GetType($"Api.ToMcp.Generated.{toolClassName}", throwOnError: true)!.GetMethod("InvokeAsync")!;
             var argumentValues = JsonNode.Parse(arguments)!.AsObject();
@@ -1087,9 +1195,9 @@ namespace TestApi
 
         public int RequestCount => _invoker.RequestCount;
 
-        public int GermanRequestCount => _germanInvoker.RequestCount;
+        public int GermanRequestCount => _germanRecorder.RequestCount;
 
-        public (int StatusCode, string Body) GermanLastResponse => _germanInvoker.LastResponse;
+        public (int StatusCode, string Body) GermanLastResponse => _germanRecorder.LastResponse;
 
         public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
 
@@ -1147,6 +1255,42 @@ namespace TestApi
             // The default context resolves the converters [TypeConverter] names, and MVC finds the controllers there.
             assemblyStream.Position = 0;
             return AssemblyLoadContext.Default.LoadFromStream(assemblyStream);
+        }
+    }
+
+    /// <summary>
+    /// Sends what <see cref="McpHttpInvoker"/> sends, and keeps the count and the last answer.
+    /// </summary>
+    private sealed class RecordingHandler() : DelegatingHandler(new HttpClientHandler())
+    {
+        public int RequestCount { get; private set; }
+
+        public (int StatusCode, string Body) LastResponse { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            var response = await base.SendAsync(request, cancellationToken);
+            LastResponse = ((int)response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+            return response;
+        }
+    }
+
+    private sealed class FixedBaseUrl(string address) : ISelfBaseUrlProvider
+    {
+        public string GetBaseUrl() => address.TrimEnd('/');
+    }
+
+    /// <summary>
+    /// The MCP request a tool call runs in.
+    /// </summary>
+    private sealed class FixedHttpContextAccessor(HttpContext context) : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext
+        {
+            get => context;
+            set => throw new NotSupportedException();
         }
     }
 

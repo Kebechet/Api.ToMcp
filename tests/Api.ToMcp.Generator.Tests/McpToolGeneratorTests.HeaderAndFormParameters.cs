@@ -86,11 +86,12 @@ public partial class McpToolGeneratorTests
             $"[{httpAttribute}(\"x\")] public Task<string> Find([FromForm] string name, [FromForm(Name = \"f\")] ProductFilter filter, [FromForm] int[]? ids, [FromForm] ProductFilter? other) => Task.FromResult(string.Empty);");
 
         Assert.Contains("var formParts = new System.Collections.Generic.List<string>();", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"name\", name))", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"f\", filter))", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"ids\", ids))", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"other\", other))", tool);
-        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.{httpMethod}, route) {{ FormBody = string.Join(\"&\", formParts) }};", tool);
+        Assert.Contains("System.Globalization.CultureInfo? formCulture = null;", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"name\", name, ref formCulture))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"f\", filter, ref formCulture))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"ids\", ids, ref formCulture))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"other\", other, ref formCulture))", tool);
+        Assert.Contains($"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.{httpMethod}, route) {{ FormBody = string.Join(\"&\", formParts), FormCulture = formCulture }};", tool);
         Assert.DoesNotContain("bodyJson", tool);
         Assert.DoesNotContain("queryParts", tool);
     }
@@ -103,7 +104,7 @@ public partial class McpToolGeneratorTests
         Assert.Contains(
             "return new CallToolResult { IsError = true, Content = { new TextContentBlock { Text = \"The argument 'q' holds a date that the tool cannot write in the calendar of the MCP request's culture, in which it writes the form. Give a date that calendar holds; a date left out counts as 0001-01-01.\" } } };",
             tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"day\", day))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"day\", day, ref formCulture))", tool);
         Assert.Contains("Text = \"The argument 'day' holds a date", tool);
         Assert.True(
             tool.IndexOf("TryAddFormValue", StringComparison.Ordinal) < tool.IndexOf("BeforeInvokeAsync", StringComparison.Ordinal),
@@ -118,7 +119,7 @@ public partial class McpToolGeneratorTests
         var tool = GenerateCompilingSimpleTypeTool("[HttpPut(\"attr/{id:int}\")] public Task<string> Find([FromForm] AttributedQuery q) => Task.FromResult(string.Empty);");
 
         Assert.Contains($"var routeq_Id = System.Uri.EscapeDataString({Formatter}.Format(q.Id));", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"Note\", q.Note))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"Note\", q.Note, ref formCulture))", tool);
         Assert.DoesNotContain("\"City\"", tool);
         Assert.DoesNotContain("\"Tenant\"", tool);
         Assert.DoesNotContain("\"Id\"", tool);
@@ -133,9 +134,9 @@ public partial class McpToolGeneratorTests
 
         Assert.Contains("var route = $\"/api/orders/x/{routeid}\";", tool);
         Assert.Contains($"{Formatter}.AddQueryValue(queryParts, \"sort\", sort);", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"filter\", filter))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"filter\", filter, ref formCulture))", tool);
         Assert.Contains(
-            $"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-Tenant\"] = \"tenant\" }}, FormBody = string.Join(\"&\", formParts) }};",
+            $"var request = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-Tenant\"] = \"tenant\" }}, FormBody = string.Join(\"&\", formParts), FormCulture = formCulture }};",
             tool);
     }
 
@@ -143,12 +144,13 @@ public partial class McpToolGeneratorTests
     public void Generator_RenamesItsOwnVariables_ThatAnActionParameterNames()
     {
         var tool = GenerateCompilingSimpleTypeTool(
-            "[HttpPost(\"x\")] public Task<string> Find([FromHeader(Name = \"X-A\")] string headers, [FromForm] string formParts, [FromForm] string request) => Task.FromResult(string.Empty);");
+            "[HttpPost(\"x\")] public Task<string> Find([FromHeader(Name = \"X-A\")] string headers, [FromForm] string formParts, [FromForm] string request, [FromForm] string formCulture) => Task.FromResult(string.Empty);");
 
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers2, \"X-A\", headers))", tool);
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts2, \"formParts\", formParts))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts2, \"formParts\", formParts, ref formCulture2))", tool);
+        Assert.Contains("System.Globalization.CultureInfo? formCulture2 = null;", tool);
         Assert.Contains(
-            $"var request2 = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers2, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-A\"] = \"headers\" }}, FormBody = string.Join(\"&\", formParts2) }};",
+            $"var request2 = new {McpHttpRequestType}(System.Net.Http.HttpMethod.Post, route) {{ Headers = headers2, HeaderArguments = new System.Collections.Generic.Dictionary<string, string> {{ [\"X-A\"] = \"headers\" }}, FormBody = string.Join(\"&\", formParts2), FormCulture = formCulture2 }};",
             tool);
         Assert.Contains("return await request2.SendAsync(invoker, cancellationToken);", tool);
     }
@@ -374,7 +376,7 @@ namespace TestApi
         var tool = GenerateCompilingSimpleTypeTool(
             "[HttpPost(\"x\")] public Task<string> Find([FromForm, Bind(Prefix = \"r\")] ProductFilter review, [FromHeader, ModelBinder(Name = \"X-Tenant\")] string tenant) => Task.FromResult(string.Empty);");
 
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"r\", review))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"r\", review, ref formCulture))", tool);
         Assert.Contains($"if (!{Formatter}.TryAddHeaderValue(headers, \"X-Tenant\", tenant))", tool);
     }
 
@@ -423,7 +425,7 @@ namespace TestApi
             $"{actionAttribute} [{httpAttribute}(\"x\")] public Task<string> Find([FromForm] string name) => Task.FromResult(string.Empty);",
             $"{controllerAttribute} {ApiControllerDeclaration}");
 
-        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"name\", name))", tool);
+        Assert.Contains($"if (!{Formatter}.TryAddFormValue(formParts, \"name\", name, ref formCulture))", tool);
     }
 
     [Fact]

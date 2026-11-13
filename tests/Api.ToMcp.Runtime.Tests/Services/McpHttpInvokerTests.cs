@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
@@ -9,6 +10,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -1218,6 +1220,225 @@ public class McpHttpInvokerTests
         Assert.Equal(
             ["A-For", "A-Host", "A-Prefix", "A-Proto", "B-For", "B-Host", "B-Prefix", "B-Proto", "C-Cert"],
             names.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task SendAsync_NamesTheCultureOfTheForm_WhenTheMcpRequestRanRequestLocalization()
+    {
+        // MVC reads a form in the culture UseRequestLocalization picks for the tool's request, and the tool writes it in
+        // the MCP request's: without the header, an app whose default is de-DE would read 1.5 written in en-US as 15.
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "en-US");
+
+        var result = await CreateInvoker().SendAsync(new McpHttpRequest(HttpMethod.Post, "/api/x")
+        {
+            FormBody = "amount=1.5",
+            FormCulture = CultureInfo.GetCultureInfo("en-US"),
+            Headers = [new("X-Tenant", "t1")]
+        });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal([("X-Tenant", "t1"), ("Accept-Language", "en-US")], Assert.Single(sent).Headers.Where(x => x.Item1 != LoopPreventionHeader));
+    }
+
+    [Fact]
+    public async Task SendAsync_NamesTheMcpRequestsCulture_ForAFormOfTextAlone_SoEveryFormRequestOfTheToolRunsInIt()
+    {
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "de-DE");
+
+        await CreateInvoker().SendAsync(new McpHttpRequest(HttpMethod.Post, "/api/x") { FormBody = "name=Ann" });
+
+        Assert.Contains(("Accept-Language", "de-DE"), Assert.Single(sent).Headers);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("de-DE")]
+    public async Task SendAsync_NamesNoCulture_WhenTheMcpRequestRanNoRequestLocalization(string? language)
+    {
+        // The app then reads the form in the server's culture, which the tool wrote it in, whatever the request names.
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: null);
+        var request = new McpHttpRequest(HttpMethod.Post, "/api/x?culture=fr-FR")
+        {
+            FormBody = "amount=1.5",
+            FormCulture = CultureInfo.GetCultureInfo("en-US"),
+            Headers = language is null ? [] : [new("Accept-Language", language)]
+        };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal(language is null ? [] : [("Accept-Language", language)], Assert.Single(sent).Headers.Where(x => x.Item1 != LoopPreventionHeader));
+    }
+
+    [Fact]
+    public async Task SendAsync_NamesNoCulture_ForARequestWithoutAForm()
+    {
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "en-US");
+
+        await CreateInvoker().SendAsync(new McpHttpRequest(HttpMethod.Post, "/api/x") { JsonBody = "{\"amount\":1.5}" });
+
+        Assert.DoesNotContain(Assert.Single(sent).Headers, x => x.Item1 == "Accept-Language");
+    }
+
+    [Theory]
+    [InlineData("/api/x", "de-DE")]
+    [InlineData("/api/x", " DE-de ")]
+    [InlineData("/api/x?culture=de-DE", null)]
+    [InlineData("/api/x?ui-culture=de-de", null)]
+    [InlineData("/api/x?culture=de-DE&ui-culture=en-US", null)]
+    public async Task SendAsync_SendsTheForm_WhenTheRequestNamesTheCultureTheFormIsWrittenIn(string route, string? language)
+    {
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "de-DE");
+        var request = new McpHttpRequest(HttpMethod.Post, route)
+        {
+            FormBody = "amount=1%2C5",
+            FormCulture = CultureInfo.GetCultureInfo("de-DE"),
+            Headers = language is null ? [] : [new("Accept-Language", language)]
+        };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal([("Accept-Language", language?.Trim() ?? "de-DE")], Assert.Single(sent).Headers.Where(x => x.Item1 != LoopPreventionHeader));
+    }
+
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("de-DE, en;q=0.5")]
+    [InlineData("de")]
+    public async Task SendAsync_RefusesAnAcceptLanguageArgumentNamingAnotherCultureThanTheForms_WithAnErrorResult(string language)
+    {
+        // The app would read the form in the culture the AI named, if it supports that one, or in its default.
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "de-DE");
+        var request = new McpHttpRequest(HttpMethod.Post, "/api/x")
+        {
+            FormBody = "amount=1%2C25",
+            FormCulture = CultureInfo.GetCultureInfo("de-DE"),
+            Headers = [new("accept-language", language)],
+            HeaderArguments = new Dictionary<string, string> { ["Accept-Language"] = "language" }
+        };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "The argument 'language' is sent as the request header 'Accept-Language', which picks the culture the app reads the tool's form in, " +
+            "and the tool writes the form's numbers and dates in the culture of the MCP request, 'de-DE'. The tool sends 'language' only with the " +
+            "value 'de-DE': another culture needs an MCP request that runs in it, as one whose own Accept-Language header asks for it does.",
+            Text(result));
+        Assert.Empty(sent);
+    }
+
+    [Fact]
+    public async Task SendAsync_RefusesTwoAcceptLanguageValues_EvenOfTheFormsCulture()
+    {
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "de-DE");
+        var request = new McpHttpRequest(HttpMethod.Post, "/api/x")
+        {
+            FormBody = "amount=1%2C25",
+            FormCulture = CultureInfo.GetCultureInfo("de-DE"),
+            Headers = [new("Accept-Language", "de-DE"), new("Accept-Language", "en-US")]
+        };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.True(result.IsError);
+        Assert.StartsWith("The tool's request carries the header 'Accept-Language', which picks the culture", Text(result));
+        Assert.Empty(sent);
+    }
+
+    [Theory]
+    [InlineData("/api/x?culture=en-US", "culture")]
+    [InlineData("/api/x?Culture=en-US", "culture")]
+    [InlineData("/api/x?ui-culture=en-US", "ui-culture")]
+    [InlineData("/api/x?culture=en-US&ui-culture=de-DE", "culture")]
+    [InlineData("/api/x?culture=de-DE&culture=en-US", "culture")]
+    public async Task SendAsync_RefusesACultureQueryValueNamingAnotherCultureThanTheForms_WithAnErrorResult(string route, string key)
+    {
+        // UseRequestLocalization picks a culture from the query before Accept-Language, and from ui-culture when the
+        // query has no culture.
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "de-DE");
+        var request = new McpHttpRequest(HttpMethod.Post, route) { FormBody = "amount=1%2C25", FormCulture = CultureInfo.GetCultureInfo("de-DE") };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            $"The query value '{key}' of the tool's request picks the culture the app reads the tool's form in, and the tool writes the form's " +
+            $"numbers and dates in the culture of the MCP request, 'de-DE'. The tool sends the argument that fills '{key}' only with the value " +
+            "'de-DE': another culture needs an MCP request that runs in it, as one whose own Accept-Language header asks for it does.",
+            Text(result));
+        Assert.Empty(sent);
+    }
+
+    [Fact]
+    public async Task SendAsync_SendsACultureArgument_ForAFormOfTextAlone()
+    {
+        // A form without numbers and dates reads the same in every culture, so the AI's culture is the action's own data.
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "de-DE");
+        var request = new McpHttpRequest(HttpMethod.Post, "/api/x?culture=fr-FR")
+        {
+            FormBody = "text=hello",
+            Headers = [new("Accept-Language", "en-US")]
+        };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal([("Accept-Language", "en-US")], Assert.Single(sent).Headers.Where(x => x.Item1 != LoopPreventionHeader));
+    }
+
+    [Fact]
+    public async Task SendAsync_RefusesAnyCulture_ForAFormWrittenInTheInvariantCulture_UnderRequestLocalization()
+    {
+        var sent = CaptureRequests();
+        SetupMcpRequest(localizedCulture: "");
+        var request = new McpHttpRequest(HttpMethod.Post, "/api/x?culture=en-US") { FormBody = "amount=1.5", FormCulture = CultureInfo.InvariantCulture };
+
+        var result = await CreateInvoker().SendAsync(request);
+
+        Assert.True(result.IsError);
+        Assert.EndsWith(
+            "in the culture of the MCP request, the invariant culture. The tool cannot send the argument that fills 'culture' with a value, as no culture name stands for that culture.",
+            Text(result));
+        Assert.Empty(sent);
+    }
+
+    /// <summary>
+    /// The MCP request the tool call runs in, with the culture <c>UseRequestLocalization</c> picked for it, or without
+    /// that middleware when <paramref name="localizedCulture"/> is null.
+    /// </summary>
+    private void SetupMcpRequest(string? localizedCulture)
+    {
+        var httpContext = new DefaultHttpContext();
+        if (localizedCulture is not null)
+        {
+            httpContext.Features.Set<IRequestCultureFeature>(new RequestCultureFeature(new RequestCulture(localizedCulture), provider: null));
+        }
+
+        _httpContextAccessorMock.Setup(x => x.HttpContext).Returns(httpContext);
+    }
+
+    /// <summary>
+    /// The requests the invoker sends, each with its headers as they go out.
+    /// </summary>
+    private List<(string Route, List<(string, string)> Headers)> CaptureRequests()
+    {
+        var sent = new List<(string Route, List<(string, string)> Headers)>();
+        SetupHttpResponse(HttpStatusCode.OK, "response", request => sent.Add((
+            request.RequestUri!.PathAndQuery,
+            request.Headers.SelectMany(x => x.Value.Select(value => (x.Key, value))).ToList())));
+
+        return sent;
     }
 
     private McpHttpInvoker CreateInvokerTrustingProxyHeaders(ForwardedHeadersOptions forwardedHeaders, CertificateForwardingOptions certificateForwarding)

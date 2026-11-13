@@ -115,8 +115,8 @@ public static class McpRequestValueFormatter
     /// first call, so that a call only reads the values. Like the caches above, each holds one entry per type a tool
     /// sends, not per call.
     /// </summary>
-    private static readonly RequestPart Query = new(SourcesNotFilledByTheQuery, Format);
-    private static readonly RequestPart Form = new(SourcesNotFilledByTheForm, FormatFormValue);
+    private static readonly RequestPart Query = new(SourcesNotFilledByTheQuery, Format, static (_, _) => false);
+    private static readonly RequestPart Form = new(SourcesNotFilledByTheForm, FormatFormValue, IsWrittenInTheCulture);
 
     /// <summary>
     /// Whether a route value, as a tool writes it into the URL, sends the request to another path: empty where the route
@@ -185,14 +185,22 @@ public static class McpRequestValueFormatter
     /// adds each property MVC reads from the form, under the <c>name.Property</c> keys its form binding reads: not one
     /// that a binding attribute such as <c>[FromQuery]</c> or <c>[FromHeader]</c> binds from elsewhere, nor a form file.
     /// MVC reads a form with the culture of the request, not the invariant one, so a number and a date are written in
-    /// <see cref="CultureInfo.CurrentCulture"/>, which <see cref="McpHttpRequest.SendAsync"/> names in the request's
-    /// <c>Accept-Language</c> for <c>UseRequestLocalization</c> to pick. False when a value is a date outside the calendar
-    /// that culture writes dates in, which no text in it names, such as 0001-01-01, the date a property left out gets, in
-    /// the Persian calendar of <c>fa-IR</c>; the fields added before it stay.
+    /// <see cref="CultureInfo.CurrentCulture"/>. False when a value is a date outside the calendar that culture writes
+    /// dates in, which no text in it names, such as 0001-01-01, the date a property left out gets, in the Persian calendar
+    /// of <c>fa-IR</c>; the fields added before it stay. It sets <paramref name="formCulture"/> to that culture when a
+    /// value goes in as text that another culture may read as another value or not at all, a date or a number with
+    /// anything but digits, such as a fraction or a sign, and leaves it as it is otherwise, so that one variable collects
+    /// it over the fields of a form, for <see cref="McpHttpRequest.FormCulture"/>.
     /// </summary>
-    public static bool TryAddFormValue(List<string> formParts, string name, object? value)
+    public static bool TryAddFormValue(List<string> formParts, string name, object? value, ref CultureInfo? formCulture)
     {
-        return AddValue(formParts, name, value, depth: 0, Form);
+        var written = AddValue(formParts, name, value, depth: 0, Form);
+        if (written.HasFlag(Written.InTheCulture))
+        {
+            formCulture = CultureInfo.CurrentCulture;
+        }
+
+        return !written.HasFlag(Written.Unwritable);
     }
 
     /// <summary>
@@ -270,10 +278,24 @@ public static class McpRequestValueFormatter
         return value switch
         {
             DateOnly date => IsInCalendar(date, culture.DateTimeFormat.Calendar) ? date.ToString(ShortDateFormat, culture) : null,
-            byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal or Half or Int128 or UInt128 =>
-                ((IFormattable)value).ToString(null, culture),
+            _ when IsNumber(value) => ((IFormattable)value).ToString(null, culture),
             _ => Format(value)
         };
+    }
+
+    /// <summary>
+    /// Whether <see cref="FormatFormValue"/> wrote the value as text that another culture may read otherwise: a date, or
+    /// a number with anything but digits, such as a decimal separator that another culture reads as a digit group, or a
+    /// sign. Digits alone are the same number in every culture.
+    /// </summary>
+    private static bool IsWrittenInTheCulture(object value, string text)
+    {
+        return value is DateOnly || (IsNumber(value) && text.Any(x => x is < '0' or > '9'));
+    }
+
+    private static bool IsNumber(object value)
+    {
+        return value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal or Half or Int128 or UInt128;
     }
 
     /// <summary>
@@ -287,12 +309,11 @@ public static class McpRequestValueFormatter
         return dateTime >= calendar.MinSupportedDateTime && dateTime <= calendar.MaxSupportedDateTime;
     }
 
-    /// <returns>False when the part cannot hold a value, which <see cref="RequestPart.Format"/> tells.</returns>
-    private static bool AddValue(List<string> queryParts, string key, object? value, int depth, RequestPart part)
+    private static Written AddValue(List<string> queryParts, string key, object? value, int depth, RequestPart part)
     {
         if (value is null || IsNotBoundFromTheQuery(value.GetType()))
         {
-            return true;
+            return Written.Invariantly;
         }
 
         if (IsScalar(value.GetType()))
@@ -316,6 +337,7 @@ public static class McpRequestValueFormatter
             // Only the objects actually sent are numbered: the binder reads Items[0], Items[1], ... and stops at the
             // first missing index, so a null item must not leave a gap.
             var index = 0;
+            var written = Written.Invariantly;
             foreach (var item in items)
             {
                 if (item is null)
@@ -325,9 +347,10 @@ public static class McpRequestValueFormatter
 
                 if (IsScalar(item.GetType()) || HasModelBinder(item.GetType()))
                 {
-                    if (!AddValue(queryParts, key, item, depth + 1, part))
+                    written |= AddValue(queryParts, key, item, depth + 1, part);
+                    if (written.HasFlag(Written.Unwritable))
                     {
-                        return false;
+                        return written;
                     }
 
                     continue;
@@ -336,9 +359,10 @@ public static class McpRequestValueFormatter
                 // An object item expands into Items[0].Property keys, a nested collection repeats Items[0] per value.
                 // An item that adds nothing (only null properties, an empty collection) takes no index.
                 var queryPartCountBeforeItem = queryParts.Count;
-                if (!AddValue(queryParts, $"{key}[{index}]", item, depth + 1, part))
+                written |= AddValue(queryParts, $"{key}[{index}]", item, depth + 1, part);
+                if (written.HasFlag(Written.Unwritable))
                 {
-                    return false;
+                    return written;
                 }
 
                 if (queryParts.Count > queryPartCountBeforeItem)
@@ -347,63 +371,71 @@ public static class McpRequestValueFormatter
                 }
             }
 
-            return true;
+            return written;
         }
 
         return AddProperties(queryParts, key, value, depth + 1, part);
     }
 
-    private static bool AddWholeValue(List<string> queryParts, string key, object value, RequestPart part)
+    private static Written AddWholeValue(List<string> queryParts, string key, object value, RequestPart part)
     {
         var text = part.Format(value);
         if (text is null)
         {
-            return false;
+            return Written.Unwritable;
         }
 
         queryParts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(text)}");
-        return true;
+        return part.IsWrittenInTheCulture(value, text) ? Written.InTheCulture : Written.Invariantly;
     }
 
     /// <summary>
     /// A value a model binder of its own reads from the query string under its key: one value, or for a collection
     /// each item under the same key, all of which the binder finds in the key's <c>Values</c>.
     /// </summary>
-    private static bool AddBinderValue(List<string> queryParts, string key, object value, RequestPart part)
+    private static Written AddBinderValue(List<string> queryParts, string key, object value, RequestPart part)
     {
         if (value is not IEnumerable items || IsScalar(value.GetType()))
         {
             return AddWholeValue(queryParts, key, value, part);
         }
 
+        var written = Written.Invariantly;
         foreach (var item in items)
         {
-            if (item is not null && !AddWholeValue(queryParts, key, item, part))
+            if (item is null)
             {
-                return false;
+                continue;
+            }
+
+            written |= AddWholeValue(queryParts, key, item, part);
+            if (written.HasFlag(Written.Unwritable))
+            {
+                return written;
             }
         }
 
-        return true;
+        return written;
     }
 
-    private static bool AddProperties(List<string> queryParts, string prefix, object value, int depth, RequestPart part)
+    private static Written AddProperties(List<string> queryParts, string prefix, object value, int depth, RequestPart part)
     {
+        var written = Written.Invariantly;
         foreach (var property in GetQueryProperties(value.GetType(), part))
         {
             // An empty name adds no segment to the key, as MVC joins it (ModelNames.CreatePropertyModelName).
             var key = property.Key.Length == 0 ? prefix : $"{prefix}.{property.Key}";
             var propertyValue = property.Property.GetValue(value);
-            var isAdded = propertyValue is not null && property.HasModelBinder
+            written |= propertyValue is not null && property.HasModelBinder
                 ? AddBinderValue(queryParts, key, propertyValue, part)
                 : AddValue(queryParts, key, propertyValue, depth, part);
-            if (!isAdded)
+            if (written.HasFlag(Written.Unwritable))
             {
-                return false;
+                return written;
             }
         }
 
-        return true;
+        return written;
     }
 
     private static QueryProperty[] GetQueryProperties(Type type, RequestPart part)
@@ -646,14 +678,29 @@ public static class McpRequestValueFormatter
     private sealed record QueryProperty(PropertyInfo Property, string Key, bool HasModelBinder);
 
     /// <summary>
-    /// A part of the request a value goes into, by the binding sources that never fill it and how a value is written into
-    /// it, or null for a value it cannot hold, with what MVC reads of each type's properties from it.
+    /// How the values went into a part of the request: each as text every culture reads the same, or some in the current
+    /// culture, and whether one could not go in at all, which stops the writing with the parts added before it.
     /// </summary>
-    private sealed class RequestPart(BindingSource[] unfilledSources, Func<object, string?> format)
+    [Flags]
+    private enum Written
+    {
+        Invariantly = 0,
+        InTheCulture = 1,
+        Unwritable = 2
+    }
+
+    /// <summary>
+    /// A part of the request a value goes into, by the binding sources that never fill it, how a value is written into
+    /// it, or null for a value it cannot hold, and whether its text was written in the culture, with what MVC reads of each
+    /// type's properties from it.
+    /// </summary>
+    private sealed class RequestPart(BindingSource[] unfilledSources, Func<object, string?> format, Func<object, string, bool> isWrittenInTheCulture)
     {
         public BindingSource[] UnfilledSources { get; } = unfilledSources;
 
         public Func<object, string?> Format { get; } = format;
+
+        public Func<object, string, bool> IsWrittenInTheCulture { get; } = isWrittenInTheCulture;
 
         public ConcurrentDictionary<Type, QueryProperty[]> PropertiesByType { get; } = new();
     }

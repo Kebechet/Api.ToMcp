@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 using System.Text;
@@ -384,21 +385,33 @@ public static class ParityProbeTools
         Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Name", name));
         Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "X-Tags", tags));
         var formParts = new List<string>();
-        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "comment", comment));
+        CultureInfo? formCulture = null;
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "comment", comment, ref formCulture));
 
-        return new McpHttpRequest(HttpMethod.Post, route) { Headers = headers, FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
+        return new McpHttpRequest(HttpMethod.Post, route) { Headers = headers, FormBody = string.Join("&", formParts), FormCulture = formCulture }
+            .SendAsync(invoker, cancellationToken);
     }
 
     /// <summary>
-    /// Sends a number in a form, as a generated tool of a <c>[FromForm]</c> parameter does.
+    /// Sends a number in a form, and the argument <c>language</c> as <c>Accept-Language</c>, as a generated tool of
+    /// <c>[FromForm]</c> and <c>[FromHeader]</c> parameters does.
     /// </summary>
     [McpServerTool(Name = "parity_form_amount")]
-    public static Task<CallToolResult> SendFormAmount(IMcpHttpInvoker invoker, string route, decimal amount, CancellationToken cancellationToken)
+    public static Task<CallToolResult> SendFormAmount(IMcpHttpInvoker invoker, string route, decimal amount, string? language = null, CancellationToken cancellationToken = default)
     {
+        var headers = new List<KeyValuePair<string, string>>();
+        Assert.True(McpRequestValueFormatter.TryAddHeaderValue(headers, "Accept-Language", language));
         var formParts = new List<string>();
-        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "amount", amount));
+        CultureInfo? formCulture = null;
+        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "amount", amount, ref formCulture));
 
-        return new McpHttpRequest(HttpMethod.Post, route) { FormBody = string.Join("&", formParts) }.SendAsync(invoker, cancellationToken);
+        return new McpHttpRequest(HttpMethod.Post, route)
+        {
+            Headers = headers,
+            HeaderArguments = new Dictionary<string, string> { ["Accept-Language"] = nameof(language) },
+            FormBody = string.Join("&", formParts),
+            FormCulture = formCulture
+        }.SendAsync(invoker, cancellationToken);
     }
 
     /// <summary>

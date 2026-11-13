@@ -254,7 +254,52 @@ public sealed class InProcessKestrelParityTests
             new Dictionary<string, string> { ["Accept-Language"] = "en-US" });
 
         Assert.False(tool.IsError, tool.Text);
-        Assert.Equal("{\"amount\":1234.25,\"culture\":\"en-US\"}", tool.Text);
+        Assert.Equal("{\"amount\":1234.25,\"language\":\"en-US\",\"culture\":\"en-US\"}", tool.Text);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AToolsForm_IsRefused_WhenItsCultureArgumentWouldMakeTheAppReadItInAnotherCulture(bool areApiCallsInProcess)
+    {
+        // The app picked en-US for the MCP request, and would pick de-DE for the tool's request, which reads the 1.5 the
+        // tool wrote in en-US as 15.
+        string[] cultures = ["de-DE", "en-US"];
+        await using var app = await StartAsync(
+            app => app.UseRequestLocalization(new RequestLocalizationOptions { DefaultRequestCulture = new RequestCulture(cultures[0]) }
+                .AddSupportedCultures(cultures)
+                .AddSupportedUICultures(cultures)),
+            areApiCallsInProcess);
+
+        var tool = await CallToolAsync(
+            app.Urls.Single(),
+            "parity_form_amount",
+            new Dictionary<string, object?> { ["route"] = Route + "/amount", ["amount"] = 1.5m, ["language"] = "de-DE" },
+            new Dictionary<string, string> { ["Accept-Language"] = "en-US" });
+
+        Assert.True(tool.IsError, tool.Text);
+        Assert.StartsWith("The argument 'language' is sent as the request header 'Accept-Language', which picks the culture the app reads the tool's form in", tool.Text);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AToolsForm_WithACultureArgument_IsSentAsItIs_WhenTheAppRunsNoRequestLocalization(bool areApiCallsInProcess)
+    {
+        // Without UseRequestLocalization the app reads the form in the server's culture, which the tool wrote it in, so the
+        // language is the action's own data.
+        await using var app = await StartAsync(areApiCallsInProcess: areApiCallsInProcess);
+
+        var tool = await CallToolAsync(
+            app.Urls.Single(),
+            "parity_form_amount",
+            new Dictionary<string, object?> { ["route"] = Route + "/amount", ["amount"] = 1234.25m, ["language"] = "x-unknown" },
+            new Dictionary<string, string> { ["Accept-Language"] = "en-US" });
+
+        Assert.False(tool.IsError, tool.Text);
+        var bound = JsonDocument.Parse(tool.Text).RootElement;
+        Assert.Equal(1234.25m, bound.GetProperty("amount").GetDecimal());
+        Assert.Equal("x-unknown", bound.GetProperty("language").GetString());
     }
 
     [Fact]
@@ -496,9 +541,9 @@ public sealed class KestrelParityController : ControllerBase
     }
 
     [HttpPost("amount")]
-    public IActionResult Amount([FromForm] decimal amount)
+    public IActionResult Amount([FromForm] decimal amount, [FromHeader(Name = "Accept-Language")] string? language)
     {
-        return Ok(new { amount, culture = CultureInfo.CurrentCulture.Name });
+        return Ok(new { amount, language, culture = CultureInfo.CurrentCulture.Name });
     }
 
     [HttpGet("client")]

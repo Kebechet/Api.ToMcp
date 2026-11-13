@@ -24,10 +24,10 @@ public class McpRequestValueFormatterHeaderAndFormTests
     {
         var formParts = new List<string>();
 
-        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "name", "a b&c=d+e"));
-        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "at", new DateTime(2026, 9, 28, 14, 30, 0)));
-        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "ids", new[] { 1, 2 }));
-        Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "none", null));
+        Assert.True(TryAddFormValue(formParts, "name", "a b&c=d+e"));
+        Assert.True(TryAddFormValue(formParts, "at", new DateTime(2026, 9, 28, 14, 30, 0)));
+        Assert.True(TryAddFormValue(formParts, "ids", new[] { 1, 2 }));
+        Assert.True(TryAddFormValue(formParts, "none", null));
 
         Assert.Equal(new[] { "name=a%20b%26c%3Dd%2Be", "at=2026-09-28T14%3A30%3A00.0000000", "ids=1", "ids=2" }, formParts);
     }
@@ -37,7 +37,7 @@ public class McpRequestValueFormatterHeaderAndFormTests
     {
         var formParts = new List<string>();
 
-        var isAdded = McpRequestValueFormatter.TryAddFormValue(formParts, "review", new FormReview
+        var isAdded = TryAddFormValue(formParts, "review", new FormReview
         {
             Rating = 5,
             Comment = "Quiet",
@@ -136,11 +136,11 @@ public class McpRequestValueFormatterHeaderAndFormTests
         {
             var formParts = new List<string>();
 
-            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "amount", 1234.25m));
-            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "ratio", -0.5));
-            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "day", new DateOnly(2026, 9, 28)));
-            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "delta", -12));
-            Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "id", Guid.Empty));
+            Assert.True(TryAddFormValue(formParts, "amount", 1234.25m));
+            Assert.True(TryAddFormValue(formParts, "ratio", -0.5));
+            Assert.True(TryAddFormValue(formParts, "day", new DateOnly(2026, 9, 28)));
+            Assert.True(TryAddFormValue(formParts, "delta", -12));
+            Assert.True(TryAddFormValue(formParts, "id", Guid.Empty));
 
             Assert.Equal(new[] { amount, ratio, day, delta, "id=00000000-0000-0000-0000-000000000000" }, formParts);
         }
@@ -162,7 +162,7 @@ public class McpRequestValueFormatterHeaderAndFormTests
                 CultureInfo.CurrentCulture = culture;
                 var formParts = new List<string>();
 
-                Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "a", -1234.25m));
+                Assert.True(TryAddFormValue(formParts, "a", -1234.25m));
 
                 var text = Uri.UnescapeDataString(formParts[0]["a=".Length..]);
                 Assert.True(
@@ -190,10 +190,10 @@ public class McpRequestValueFormatterHeaderAndFormTests
         CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
         try
         {
-            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "day", day));
-            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "form", new DatedForm { Amount = 1.5m, Day = day }));
-            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "days", new[] { new DateOnly(2026, 11, 13), day }));
-            Assert.False(McpRequestValueFormatter.TryAddFormValue([], "forms", new[] { new DatedForm { Day = new DateOnly(2026, 11, 13) }, new DatedForm { Day = day } }));
+            Assert.False(TryAddFormValue([], "day", day));
+            Assert.False(TryAddFormValue([], "form", new DatedForm { Amount = 1.5m, Day = day }));
+            Assert.False(TryAddFormValue([], "days", new[] { new DateOnly(2026, 11, 13), day }));
+            Assert.False(TryAddFormValue([], "forms", new[] { new DatedForm { Day = new DateOnly(2026, 11, 13) }, new DatedForm { Day = day } }));
         }
         finally
         {
@@ -215,11 +215,70 @@ public class McpRequestValueFormatterHeaderAndFormTests
                 DateOnly[] days = [DateOnly.FromDateTime(calendar.MinSupportedDateTime), DateOnly.FromDateTime(calendar.MaxSupportedDateTime)];
                 var formParts = new List<string>();
 
-                Assert.True(McpRequestValueFormatter.TryAddFormValue(formParts, "days", days), culture.Name);
+                Assert.True(TryAddFormValue(formParts, "days", days), culture.Name);
 
                 var texts = formParts.Select(x => Uri.UnescapeDataString(x["days=".Length..])).ToList();
                 Assert.Equal(days, texts.Select(x => (DateOnly)converter.ConvertFrom(null, culture, x)!));
             }
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Theory]
+    [InlineData("en-US", 1.5, true)]
+    [InlineData("en-US", -12, true)]
+    [InlineData("en-US", 12, false)]
+    [InlineData("en-US", 2.0, false)]
+    [InlineData("de-DE", 1.5, true)]
+    [InlineData("ar-SA", 12, false)]
+    [InlineData("", 1.5, true)]
+    public void TryAddFormValue_TellsTheCulture_WhenItWritesANumberAnotherCultureMayReadOtherwise(string cultureName, double amount, bool isWrittenInTheCulture)
+    {
+        // Digits alone are the same number in every culture; a decimal separator or a sign is not.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
+        try
+        {
+            CultureInfo? formCulture = null;
+
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "name", "Ann", ref formCulture));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "amount", amount, ref formCulture));
+
+            Assert.Equal(isWrittenInTheCulture ? CultureInfo.CurrentCulture : null, formCulture);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
+    }
+
+    [Fact]
+    public void TryAddFormValue_TellsTheCulture_WhenItWritesADateOrANumberInsideAnObjectOrACollection()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+        try
+        {
+            CultureInfo? textOnly = null;
+            CultureInfo? date = null;
+            CultureInfo? nestedAmount = null;
+            CultureInfo? amounts = null;
+            CultureInfo? kept = CultureInfo.InvariantCulture;
+
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "review", new FormReview { Rating = 5, Comment = "1,5", Tags = ["a"] }, ref textOnly));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "day", new DateOnly(2026, 11, 13), ref date));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "form", new DatedForm { Amount = 1.5m, Day = new DateOnly(2026, 11, 13) }, ref nestedAmount));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "amounts", new[] { 1m, 2.25m }, ref amounts));
+            Assert.True(McpRequestValueFormatter.TryAddFormValue([], "ids", new[] { 1, 2 }, ref kept));
+
+            Assert.Null(textOnly);
+            Assert.Equal("de-DE", date?.Name);
+            Assert.Equal("de-DE", nestedAmount?.Name);
+            Assert.Equal("de-DE", amounts?.Name);
+            Assert.Same(CultureInfo.InvariantCulture, kept);
         }
         finally
         {
@@ -244,6 +303,13 @@ public class McpRequestValueFormatterHeaderAndFormTests
         {
             CultureInfo.CurrentCulture = previousCulture;
         }
+    }
+
+    private static bool TryAddFormValue(List<string> formParts, string name, object? value)
+    {
+        CultureInfo? formCulture = null;
+
+        return McpRequestValueFormatter.TryAddFormValue(formParts, name, value, ref formCulture);
     }
 
     private sealed class DatedForm
