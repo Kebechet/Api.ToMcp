@@ -133,17 +133,21 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// The declaration of the method the documentation ID leads back to, else the declaration whose name is where the
-        /// scan found it. An ID leads back to no method when a parameter's type is one the compilation cannot bind, such
-        /// as a type another source generator makes, or one reached only through an <c>extern alias</c>; and to two when
-        /// two file-local classes declare the same method.
+        /// The declaration of the method the documentation ID leads back to, when its name is where the scan found it; else
+        /// the declaration whose name is there. An ID leads back to no method when a parameter's type is one the
+        /// compilation cannot bind, such as a type another source generator makes, or one reached only through an
+        /// <c>extern alias</c>; to two when two file-local classes declare the same method; and to the wrong one of two
+        /// overloads whose parameter types differ only by an <c>extern alias</c>.
         /// </summary>
         private static MethodDeclarationSyntax? FindBodyDeclaration(BodyToAnalyzeModel body, Compilation compilation, CancellationToken ct)
         {
             var methods = DocumentationCommentId.GetSymbolsForDeclarationId(body.MethodId, compilation);
             var method = methods.Length == 1 ? methods[0] as IMethodSymbol : null;
-            if (method is not null)
-                return FindBodyDeclaration(method, ct);
+            var methodDeclaration = method is null ? null : FindBodyDeclaration(method, ct);
+            if (methodDeclaration is not null &&
+                methodDeclaration.Identifier.Span == body.Declaration.TextSpan &&
+                methodDeclaration.SyntaxTree.FilePath == body.Declaration.FilePath)
+                return methodDeclaration;
 
             var location = body.Declaration.ToLocation(compilation);
             var declaration = location.SourceTree?.GetRoot(ct).FindToken(location.SourceSpan.Start).Parent as MethodDeclarationSyntax;

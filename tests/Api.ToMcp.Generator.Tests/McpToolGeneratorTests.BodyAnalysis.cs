@@ -160,10 +160,7 @@ namespace TestApi
     [Fact]
     public void Generator_ProvesTheBody_WhenAParameterTypeIsReachedThroughAnExternAlias()
     {
-        var library = CreateCompilation("namespace Lib { public sealed class Service { } }").WithAssemblyName("Lib");
-        using var stream = new MemoryStream();
-        Assert.True(library.Emit(stream).Success);
-        var reference = MetadataReference.CreateFromImage(stream.ToArray(), new MetadataReferenceProperties(aliases: ImmutableArray.Create("V1")));
+        var reference = CreateLibraryReference("Lib", ImmutableArray.Create("V1"));
         var source = "extern alias V1;\n" + StructuredOutputSource("public ActionResult<Product> Get([FromServices] V1::Lib.Service service) => new Product();");
         var compilation = CreateCompilation(source).AddReferences(reference);
         Assert.DoesNotContain(compilation.GetDiagnostics(), x => x.Severity == DiagnosticSeverity.Error);
@@ -171,6 +168,29 @@ namespace TestApi
         var generated = GetGeneratedSources(CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation));
 
         Assert.Contains(StrictOutput, generated[ToolClassName + ".g.cs"]);
+    }
+
+    [Fact]
+    public void Generator_ProvesEachBody_OfTwoOverloadsWhoseParameterTypesDifferOnlyByAnExternAlias()
+    {
+        // Both overloads have one documentation ID, which leads back to the overload of the type outside the alias only.
+        var aliased = CreateLibraryReference("LibV1", ImmutableArray.Create("V1"));
+        var global = CreateLibraryReference("Lib", ImmutableArray<string>.Empty);
+        var source = "extern alias V1;\nusing Api.ToMcp.Abstractions;\n" + StructuredOutputSource(@"
+        [HttpGet(""v1"")]
+        [McpExpose(ToolName = ""GetV1"")]
+        public ActionResult<Product> Get([FromServices] V1::Lib.Service service) => NoContent();
+
+        [HttpGet(""current"")]
+        [McpExpose(ToolName = ""GetCurrent"")]
+        public ActionResult<Product> Get([FromServices] Lib.Service service) => new Product();", isRawBody: true);
+        var compilation = CreateCompilation(source).AddReferences(aliased, global);
+        Assert.DoesNotContain(compilation.GetDiagnostics(), x => x.Severity == DiagnosticSeverity.Error);
+
+        var generated = GetGeneratedSources(CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation));
+
+        Assert.Contains(NullableOutput, generated.Values.Single(x => x.Contains(@"Name = ""GetV1""")));
+        Assert.Contains(StrictOutput, generated.Values.Single(x => x.Contains(@"Name = ""GetCurrent""")));
     }
 
     [Fact]
@@ -223,6 +243,18 @@ namespace TestApi
 
         Assert.Contains("UseStructuredContent = true, OutputSchemaType = typeof(global::TestApi.Order),", tool);
         Assert.Contains($"McpGeneratedTool(IsOutputNullable = {isOutputNullable})", tool);
+    }
+
+    /// <summary>
+    /// A reference to an assembly declaring <c>Lib.Service</c>, under the given aliases.
+    /// </summary>
+    private static MetadataReference CreateLibraryReference(string assemblyName, ImmutableArray<string> aliases)
+    {
+        var library = CreateCompilation("namespace Lib { public sealed class Service { } }").WithAssemblyName(assemblyName);
+        using var stream = new MemoryStream();
+        Assert.True(library.Emit(stream).Success);
+
+        return MetadataReference.CreateFromImage(stream.ToArray(), new MetadataReferenceProperties(aliases: aliases));
     }
 
     /// <summary>
