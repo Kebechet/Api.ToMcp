@@ -233,7 +233,7 @@ public static class McpRequestValueFormatter
     {
         foreach (var property in GetQueryProperties(value.GetType()))
         {
-            var key = $"{prefix}.{property.Name}";
+            var key = $"{prefix}.{property.Key}";
             var propertyValue = property.Property.GetValue(value);
             if (propertyValue is not null && property.HasModelBinder)
             {
@@ -476,7 +476,7 @@ public static class McpRequestValueFormatter
     /// A property MVC can read from the query string.
     /// </summary>
     /// <param name="Property">The property, read on each call.</param>
-    /// <param name="Name">The key MVC reads it under after the prefix.</param>
+    /// <param name="Key">The key MVC reads it under after the prefix: the name a binding attribute gives it, else its own.</param>
     /// <param name="HasModelBinder">Whether a model binder of its own reads it, which takes its value whole.</param>
-    private sealed record QueryProperty(PropertyInfo Property, string Name, bool HasModelBinder);
+    private sealed record QueryProperty(PropertyInfo Property, string Key, bool HasModelBinder);
 }
