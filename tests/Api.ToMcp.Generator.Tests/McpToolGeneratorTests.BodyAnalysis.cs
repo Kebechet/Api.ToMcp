@@ -11,8 +11,8 @@ namespace Api.ToMcp.Generator.Tests;
 /// <summary>
 /// The flow analysis that proves an output schema need not allow null binds the action's whole body, so the generator
 /// runs it only for a tool that gets an output schema: not with <c>"structuredOutput": false</c>, and not for an action
-/// the config leaves out. It reads the compilation after the config, so an edit in another file that changes what a body
-/// returns still reaches the schema. See https://github.com/Kebechet/Api.ToMcp/issues/27.
+/// the config leaves out. It runs in a step of its own that reads the compilation after the config, so an edit in another
+/// file that changes what a body returns still reaches the schema. See https://github.com/Kebechet/Api.ToMcp/issues/27.
 /// </summary>
 public partial class McpToolGeneratorTests
 {
@@ -52,20 +52,24 @@ namespace TestApi
 }
 ";
 
+    private const string ProductsGetId = "M:TestApi.ProductsController.Get~Microsoft.AspNetCore.Mvc.ActionResult{TestApi.Product}";
+    private const string ProductsNewId = "M:TestApi.ProductsController.New~Microsoft.AspNetCore.Mvc.ActionResult{TestApi.Product}";
+    private const string OrdersGetId = "M:TestApi.OrdersController.Get~Microsoft.AspNetCore.Mvc.ActionResult{TestApi.Order}";
+
     [Fact]
     public void Generator_AnalyzesTheBodiesOfToolsWithAnOutputSchema_EachDeclarationOnce()
     {
         var driver = CreateTrackingDriver(AllExceptExcludedConfig).RunGenerators(CreateCompilation(CrudControllers));
 
         // The two controllers inherit each action from one declaration, whose body is the same for both.
-        Assert.Equal(
-            new[]
-            {
-                "M:TestApi.CrudController`1.Count~Microsoft.AspNetCore.Mvc.ActionResult{System.Int32}",
-                "M:TestApi.CrudController`1.Create(`0)~Microsoft.AspNetCore.Mvc.ActionResult{`0}",
-                "M:TestApi.CrudController`1.GetAll~Microsoft.AspNetCore.Mvc.ActionResult{System.Collections.Generic.List{`0}}"
-            },
-            GetBodiesToAnalyze(driver).OrderBy(x => x, StringComparer.Ordinal));
+        var bodies = new[]
+        {
+            "M:TestApi.CrudController`1.Count~Microsoft.AspNetCore.Mvc.ActionResult{System.Int32}",
+            "M:TestApi.CrudController`1.Create(`0)~Microsoft.AspNetCore.Mvc.ActionResult{`0}",
+            "M:TestApi.CrudController`1.GetAll~Microsoft.AspNetCore.Mvc.ActionResult{System.Collections.Generic.List{`0}}"
+        };
+        Assert.Equal(bodies, GetBodiesToAnalyze(driver).OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Equal(bodies, GetBodiesNeverEmpty(driver).Bodies.OrderBy(x => x, StringComparer.Ordinal));
         Assert.Equal(6, GetGeneratedSources(driver).Keys.Count(x => x.EndsWith("Tool.g.cs")));
     }
 
@@ -77,6 +81,7 @@ namespace TestApi
         var driver = CreateTrackingDriver(config).RunGenerators(CreateCompilationOfFiles((ControllersFile, ControllersWithProvableBodies), (CatalogFile, CatalogSource)));
 
         Assert.Empty(GetBodiesToAnalyze(driver));
+        Assert.Empty(GetBodiesNeverEmpty(driver).Bodies);
         Assert.Equal(3, GetGeneratedSources(driver).Keys.Count(x => x.EndsWith("Tool.g.cs")));
     }
 
@@ -87,7 +92,25 @@ namespace TestApi
 
         var driver = CreateTrackingDriver(config).RunGenerators(CreateCompilationOfFiles((ControllersFile, ControllersWithProvableBodies), (CatalogFile, CatalogSource)));
 
-        Assert.Equal(new[] { "M:TestApi.ProductsController.Get~Microsoft.AspNetCore.Mvc.ActionResult{TestApi.Product}" }, GetBodiesToAnalyze(driver));
+        Assert.Equal(new[] { ProductsGetId }, GetBodiesToAnalyze(driver));
+        Assert.Equal(new[] { ProductsGetId }, GetBodiesNeverEmpty(driver).Bodies);
+    }
+
+    [Fact]
+    public void Generator_AnalyzesTheBodiesInTheirOwnStep_AfterAnEditToAFileWithoutControllers()
+    {
+        var compilation = CreateCompilationOfFiles((ControllersFile, ControllersWithProvableBodies), (CatalogFile, CatalogSource), (FileWithoutControllers, ClockSource));
+        var driver = CreateTrackingDriver(AllExceptExcludedConfig).RunGenerators(compilation);
+
+        driver = driver.RunGenerators(InsertText(compilation, FileWithoutControllers, ClockSource.Length, "// edited\n"));
+
+        // The plan, and with it the list of bodies, is reused; the analysis runs again on the edited compilation and
+        // proves what it proved before, so no tool is generated again.
+        AssertStepReasons(driver, TrackingNames.BodiesToAnalyze, IncrementalStepRunReason.Cached);
+        var (bodies, reason) = GetBodiesNeverEmpty(driver);
+        Assert.Equal(IncrementalStepRunReason.Unchanged, reason);
+        Assert.Equal(new[] { OrdersGetId, ProductsGetId, ProductsNewId }, bodies.OrderBy(x => x, StringComparer.Ordinal));
+        AssertSourceOutputReasons(driver, TrackingNames.ToolSources, IncrementalStepRunReason.Cached);
     }
 
     [Fact]
@@ -102,6 +125,7 @@ namespace TestApi
         // No controller changed, so the plan is reused; the analysis reads the edited compilation, and only the tool whose
         // body returns what Find() returns is generated again.
         AssertStepReasons(driver, TrackingNames.Plan, IncrementalStepRunReason.Cached);
+        Assert.Equal(new[] { OrdersGetId, ProductsNewId }, GetBodiesNeverEmpty(driver).Bodies.OrderBy(x => x, StringComparer.Ordinal));
         Assert.Contains(NullableOutput, GetGeneratedSources(driver)["ProductsController_GetTool.g.cs"]);
         var toolReasons = GetStepOutputs(driver, TrackingNames.ToolSources).ToDictionary(x => ((ToolSourceModel)x.Value).ClassName, x => x.Reason);
         Assert.Equal(IncrementalStepRunReason.Modified, toolReasons["ProductsController_GetTool"]);
@@ -189,12 +213,23 @@ namespace TestApi
     }
 
     /// <summary>
-    /// The method declarations, by documentation ID, whose bodies the run analyzed.
+    /// The method declarations, by documentation ID, whose bodies the plan asks the analysis to read.
     /// </summary>
     private static string[] GetBodiesToAnalyze(GeneratorDriver driver)
     {
         var output = Assert.Single(GetStepOutputs(driver, TrackingNames.BodiesToAnalyze));
 
         return ((EquatableArray<BodyToAnalyzeModel>)output.Value).Select(x => x.MethodId).ToArray();
+    }
+
+    /// <summary>
+    /// The method declarations, by documentation ID, whose bodies the analysis step proved to never succeed without a body,
+    /// and why that step ran.
+    /// </summary>
+    private static (string[] Bodies, IncrementalStepRunReason Reason) GetBodiesNeverEmpty(GeneratorDriver driver)
+    {
+        var output = Assert.Single(GetStepOutputs(driver, TrackingNames.BodiesNeverEmpty));
+
+        return (((EquatableArray<BodyToAnalyzeModel>)output.Value).Select(x => x.MethodId).ToArray(), output.Reason);
     }
 }

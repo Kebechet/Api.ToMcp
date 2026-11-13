@@ -87,7 +87,8 @@ namespace Api.ToMcp.Generator
                 .Select((x, _) => x.BodiesToAnalyze)
                 .WithTrackingName(TrackingNames.BodiesToAnalyze)
                 .Combine(context.CompilationProvider)
-                .Select((source, ct) => EmptyResponseAnalyzer.GetBodiesNeverEmpty(source.Left, source.Right, ct));
+                .Select((source, ct) => EmptyResponseAnalyzer.GetBodiesNeverEmpty(source.Left, source.Right, ct))
+                .WithTrackingName(TrackingNames.BodiesNeverEmpty);
 
             // Step 4: Generate source, one output per tool, so that an edit generates only the tools it changes again.
             var tools = plan
