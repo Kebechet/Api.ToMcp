@@ -162,6 +162,32 @@ namespace TestApi
         Assert.Contains("McpGeneratedTool(IsOutputNullable = true)", generated["FileHandlers_BTool.g.cs"]);
     }
 
+    [Theory]
+    [InlineData("public static Order Get() => new Order();", "false")]
+    [InlineData("public static Order Get() => null!;", "true")]
+    public void Endpoint_WithAMethodHandler_GetsAStrictOutputSchema_OnlyWhenItsBodyAlwaysReturnsAValue(string handler, string isOutputNullable)
+    {
+        var source = MinimalApiUsings + MinimalApiModels + $@"
+namespace TestApi
+{{
+    public static class Endpoints
+    {{
+        public static void Map(WebApplication app) => app.MapGet(""/orders"", Handlers.Get);
+    }}
+
+    public static class Handlers
+    {{
+        {handler}
+    }}
+}}
+";
+
+        var tool = GenerateCompilingToolClass(source, MinimalApisConfig, "Handlers_GetTool");
+
+        Assert.Contains("UseStructuredContent = true, OutputSchemaType = typeof(global::TestApi.Order),", tool);
+        Assert.Contains($"McpGeneratedTool(IsOutputNullable = {isOutputNullable})", tool);
+    }
+
     /// <summary>
     /// The method declarations, by documentation ID, whose bodies the run analyzed.
     /// </summary>
