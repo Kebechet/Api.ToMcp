@@ -159,6 +159,8 @@ public partial class McpToolGeneratorTests
     [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "RouteSlugAndQuery p", "GET /api/orders/{id}/{slug}", "the property Slug of 'p'")]
     // [FromQuery] id arrives; the property Id of key does not.
     [InlineData(ApiControllerDeclaration, "[HttpGet(\"all\")] [HttpGet(\"{id}\")]", "[FromQuery] int? id, [FromRoute] DocKey key", "GET /api/orders/{id}", "the property Id of 'key'")]
+    // Two values bind the route value, each from the route alone.
+    [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "int id, [FromRoute] string? slug, RouteSlugFilter f", "GET /api/orders/{id}/{slug}", "'slug' and the property Slug of 'f'")]
     public void Generator_ReportsAPropertyThatMvcBindsFromARouteTheToolDoesNotCall(string controllerDeclaration, string httpAttributes, string parameters, string uncalledRoute, string lostValue)
     {
         var source = UncalledRoutesSource(controllerDeclaration, $"{httpAttributes} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);", RouteValueTypes);
