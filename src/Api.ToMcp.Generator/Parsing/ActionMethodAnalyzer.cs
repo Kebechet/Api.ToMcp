@@ -489,6 +489,16 @@ namespace Api.ToMcp.Generator.Parsing
                     properties = properties.Select(x => includedPropertyNames.Contains(x.Name) ? x : x with { IsBindable = false }).ToImmutableArray();
                 }
 
+                // A binder of the project's binds the whole parameter, so MVC binds none of its properties one by one; and
+                // MCP014 is not sure MVC binds a parameter whose own binding behavior is Never, or one it cannot follow.
+                var hasBinderType = HasBinderType(modelAttributes);
+                var parameterBindingBehavior = bindingAttributes.FirstOrDefault(IsBindingBehaviorAttribute);
+                var isMaybeNeverBound = parameterBindingBehavior is not null && IsBindingNever(parameterBindingBehavior, compilation, ct) != false;
+                if (hasBinderType || isMaybeNeverBound)
+                {
+                    properties = properties.Select(x => x with { IsBindable = false }).ToImmutableArray();
+                }
+
                 var source = declaredSource ?? InferParameterSource(param.Type, httpMethod, isApiController, properties);
 
                 // The AI never chooses such a header, so it is no argument: the action gets the value the tool's request
@@ -517,7 +527,7 @@ namespace Api.ToMcp.Generator.Parsing
                     IsDefaultRefusedAsText = param.HasExplicitDefaultValue && IsRefusedAsText(param.Type, param.ExplicitDefaultValue),
                     IsSimpleType = isSimpleType,
                     IsCollection = IsCollection(param.Type),
-                    IsReadFromOneValue = !HasBinderType(modelAttributes) && IsReadFromOneValue(param.Type),
+                    IsReadFromOneValue = !hasBinderType && !isMaybeNeverBound && IsReadFromOneValue(param.Type),
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
                     // MVC binds every parameter under the first name these give, whatever its source

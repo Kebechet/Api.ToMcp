@@ -206,6 +206,42 @@ public partial class McpToolGeneratorTests
     }
 
     /// <summary>
+    /// A binder of the project's, and a binding behavior attribute of its own for parameters too, that passes Never.
+    /// </summary>
+    private const string ParameterBindingTypes = @"
+    public sealed class FilterBinder : Microsoft.AspNetCore.Mvc.ModelBinding.IModelBinder
+    {
+        public Task BindModelAsync(Microsoft.AspNetCore.Mvc.ModelBinding.ModelBindingContext bindingContext) => Task.CompletedTask;
+    }
+
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Property | AttributeTargets.Parameter)]
+    public sealed class NeverBoundAttribute : Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehaviorAttribute
+    {
+        public NeverBoundAttribute() : base(Microsoft.AspNetCore.Mvc.ModelBinding.BindingBehavior.Never)
+        {
+        }
+    }
+";
+
+    [Theory]
+    // MCP014 is not sure MVC binds a parameter whose own binding behavior is Never, from the route or at all.
+    [InlineData("int id, [FromRoute] [NeverBound] string? slug")]
+    [InlineData("int id, [NeverBound] RouteSlugFilter f")]
+    // A binder of the project's binds the whole parameter, so MVC binds no property of it one by one.
+    [InlineData("int id, [FromQuery] [ModelBinder(typeof(FilterBinder))] RouteSlugFilter f")]
+    [InlineData("int id, [FromRoute] [ModelBinder(typeof(FilterBinder))] RouteSlugFilter f")]
+    public void Generator_ReportsNothing_ForAParameterMvcNeverBindsOrBindsThroughABinderOfTheProjects(string parameters)
+    {
+        var source = UncalledRoutesSource(
+            PlainControllerDeclaration,
+            $"[HttpGet(\"{{id}}\")] [HttpGet(\"{{id}}/{{slug}}\")] public Task<string> Find({parameters}) => Task.FromResult(string.Empty);",
+            RouteValueTypes + ParameterBindingTypes);
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UncalledRouteId);
+    }
+
+    /// <summary>
     /// Types with a [FromRoute] property Slug or Tags that MVC's complex binder binds or never binds, or that MCP014
     /// cannot be sure it binds from one route value.
     /// </summary>
