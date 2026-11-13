@@ -72,17 +72,27 @@ namespace Api.ToMcp.Generator
                 .WithTrackingName(TrackingNames.Endpoints);
 
             // Step 3: Decide which tools to generate and which diagnostics to report, from the models alone. After an edit
-            // that changes no controller, no endpoint and not the config, Roslyn reuses this step's output and the sources
-            // made from it.
+            // that changes no controller, no endpoint and not the config, Roslyn reuses this step's output, and the sources
+            // made from it unless the edit changes what step 3b proves.
             var plan = controllerProvider.Collect()
                 .Combine(endpointProvider)
                 .Combine(configProvider)
                 .Select((source, _) => CreatePlan(source.Left.Left, source.Left.Right, source.Right))
                 .WithTrackingName(TrackingNames.Plan);
 
+            // Step 3b: Prove which output schemas need not allow null. The flow analysis of an action's body binds all of
+            // it, so it reads only the bodies of the tools that get an output schema, which the plan names. An edit in any
+            // file can change what a body returns, so it reads the compilation, after every edit.
+            var bodiesNeverEmpty = plan
+                .Select((x, _) => x.BodiesToAnalyze)
+                .WithTrackingName(TrackingNames.BodiesToAnalyze)
+                .Combine(context.CompilationProvider)
+                .Select((source, ct) => EmptyResponseAnalyzer.GetBodiesNeverEmpty(source.Left, source.Right, ct));
+
             // Step 4: Generate source, one output per tool, so that an edit generates only the tools it changes again.
             var tools = plan
-                .SelectMany((x, _) => x.Tools)
+                .Combine(bodiesNeverEmpty)
+                .SelectMany((source, _) => WithProvenOutputs(source.Left.Tools, source.Right))
                 .WithTrackingName(TrackingNames.ToolSources);
             context.RegisterSourceOutput(tools, (ctx, tool) =>
                 ctx.AddSource(tool.ClassName + GeneratedSourceSuffix, ToolClassEmitter.Emit(tool)));
@@ -93,7 +103,7 @@ namespace Api.ToMcp.Generator
             context.RegisterSourceOutput(toolClassNames, (ctx, names) =>
                 ctx.AddSource(RegistrationSourceName + GeneratedSourceSuffix, ToolClassEmitter.EmitRegistration(names)));
 
-            // Step 5: Report the diagnostics. Only this step reads the compilation, so it runs again after every edit: a
+            // Step 5: Report the diagnostics. This step reads the compilation, so it runs again after every edit: a
             // warning at an action has to point into the syntax tree of the compilation that reports it, for the file's
             // #pragma warning disable and .editorconfig severities to apply to it.
             var diagnostics = plan
@@ -245,12 +255,17 @@ namespace Api.ToMcp.Generator
                 Action = action with { SourceLocation = null },
                 Naming = config.Naming,
                 StructuredOutput = config.StructuredOutput
-            });
+            }).ToImmutableArray();
 
             return new GenerationPlanModel
             {
-                Tools = tools.ToImmutableArray(),
-                Diagnostics = diagnostics.ToImmutableArray()
+                Tools = tools,
+                Diagnostics = diagnostics.ToImmutableArray(),
+                BodiesToAnalyze = tools
+                    .Where(x => x.Action.BodyToAnalyze is not null && ToolClassEmitter.HasOutputSchema(x.Action, x.StructuredOutput))
+                    .Select(x => x.Action.BodyToAnalyze!)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToImmutableArray()
             };
         }
 
@@ -270,6 +285,18 @@ namespace Api.ToMcp.Generator
                     config.FilePath,
                     passedOverFilePath));
             }
+        }
+
+        /// <summary>
+        /// The tools, with a strict output schema for each whose action's body is proven to never succeed without a body.
+        /// </summary>
+        private static IEnumerable<ToolSourceModel> WithProvenOutputs(EquatableArray<ToolSourceModel> tools, EquatableArray<string> bodiesNeverEmpty)
+        {
+            var neverEmpty = new HashSet<string>(bodiesNeverEmpty, StringComparer.Ordinal);
+
+            return tools.Select(x => x.Action.BodyToAnalyze is not null && neverEmpty.Contains(x.Action.BodyToAnalyze)
+                ? x with { Action = x.Action with { IsOutputNullable = false } }
+                : x);
         }
 
         /// <summary>

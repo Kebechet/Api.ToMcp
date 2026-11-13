@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -61,40 +62,76 @@ namespace Api.ToMcp.Generator.Parsing
         private static readonly string[] ErrorHelperNames = { "Problem", "ValidationProblem" };
 
         /// <summary>
-        /// Whether the body of each method declaration can return a result without a body, by the declaration as it is
-        /// written, with a generic base's type parameters unsubstituted.
+        /// The method declaration whose body decides whether the action can succeed without a body, as its documentation
+        /// ID, or null when the action can: its return type says so, or it has no body in source to prove otherwise. The
+        /// flow analysis of the body binds all of it, so the generator runs it with <see cref="GetBodiesNeverEmpty"/> only
+        /// for the tools that get an output schema, once the config says which those are.
         /// </summary>
-        private static readonly CompilationCache<IMethodSymbol, bool> BodyResults = new CompilationCache<IMethodSymbol, bool>(SymbolEqualityComparer.Default);
-
-        public static bool CanSucceedWithoutBody(IMethodSymbol method, Compilation compilation, CancellationToken ct)
+        public static string? GetBodyToAnalyze(IMethodSymbol method, CancellationToken ct)
         {
             var returnedType = UnwrapTask(method.ReturnType);
 
             // An action returning the value itself and declaring it nullable can send null. One declaring it not-null is
             // still read like the others: a value from code without nullable annotations reaches it without a warning.
             if (!IsActionResult(returnedType) && !IsNonNullable(returnedType))
-                return true;
+                return null;
 
             // The return type above is the controller's, with its type arguments: a value of T can be null for int? but not
             // for int. The body is the declaration's, the same for every controller that inherits the action, so its flow
             // analysis runs once per compilation instead of once per controller.
-            return BodyResults.GetOrAdd(compilation, method.OriginalDefinition, x => CanBodySucceedWithoutBody(x, compilation, ct));
+            var definition = method.OriginalDefinition;
+
+            return FindBodyDeclaration(definition, ct) is null ? null : DocumentationCommentId.CreateDeclarationId(definition);
         }
 
-        private static bool CanBodySucceedWithoutBody(IMethodSymbol method, Compilation compilation, CancellationToken ct)
+        /// <summary>
+        /// The method declarations, of those <see cref="GetBodyToAnalyze"/> named, whose bodies are proven to never succeed
+        /// without a body.
+        /// </summary>
+        public static EquatableArray<string> GetBodiesNeverEmpty(EquatableArray<string> methodIds, Compilation compilation, CancellationToken ct)
         {
-            var declaration = method.DeclaringSyntaxReferences
-                .Select(x => x.GetSyntax(ct))
-                .OfType<MethodDeclarationSyntax>()
-                .FirstOrDefault(x => x.Body != null || x.ExpressionBody != null);
+            // One semantic model per file, which the actions declared in it share, kept only for this analysis.
+            var semanticModels = new Dictionary<SyntaxTree, SemanticModel>();
+
+            return methodIds
+                .Where(x => !CanBodySucceedWithoutBody(x, compilation, semanticModels, ct))
+                .ToImmutableArray();
+        }
+
+        private static bool CanBodySucceedWithoutBody(
+            string methodId,
+            Compilation compilation,
+            Dictionary<SyntaxTree, SemanticModel> semanticModels,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var methods = DocumentationCommentId.GetSymbolsForDeclarationId(methodId, compilation);
+            var method = methods.Length == 1 ? methods[0] as IMethodSymbol : null;
+            if (method is null)
+                return true;
+
+            var declaration = FindBodyDeclaration(method, ct);
             if (declaration == null)
                 return true;
 
-            var semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+            if (!semanticModels.TryGetValue(declaration.SyntaxTree, out var semanticModel))
+            {
+                semanticModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+                semanticModels.Add(declaration.SyntaxTree, semanticModel);
+            }
 
             return GetReturnedExpressions(declaration)
                 .SelectMany(x => GetPossibleResults(x, semanticModel, ct))
                 .Any(x => !IsProvenBodyOrError(x, declaration, semanticModel, ct));
+        }
+
+        private static MethodDeclarationSyntax? FindBodyDeclaration(IMethodSymbol method, CancellationToken ct)
+        {
+            return method.DeclaringSyntaxReferences
+                .Select(x => x.GetSyntax(ct))
+                .OfType<MethodDeclarationSyntax>()
+                .FirstOrDefault(x => x.Body != null || x.ExpressionBody != null);
         }
 
         private static ITypeSymbol UnwrapTask(ITypeSymbol type)
