@@ -489,7 +489,9 @@ Before protocol version `2026-07-28`, an output schema had to describe an object
 
 ### Turning it off
 
-Set `"structuredOutput": false` in `generator.json`, and every generated tool goes back to text-only results. Do this when the API serializes with Newtonsoft.Json (`AddNewtonsoftJson`): the schema follows `System.Text.Json` and cannot see Newtonsoft's attributes and settings.
+Set `"structuredOutput": false` in `generator.json`, and every generated tool goes back to text-only results. Do this when the API serializes with Newtonsoft.Json (`AddNewtonsoftJson`): the schema follows `System.Text.Json` and cannot see Newtonsoft's attributes and settings, such as a `[JsonProperty]` name, `[Newtonsoft.Json.JsonIgnore]` or a `StringEnumConverter`, so a client that validates the structured content against the schema can reject the result.
+
+The host logs a warning at startup when MVC writes responses with Newtonsoft.Json, which it tells by Newtonsoft's `NewtonsoftJsonOutputFormatter`, or a class derived from it, among `MvcOptions.OutputFormatters`, while a generated tool has an output schema. The warning counts the tools of Minimal API endpoints too, as nothing at runtime tells them from the tools of controllers' actions, although a Minimal API endpoint writes its response with `System.Text.Json` whatever MVC uses. An app whose only tools with an output schema are endpoints' can ignore it.
 
 ## Scope-Based Access Control
 
@@ -1070,6 +1072,9 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 **Startup warning `Assembly '...' has types in MCP tool schemas but no XML documentation file`.**
 - A type used in a tool argument or response lives in a project built without `<GenerateDocumentationFile>true</GenerateDocumentationFile>`, comes from a NuGet package while the app lacks `<CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>`, or the `.xml` was not deployed next to the assembly. Enable the matching property and check the publish output; see [Request fields](#request-fields-dto-properties-nested-objects-array-items). Set `options.ArePropertyDescriptionsFromXmlDocs = false` to turn the feature (and the warning) off.
 - The variant `... could not be read (...)` means the file is there but damaged; rebuild and redeploy it.
+
+**Startup warning `MVC writes responses with Newtonsoft.Json (AddNewtonsoftJson), but the output schemas of generated tools are built from MVC's System.Text.Json options ...`.**
+- The output schemas follow `System.Text.Json`, while MVC writes the structured content with Newtonsoft.Json, so the two can disagree on property names, left-out properties and enums. Set `"structuredOutput": false` in `generator.json`; see [Turning it off](#turning-it-off). The count it gives includes the tools of Minimal API endpoints, whose responses `System.Text.Json` writes, so with no controller tool among them the warning does not apply.
 
 **Startup warning `HttpServerTransportOptions.PerSessionExecutionContext is true and SessionMode is ...`.**
 - A stateful session then runs every tool call without the HTTP request that carried it, so the tools forward no `Authorization` header and scope validation refuses every call. Set `PerSessionExecutionContext` to `false`, its default; see [When the link breaks](#when-the-link-breaks).
