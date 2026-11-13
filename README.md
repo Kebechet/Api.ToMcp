@@ -715,21 +715,33 @@ A tool calls your API at a base URL when it calls over HTTP, which it does only 
 
 1. The `McpTools:BaseUrl` configuration value, if set (e.g. in `appsettings.json`), used as given: an `http://` address stays `http://`.
 2. The first `https://` address the server is bound to.
-3. The first address of any scheme, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`: a container bound to `http://+:8080` is called at `http://localhost:8080`. Under IIS in process, the server's addresses are the site's bindings.
+3. The first `http://` address on loopback, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`: a container bound to `http://+:8080` is called at `http://localhost:8080`.
+4. The first other address, such as a specific IP address or a host name. Under IIS in process and HTTP.sys, the server's addresses are the site's bindings, which may name a host.
+
+A unix socket's or a named pipe's address, such as `http://unix:/run/app.sock` or `http://pipe:/name`, is skipped, as an HTTP client cannot call it.
 
 No header of the MCP request decides the address. `Host`, and `X-Forwarded-Host` where the app reads it, are the client's to set, so a client could otherwise send the tool's request, with its `Authorization` header, to any server the app can reach (https://github.com/Kebechet/Api.ToMcp/issues/48).
 
-Behind a reverse proxy that terminates TLS, the server listens only on HTTP, and the MCP request counts as HTTPS because the app trusts the proxy's `X-Forwarded-Proto`. `UseHttpsRedirection` would then send the tool's request to the `http://` binding on to an HTTPS port nothing listens on locally. So when the address is an `http://` binding and the MCP request came in over `https://`, the tool's request carries `X-Forwarded-Proto: https`, and the app serves it as HTTPS too. It comes from the server itself, over loopback, which `ForwardedHeadersOptions` trusts by default. These setups need more:
+Behind a reverse proxy that terminates TLS, the server listens only on HTTP, and the MCP request counts as HTTPS because the app trusts the proxy's `X-Forwarded-Proto`. `UseHttpsRedirection` would then send the tool's request to the `http://` binding on to an HTTPS port nothing listens on locally. So when the tool calls an `http://` address on loopback and the MCP request came in over `https://`, the tool's request carries `X-Forwarded-Proto: https`, whichever `ISelfBaseUrlProvider` gave the address, and the app serves it as HTTPS too. A request to a loopback address comes from loopback, which `ForwardedHeadersOptions` trusts by default. The header takes the name `ForwardedHeadersOptions.ForwardedProtoHeaderName` gives it, as the app configures the options in its services.
+
+An MCP request over `https://` whose only address is an `http://` binding off loopback, a specific IP address or a host name, fails with an `InvalidOperationException` that says to set `McpTools:BaseUrl`. A call there would carry the caller's token in clear text off the machine, and the app would not trust its `X-Forwarded-Proto` by default. An MCP request over `http://` still calls it, as before.
+
+These setups need more:
 
 - **Known proxies of your own.** When you replaced `KnownProxies` and `KnownNetworks` (`KnownIPNetworks` from .NET 10) with your proxy's addresses, add `IPAddress.Loopback` and `IPAddress.IPv6Loopback` to `KnownProxies`. Otherwise the app takes the tool's request for HTTP and redirects it. Clearing both lists, which trusts every address, needs nothing.
 - **A restricted `AllowedHosts`.** The tool's request names the bound address in its `Host`, such as `localhost:8080`, so add its host, `localhost`, or host filtering answers `400`.
+- **`RequireHeaderSymmetry`.** With `ForwardedHeaders.XForwardedFor` and `RequireHeaderSymmetry = true`, the app ignores the tool's `X-Forwarded-Proto`, which comes without an `X-Forwarded-For`, and redirects the request.
+- **Forwarded-headers options passed to `UseForwardedHeaders(options)`** rather than configured in the services: the invoker cannot see a `ForwardedProtoHeaderName` you renamed there, and sends `X-Forwarded-Proto`.
+- **A server bound only to `http://` addresses off loopback**, or **only to a unix socket or a named pipe**: see above.
 - **IIS out of process.** The app there refuses a request that did not come through IIS, which pairs each one with a token, so the bound address answers `400`.
 
 In each of them you can set `McpTools:BaseUrl` instead.
 
-The configured or bound address is cached after the first resolution; whether a call carries `X-Forwarded-Proto` is decided for each call. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
+The tool's request names the bound address, so an absolute URL the API builds from the request, with `Url.Link`, `LinkGenerator` or for pagination, names it too, such as `https://localhost:8080/api/orders?page=2`, which no client can reach. Set `McpTools:BaseUrl` to the public address, or call in process, where the tool's request keeps the MCP request's host.
 
-The invoker calls whatever address `ISelfBaseUrlProvider` returns, so the address of a provider of your own is used as given too, without `X-Forwarded-Proto`. An `http://` address in an app that redirects HTTP to HTTPS is redirected like any other request, so pin an address the app serves without a redirect.
+The configured or bound address is cached after the first resolution; whether a call carries `X-Forwarded-Proto`, or is refused, is decided for each call. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
+
+The invoker calls whatever address `ISelfBaseUrlProvider` returns, so the address of a provider of your own is used as given too, with `X-Forwarded-Proto` when it is an `http://` address on loopback. An `http://` address in an app that redirects HTTP to HTTPS is redirected like any other request, so pin an address the app serves without a redirect.
 
 **Pinning the base URL** (recommended behind a reverse proxy or in containers):
 
@@ -778,9 +790,11 @@ You rarely need to implement this yourself, but you can substitute it — for ex
 
 The invoker's `HttpClient` is the named client `IMcpHttpInvoker`. Configure it by that name, as in `services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(...)`. In process, only its `Timeout` applies: nothing is sent through it, so its message handlers, such as one added with `AddHttpMessageHandler` to set an API key, and its `DefaultRequestHeaders` do not run. Turn `AreApiCallsInProcess` off to keep them. Calling `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()` instead registers the invoker again, as one created with its constructor, which always calls over HTTP.
 
+Over HTTP, the invoker follows a redirect as it does in process: as `HttpClient` follows one, up to 50 times, but only back to the scheme, host and port it called, keeping `Authorization`. Any other redirect comes back as it is, as an error result such as `HTTP 302: Found`, and nothing is sent to its `Location`, so an action that redirects to a URL from its input cannot send the tool's request to another server. For that, `AddMcpTools` turns off `AllowAutoRedirect` on the client's primary handler. A primary handler you set for the client after `AddMcpTools` replaces that one and keeps its own setting: with `AllowAutoRedirect` on, `HttpClient` follows every redirect, to any host, before the invoker sees it.
+
 ### Error handling
 
-The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. An exception your API lets escape before its response starts comes back as Kestrel would answer it, with a bare `500` or the status of a `BadHttpRequestException`, and the app logs the exception. In process, a redirect that does not lead back into the app comes back as it is, such as `HTTP 302: Found`. A call that gets no status still surfaces as an exception, which the MCP server likewise reports as `isError: true`: in process, a request your API aborts, one whose response fails after it started, or one that outlasts the client's `Timeout`; over HTTP, a network error or timeout.
+The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. An exception your API lets escape before its response starts comes back as Kestrel would answer it, with a bare `500` or the status of a `BadHttpRequestException`, and the app logs the exception. A redirect that does not lead back to the address the tool called comes back as it is, such as `HTTP 302: Found`. A call that gets no status still surfaces as an exception, which the MCP server likewise reports as `isError: true`: in process, a request your API aborts, one whose response fails after it started, or one that outlasts the client's `Timeout`; over HTTP, a network error or timeout.
 
 ## Correlating Tool Calls with API Logs
 
@@ -792,7 +806,7 @@ A tool call reaches your API as two requests: the MCP client's `POST /mcp`, and 
 |---|---|
 | `Authorization` | Copied from the MCP request, when it parses as an authentication header |
 | `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` a request that targets the MCP endpoint, or any path under `/mcp`, is refused |
-| `X-Forwarded-Proto: https` | Over HTTP only: added by the invoker when it calls the `http://` address the server is bound to for an MCP request that came in over HTTPS, so the app serves it as HTTPS too; see [Base URL Resolution](#base-url-resolution) |
+| `X-Forwarded-Proto: https` | Over HTTP only: added by the invoker when it calls an `http://` address on loopback for an MCP request that came in over HTTPS, so the app serves it as HTTPS too, under the name `ForwardedHeadersOptions.ForwardedProtoHeaderName` gives; see [Base URL Resolution](#base-url-resolution) |
 
 No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, `Accept-Language`, `User-Agent`, `X-Forwarded-For` or `X-Forwarded-Host`. The request still carries the MCP request's connection, so `HttpContext.Connection.RemoteIpAddress` is the client's address; see [How Tools Call Your API](#how-tools-call-your-api). If your API logs a correlation ID taken from a header of its own, the tool's request has none; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it in both requests.
 
@@ -1070,10 +1084,14 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 
 **`InvalidOperationException: Unable to determine base URL`.**
 - The tool called over HTTP, with `AreApiCallsInProcess` off, or ran its request outside an MCP request (see [When the link breaks](#when-the-link-breaks)), and found no address. Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).
+- The variant `The server is bound only to a unix socket or a named pipe` means the server has no TCP address to call. Set `McpTools:BaseUrl`.
+
+**`InvalidOperationException: The MCP request came in over HTTPS, and the only address the server is bound to is '...', an http:// address off loopback`.**
+- Over HTTP, the tool would have sent the caller's token in clear text off the machine, to a specific IP address or a host name, from where the app would not trust its `X-Forwarded-Proto`. Set `McpTools:BaseUrl` to an address the app serves without a redirect, or bind the server to `localhost` or a wildcard address as well. See [Base URL Resolution](#base-url-resolution).
 
 **Self-calls fail or redirect to HTTPS behind a reverse proxy.**
 - In process, which is the default, the tool's request takes the MCP request's scheme and host, so the app neither redirects it nor sends it anywhere; see [How Tools Call Your API](#how-tools-call-your-api).
-- With `AreApiCallsInProcess` off and without `McpTools:BaseUrl`, a server that listens only on HTTP has its tools call that `http://` address, never the host the MCP request names. When the MCP request came in over HTTPS, the tool's request carries `X-Forwarded-Proto: https`, so the app does not redirect it; see [Base URL Resolution](#base-url-resolution). It is still redirected when the app's `KnownProxies` and `KnownNetworks` leave out loopback, and answered `400` when `AllowedHosts` leaves out the bound address, or behind IIS out of process. The most reliable fix is to pin `McpTools:BaseUrl` to an address the app serves without a redirect. It is used as given, `http://` included.
+- With `AreApiCallsInProcess` off and without `McpTools:BaseUrl`, a server that listens only on HTTP has its tools call that `http://` address, never the host the MCP request names. When the address is on loopback and the MCP request came in over HTTPS, the tool's request carries `X-Forwarded-Proto: https`, so the app does not redirect it; see [Base URL Resolution](#base-url-resolution). It is still redirected when the app's `KnownProxies` and `KnownNetworks` leave out loopback, or it requires header symmetry, and answered `400` when `AllowedHosts` leaves out the bound address, or behind IIS out of process. The most reliable fix is to pin `McpTools:BaseUrl` to an address the app serves without a redirect. It is used as given, `http://` included.
 
 **`MissingMethodException` on `AddMcpTools` at startup** (e.g. `Method not found: '...McpServerServiceCollectionExtensions.AddMcpServer(...)'`).
 - Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
