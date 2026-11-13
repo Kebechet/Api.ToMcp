@@ -29,13 +29,13 @@ namespace Api.ToMcp.Generator.Parsing
             if (!IsFirstDeclaration(namedType, classDecl) || !IsController(namedType, context.SemanticModel.Compilation))
                 return null;
 
-            var (routePrefix, routePrefixProblem) = GetRoutePrefix(namedType, context.SemanticModel.Compilation, ct);
+            var (routePrefix, routePrefixProblem, otherRoutePrefixes) = GetRoutePrefix(namedType, context.SemanticModel.Compilation, ct);
             // [McpExpose] and [McpIgnore] are inherited: a base class's covers this controller, the actions it inherits from
             // that base included.
             var hasMcpExpose = HasNearestAttribute(namedType, McpExposeAttributeFullName);
             var hasMcpIgnore = HasNearestAttribute(namedType, McpIgnoreAttributeFullName);
 
-            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, routePrefixProblem, context.SemanticModel.Compilation, ct);
+            var actions = ActionMethodAnalyzer.GetActions(namedType, routePrefix, routePrefixProblem, context.SemanticModel.Compilation, ct, otherRoutePrefixes);
 
             return new ControllerInfoModel
             {
@@ -139,8 +139,9 @@ namespace Api.ToMcp.Generator.Parsing
         /// <c>IRouteTemplateProvider</c>, from the nearest class that declares any, so a controller without one of its own
         /// is routed by its base class's, and one with its own replaces the base's. Of several routes, the first that sets
         /// a template, a name or an order; a problem, as a clause of MCP009's message, when its template cannot be read.
+        /// The templates of the others that the generator can read come with it.
         /// </summary>
-        private static (string? Template, string? Problem) GetRoutePrefix(INamedTypeSymbol controller, Compilation compilation, CancellationToken ct)
+        private static (string? Template, string? Problem, ImmutableArray<string> OtherTemplates) GetRoutePrefix(INamedTypeSymbol controller, Compilation compilation, CancellationToken ct)
         {
             for (var type = controller; type != null; type = type.BaseType)
             {
@@ -148,16 +149,23 @@ namespace Api.ToMcp.Generator.Parsing
                 if (routeAttributes.Count == 0)
                     continue;
 
-                var route = routeAttributes
+                var routes = routeAttributes
                     .Select(x => RouteAttributeReader.Read(x, compilation, ct))
-                    .FirstOrDefault(x => x.DefinesRoute);
+                    .Where(x => x.DefinesRoute)
+                    .ToList();
+                var route = routes.FirstOrDefault();
+                var otherTemplates = routes
+                    .Skip(1)
+                    .Where(x => x.IsTemplateKnown && x.Template is not null)
+                    .Select(x => x.Template!)
+                    .ToImmutableArray();
 
                 return route is { IsTemplateKnown: false }
-                    ? (null, $"the generator cannot read the route template of the [{route.DisplayName}] attribute on {type.Name}, as {route.TemplateProblem}")
-                    : (route?.Template, null);
+                    ? (null, $"the generator cannot read the route template of the [{route.DisplayName}] attribute on {type.Name}, as {route.TemplateProblem}", otherTemplates)
+                    : (route?.Template, null, otherTemplates);
             }
 
-            return (null, null);
+            return (null, null, ImmutableArray<string>.Empty);
         }
     }
 }

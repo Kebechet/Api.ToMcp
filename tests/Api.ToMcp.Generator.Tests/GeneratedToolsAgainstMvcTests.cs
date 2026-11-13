@@ -544,6 +544,25 @@ namespace TestApi
         // Its own [FromQuery] replaces the base's whole, Name included, so MVC binds it as city.
         public override object Mask([FromQuery] string city) => new { city };
     }
+
+    // The tool calls {id}, as 2.4.0's did. [ApiController] binds slug from the route alone, as {id}/{slug} names it.
+    [ApiController]
+    [Route(""api/uncalled"")]
+    public class UncalledRouteController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, string? slug) => new { id, slug, path = Request.Path.Value };
+    }
+
+    // Without [ApiController], MVC binds slug from the query string as well.
+    [Route(""plain/uncalled"")]
+    public class PlainUncalledRouteController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, string? slug) => new { id, slug, path = Request.Path.Value };
+    }
 }
 ";
 
@@ -961,6 +980,20 @@ namespace TestApi
         Assert.Equal(["inf", "negInf", "value"], properties.EnumerateObject().Select(x => x.Name).Order());
     }
 
+    [Theory]
+    [InlineData("UncalledRouteController_GetTool", @"{""id"":7,""slug"":null,""path"":""/api/uncalled/7""}", true)]
+    [InlineData("PlainUncalledRouteController_GetTool", @"{""id"":7,""slug"":""red-mug"",""path"":""/plain/uncalled/7""}", false)]
+    public async Task Tool_LosesTheValueMcp014Names_AndOnlyThat(string toolClassName, string expectedEcho, bool isReported)
+    {
+        // The tool sends slug in the query string of {id}: [ApiController] binds slug from the route alone, which that
+        // URL lacks, while a controller without it binds slug from the query string.
+        var result = await _host.CallToolAsync(toolClassName, @"{""id"":7,""slug"":""red-mug""}");
+
+        Assert.True(result.IsError != true, GetText(result));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedEcho), JsonNode.Parse(_host.LastResponse.Body)), $"{toolClassName}: expected {expectedEcho}, MVC bound {_host.LastResponse.Body}");
+        Assert.Equal(isReported, _host.GeneratorDiagnostics.Any(x => x.Id == "MCP014" && x.GetMessage().Contains($"'{toolClassName.Replace("_GetTool", "")}.Get'", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void EveryGeneratedTool_IsBuiltByTheMcpSdk()
     {
@@ -1012,7 +1045,7 @@ namespace TestApi
 
         public async Task InitializeAsync()
         {
-            _assembly = CompileWithGeneratedTools(SimpleTypeSources.Usings + SimpleTypeSources.Types + Controllers);
+            (_assembly, GeneratorDiagnostics) = CompileWithGeneratedTools(SimpleTypeSources.Usings + SimpleTypeSources.Types + Controllers);
 
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
@@ -1201,6 +1234,11 @@ namespace TestApi
 
         public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
 
+        /// <summary>
+        /// The diagnostics the generator reported for the controllers.
+        /// </summary>
+        public ImmutableArray<Diagnostic> GeneratorDiagnostics { get; private set; }
+
         public IReadOnlyList<string> ToolClassNames => _assembly.GetTypes()
             .Where(x => x.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
             .Select(x => x.Name)
@@ -1230,7 +1268,7 @@ namespace TestApi
                 : parameter.DefaultValue;
         }
 
-        private static Assembly CompileWithGeneratedTools(string source)
+        private static (Assembly Assembly, ImmutableArray<Diagnostic> GeneratorDiagnostics) CompileWithGeneratedTools(string source)
         {
             var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
                 .Split(Path.PathSeparator)
@@ -1246,7 +1284,7 @@ namespace TestApi
             CSharpGeneratorDriver
                 .Create(new McpToolGenerator())
                 .AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(generatorConfig))
-                .RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out _);
+                .RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var generatorDiagnostics);
 
             using var assemblyStream = new MemoryStream();
             var emitResult = outputCompilation.Emit(assemblyStream);
@@ -1254,7 +1292,7 @@ namespace TestApi
 
             // The default context resolves the converters [TypeConverter] names, and MVC finds the controllers there.
             assemblyStream.Position = 0;
-            return AssemblyLoadContext.Default.LoadFromStream(assemblyStream);
+            return (AssemblyLoadContext.Default.LoadFromStream(assemblyStream), generatorDiagnostics);
         }
     }
 

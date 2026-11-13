@@ -247,6 +247,7 @@ namespace Api.ToMcp.Generator
             diagnostics.AddRange(unbuildableRouteDiagnostics);
             ReportDuplicateToolNames(diagnostics, toolActions, config);
             ReportEndpointsWithSeveralHttpMethods(diagnostics, toolActions);
+            ReportUncalledRoutes(diagnostics, toolActions);
             ReportEndpointsLeftOut(diagnostics, controllers, config, controllerEntryNames, endpoints.LeftOutCount);
 
             var toolClassNames = ToolClassEmitter.GetUniqueToolClassNames(toolActions);
@@ -333,6 +334,28 @@ namespace Api.ToMcp.Generator
                     duplicate.Key,
                     duplicate.Count(),
                     producers));
+            }
+        }
+
+        /// <summary>
+        /// Informs at each action whose tool does not call a route MVC serves it at for the tool's HTTP method, where MVC
+        /// binds a value of the action that the route the tool calls cannot carry (MCP014).
+        /// </summary>
+        private static void ReportUncalledRoutes(List<DiagnosticInfoModel> diagnostics, ImmutableArray<ActionInfoModel> actions)
+        {
+            foreach (var action in actions)
+            {
+                foreach (var (template, lostValues) in UncalledRouteValues.GetLostValues(action))
+                {
+                    diagnostics.Add(DiagnosticInfoModel.InSource(
+                        DiagnosticDescriptors.UncalledRoute,
+                        new[] { action.SourceLocation },
+                        action.ControllerName,
+                        action.Name,
+                        $"{action.HttpMethod} {action.RouteTemplate}",
+                        $"{action.HttpMethod} {template}",
+                        UncalledRouteValues.JoinWithAnd(lostValues)));
+                }
             }
         }
 

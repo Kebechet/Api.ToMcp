@@ -140,6 +140,12 @@ namespace Api.ToMcp.Generator.Models
         public EquatableArray<ServedRouteModel> ServedRoutes { get; init; } = EquatableArray<ServedRouteModel>.Empty;
 
         /// <summary>
+        /// The routes MVC serves a controller's action at under each route of its controller but the first, whose
+        /// template the generator can read: only to tell the values the tool cannot send (MCP014).
+        /// </summary>
+        public EquatableArray<ServedRouteModel> OtherControllerRoutes { get; init; } = EquatableArray<ServedRouteModel>.Empty;
+
+        /// <summary>
         /// Whether a call may leave out the route value that ends <see cref="RouteTemplate"/>, which the routes of the
         /// other actions decide. See <see cref="RouteEndModel"/>.
         /// </summary>

@@ -122,6 +122,21 @@ namespace Api.ToMcp.Generator.Diagnostics
             description: "Map each HTTP method with a call of its own, such as MapGet and MapPost, to give each of them a tool.");
 
         /// <summary>
+        /// MVC serves the action at a route its tool does not call, as the tool calls the first route, and binds a value of
+        /// the action from that route alone, which the URL the tool sends cannot carry: a simple parameter that
+        /// <c>[ApiController]</c> reads from the route because a route names it, one with <c>[FromRoute]</c>, or a property
+        /// of a <c>[FromRoute]</c> parameter. An info, as the tool is the one it was: the route needs an action of its own.
+        /// See https://github.com/Kebechet/Api.ToMcp/issues/61.
+        /// </summary>
+        public static readonly DiagnosticDescriptor UncalledRoute = new DiagnosticDescriptor(
+            id: "MCP014",
+            title: "Route of an action that its tool does not call",
+            messageFormat: "The MCP tool of action '{0}.{1}' calls it at {2}, not at {3}, where MVC binds {4}, which that route alone carries. Give that route an action of its own for a tool to call it.",
+            category: "Api.ToMcp.Generator",
+            DiagnosticSeverity.Info,
+            isEnabledByDefault: true);
+
+        /// <summary>
         /// AllExceptExcluded mode selects Minimal API endpoints only when generator.json opts in, so that updating the
         /// package exposes none a project did not choose. An info, which says the opt-in exists where the project has
         /// endpoints and its config does not say whether it wants them.

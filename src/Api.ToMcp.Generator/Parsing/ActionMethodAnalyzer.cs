@@ -87,12 +87,14 @@ namespace Api.ToMcp.Generator.Parsing
         /// <param name="routePrefixProblem">
         /// Why the controller's route template cannot be read, as a clause of MCP009's message, or null when it can.
         /// </param>
+        /// <param name="otherRoutePrefixes">The templates of the controller's other routes, which MVC serves each action at too.</param>
         public static ImmutableArray<ActionInfoModel> GetActions(
             INamedTypeSymbol controller,
             string? routePrefix,
             string? routePrefixProblem,
             Compilation compilation,
-            CancellationToken ct)
+            CancellationToken ct,
+            IReadOnlyList<string>? otherRoutePrefixes = null)
         {
             var builder = ImmutableArray.CreateBuilder<ActionInfoModel>();
             var controllerMcpExposeAttr = FindNearestAttribute(controller, x => x.BaseType, IsMcpExposeAttribute);
@@ -127,6 +129,17 @@ namespace Api.ToMcp.Generator.Parsing
                         Template = ResolveApiVersionInRoute(BuildFullRoute(routePrefix, x.Template, controller.Name, GetRouteActionName(method)), controller, method),
                         HttpMethods = x.HttpMethods.ToImmutableArray()
                     })
+                    .ToImmutableArray();
+
+                // MVC combines each route of the action with each of the controller's, unless the action's is absolute.
+                var otherControllerRoutes = (otherRoutePrefixes ?? Array.Empty<string>())
+                    .SelectMany(prefix => httpInfo.Value.ServedRoutes
+                        .Where(x => !IsAbsoluteTemplate(x.Template))
+                        .Select(x => new ServedRouteModel
+                        {
+                            Template = ResolveApiVersionInRoute(BuildFullRoute(prefix, x.Template, controller.Name, GetRouteActionName(method)), controller, method),
+                            HttpMethods = x.HttpMethods.ToImmutableArray()
+                        }))
                     .ToImmutableArray();
 
                 string? customToolName = null;
@@ -183,7 +196,8 @@ namespace Api.ToMcp.Generator.Parsing
                     // that inherits it, where a #pragma or an .editorconfig section can suppress them.
                     SourceLocation = SourceLocationModel.From(
                         method.Locations.FirstOrDefault(x => x.IsInSource) ?? controller.Locations.FirstOrDefault(x => x.IsInSource)),
-                    ServedRoutes = servedRoutes
+                    ServedRoutes = servedRoutes,
+                    OtherControllerRoutes = otherControllerRoutes
                 });
             }
 

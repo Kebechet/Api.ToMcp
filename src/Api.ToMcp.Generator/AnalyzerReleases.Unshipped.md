@@ -10,6 +10,7 @@ MCP010 | Api.ToMcp.Generator | Warning | Endpoint cannot become a tool
 MCP011 | Api.ToMcp.Generator | Warning | Endpoint mapped for several HTTP methods
 MCP012 | Api.ToMcp.Generator | Info | Minimal API endpoints not selected
 MCP013 | Api.ToMcp.Generator | Info | Include entry names a controller and Minimal API endpoints
+MCP014 | Api.ToMcp.Generator | Info | Route of an action that its tool does not call
 MCP015 | Api.ToMcp.Generator | Warning | Another generator.json is not read
 
 ### Removed Rules
