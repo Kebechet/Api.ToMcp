@@ -19,6 +19,11 @@ public partial class McpToolGeneratorTests
     [InlineData("api/[controller]", "~/Mcp/items")]
     [InlineData("api/[controller]", "/mcp/")]
     [InlineData("api/[controller]", "/mcp/{id}")]
+    [InlineData("/", "mcp/status")]
+    [InlineData("~/", "mcp/status")]
+    [InlineData("~/mcp", "status")]
+    [InlineData("~/Mcp", "")]
+    [InlineData("/mcp/", "status")]
     public void Action_AtTheMcpRouteOrUnderIt_GetsNoToolAndNoWarning_EvenWithMcpExpose(string controllerRoute, string actionRoute)
     {
         var generated = RunGenerator(Usings + McpRouteController(controllerRoute, actionRoute), AllExceptExcludedConfig);
@@ -43,6 +48,23 @@ public partial class McpToolGeneratorTests
         var generated = RunGenerator(Usings + McpRouteController(controllerRoute, actionRoute), AllExceptExcludedConfig);
 
         Assert.Contains("[McpServerTool(", generated);
+        Assert.Contains($"var route = $\"{route}", generated);
+    }
+
+    [Theory]
+    [InlineData("/", "probe-root", "/probe-root")]
+    [InlineData("~/", "probe-root", "/probe-root")]
+    [InlineData("/", "", "/\"")]
+    [InlineData("~/api", "items", "/api/items")]
+    [InlineData("~/api", "", "/api\"")]
+    [InlineData("/api/", "items", "/api/items")]
+    [InlineData("api/", "/items", "/items")]
+    public void Action_UnderARootOrAppRelativeControllerRoute_IsCalledWhereMvcServesIt(string controllerRoute, string actionRoute, string route)
+    {
+        // MVC combines the templates as AttributeRouteModel.CombineTemplates does: a prefix of "/" or "~/" counts as
+        // none, and one leading "/" or "~/" is cleaned from the result. "//probe-root" and "/~/api/items" answer 404.
+        var generated = RunGenerator(Usings + McpRouteController(controllerRoute, actionRoute), AllExceptExcludedConfig);
+
         Assert.Contains($"var route = $\"{route}", generated);
     }
 

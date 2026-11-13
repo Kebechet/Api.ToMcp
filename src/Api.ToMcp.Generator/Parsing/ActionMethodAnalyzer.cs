@@ -960,23 +960,50 @@ namespace Api.ToMcp.Generator.Parsing
                  template.StartsWith(RouteTokens.AppRelativePrefix, StringComparison.Ordinal));
         }
 
+        /// <summary>
+        /// The route MVC serves an action at, combined as <c>AttributeRouteModel.CombineTemplates</c> combines the
+        /// controller's prefix and the action's template: an absolute template, or a prefix of "", "/" or "~/", stands
+        /// alone, and one leading "/" or "~/" and one trailing "/" are cleaned from the result. Trimming each part instead
+        /// made <c>[Route("/")]</c> with <c>probe-root</c> <c>//probe-root</c>, and <c>[Route("~/api")]</c>
+        /// <c>/~/api/...</c>, which the app answers with 404, and put a route under <c>/mcp</c> out of
+        /// <see cref="McpEndpointRoute"/>'s sight.
+        /// </summary>
         private static string BuildFullRoute(string? prefix, string? template, string controllerName, string actionName)
         {
-            if (IsAbsoluteTemplate(template))
-            {
-                var path = template!.TrimStart(RouteTokens.AppRelativeMarker).TrimStart(RouteTokens.PathSeparator).TrimEnd(RouteTokens.PathSeparator);
-                return ReplaceRouteTokens($"{RouteTokens.PathSeparator}{path}", controllerName, actionName);
-            }
+            string? combined;
+            if (template is null)
+                combined = prefix;
+            else if (IsEmptyLeftSegment(prefix) || IsAbsoluteTemplate(template))
+                combined = template;
+            else if (prefix!.EndsWith(RouteTokens.PathSeparatorText, StringComparison.Ordinal))
+                combined = prefix + template;
+            else
+                combined = prefix + RouteTokens.PathSeparator + template;
 
-            var parts = new List<string>();
+            return ReplaceRouteTokens($"{RouteTokens.PathSeparator}{CleanTemplate(combined ?? string.Empty)}", controllerName, actionName);
+        }
 
-            if (!string.IsNullOrEmpty(prefix))
-                parts.Add(prefix!.TrimStart(RouteTokens.PathSeparator).TrimEnd(RouteTokens.PathSeparator));
+        private static bool IsEmptyLeftSegment(string? prefix)
+        {
+            return prefix is null ||
+                prefix.Length == 0 ||
+                prefix.Equals(RouteTokens.PathSeparatorText, StringComparison.Ordinal) ||
+                prefix.Equals(RouteTokens.AppRelativePrefix, StringComparison.Ordinal);
+        }
 
-            if (!string.IsNullOrEmpty(template))
-                parts.Add(template!.TrimStart(RouteTokens.PathSeparator).TrimEnd(RouteTokens.PathSeparator));
+        /// <summary>
+        /// The template without one leading "/" or "~/" and one trailing "/", as <c>AttributeRouteModel</c> cleans it.
+        /// </summary>
+        private static string CleanTemplate(string template)
+        {
+            var start = template.StartsWith(RouteTokens.PathSeparatorText, StringComparison.Ordinal)
+                ? RouteTokens.PathSeparatorText.Length
+                : template.StartsWith(RouteTokens.AppRelativePrefix, StringComparison.Ordinal) ? RouteTokens.AppRelativePrefix.Length : 0;
+            var end = template.Length > start && template.EndsWith(RouteTokens.PathSeparatorText, StringComparison.Ordinal)
+                ? template.Length - RouteTokens.PathSeparatorText.Length
+                : template.Length;
 
-            return ReplaceRouteTokens($"{RouteTokens.PathSeparator}{string.Join(RouteTokens.PathSeparatorText, parts)}", controllerName, actionName);
+            return template.Substring(start, end - start);
         }
 
         /// <summary>
