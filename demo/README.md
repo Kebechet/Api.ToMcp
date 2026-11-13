@@ -17,6 +17,7 @@ Example project demonstrating Api.ToMcp usage.
 - `GET /api/products` - Get all products (exposed)
 - `GET /api/products/{id}` - Get product by ID (exposed)
 - `GET /api/products/cheapest` - Cheapest product in a category, `204 No Content` when it has none (exposed; its output schema allows null)
+- `POST /api/products/{id}/reviews` - Add a review (exposed; the review is a `[FromForm]` object, which the tool sends as a form, and the `Idempotency-Key` a `[FromHeader]` string, which it sends as a request header)
 - `DELETE /api/products/{id}` - Delete product (excluded via `[McpIgnore]`)
 
 **CategoriesController** - Inherited actions
@@ -60,6 +61,7 @@ Based on `Mcp/generator.json` configuration, these tools are generated:
 | `Products_GetAll` | ProductsController.GetAll |
 | `Products_GetById` | ProductsController.GetById |
 | `Products_GetCheapest` | ProductsController.GetCheapest |
+| `Products_AddReview` | ProductsController.AddReview |
 | `Categories_GetAll` | CategoriesController.GetAll, inherited from `ListControllerBase<Category>` |
 | `TodoEndpoints_GetAll` | `GET /api/todos`, handled by TodoEndpoints.GetAll |
 | `TodoEndpoints_GetById` | `GET /api/todos/{id}`, handled by TodoEndpoints.GetById |
@@ -78,6 +80,7 @@ The `Mcp/generator.json` uses `SelectedOnly` mode with explicit includes:
     "ProductsController.GetAll",
     "ProductsController.GetById",
     "ProductsController.GetCheapest",
+    "ProductsController.AddReview",
     "CategoriesController",
     "TodoEndpoints"
   ]
@@ -86,7 +89,7 @@ The `Mcp/generator.json` uses `SelectedOnly` mode with explicit includes:
 
 This demonstrates:
 - Including an entire controller (`WeatherController`)
-- Including specific actions (`ProductsController.GetAll`, `ProductsController.GetById`, `ProductsController.GetCheapest`)
+- Including specific actions (`ProductsController.GetAll`, `ProductsController.GetById`, `ProductsController.GetCheapest`, `ProductsController.AddReview`)
 - Including a controller whose actions are inherited, by its own name (`CategoriesController`), not its base class's
 - Including every Minimal API endpoint whose handler a class declares (`TodoEndpoints`), as a controller's actions are included
 - The `[McpIgnore]` attribute on the `Delete` action, and on the lambda that deletes a to-do item, as additional protection

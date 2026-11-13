@@ -300,6 +300,77 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task McpProtocol_ToolsCall_SendsTheHeaderAndTheFormTheActionReads(bool areApiCallsInProcess)
+    {
+        // AddReview reads the review [FromForm] and the Idempotency-Key [FromHeader]; the tool used to send the review as
+        // JSON and no header, so the action stored an empty review without its key.
+        var requests = new List<string>();
+        await using var client = await ConnectMcpClientAsync(configureServices: services =>
+        {
+            if (areApiCallsInProcess)
+            {
+                return;
+            }
+
+            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false);
+            services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
+            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+                new RecordingHandler(((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler(), requests));
+        });
+
+        var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 5, ["comment"] = "Fast & quiet = 100% worth it" },
+            ["idempotencyKey"] = "req-42"
+        });
+
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        var review = result["structuredContent"]!;
+        Assert.Equal(LaptopId, review["productId"]!.GetValue<Guid>());
+        Assert.Equal(5, review["rating"]!.GetValue<int>());
+        Assert.Equal("Fast & quiet = 100% worth it", review["comment"]!.GetValue<string>());
+        Assert.Equal("req-42", review["idempotencyKey"]!.GetValue<string>());
+        Assert.Equal(areApiCallsInProcess ? 0 : 1, requests.Count);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_LeavesOutAnOptionalHeaderTheClientDoesNotGive()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 4, ["comment"] = "Fine" }
+        });
+
+        Assert.NotEqual(true, result["isError"]?.GetValue<bool>());
+        Assert.Equal(4, result["structuredContent"]!["rating"]!.GetValue<int>());
+        Assert.Null(result["structuredContent"]!["idempotencyKey"]);
+    }
+
+    [Fact]
+    public async Task McpProtocol_ToolsCall_RefusesAHeaderValueAnHttpHeaderCannotCarry()
+    {
+        await using var client = await ConnectMcpClientAsync();
+
+        var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
+        {
+            ["id"] = LaptopId.ToString(),
+            ["review"] = new JsonObject { ["rating"] = 4, ["comment"] = "Fine" },
+            ["idempotencyKey"] = "req-42\r\nX-Injected: 1"
+        });
+
+        Assert.True(result["isError"]!.GetValue<bool>());
+        Assert.Equal(
+            "The argument 'idempotencyKey' is sent as the request header 'Idempotency-Key', which can hold only visible ASCII characters, spaces and tabs.",
+            Assert.Single(result["content"]!.AsArray())!["text"]!.GetValue<string>());
+    }
+
+    [Theory]
     [InlineData(null, "User is not authenticated. Scope validation requires authentication.")]
     [InlineData("write", "Insufficient scope. Required: Read, Granted: Write")]
     public async Task McpProtocol_ToolsCall_TellsTheClientWhyTheScopeCheckRefusedIt(string? grantedScopes, string expectedText)
