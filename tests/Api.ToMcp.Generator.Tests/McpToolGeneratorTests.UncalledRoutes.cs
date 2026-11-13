@@ -107,10 +107,14 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UncalledRouteId);
     }
 
-    [Fact]
-    public void Generator_ReportsNothing_ForAPropertyOfAFromRouteParameter_ThatMvcReadsFromTheQueryString()
+    [Theory]
+    // MVC reads the [FromQuery] Version from the query string, where the tool sends it.
+    [InlineData("[HttpGet(\"{id}\")] [HttpGet(\"{id}/v/{version}\")]", "[FromRoute] VersionedKey key")]
+    // [ApiController] infers no source for a type with a property that names one, so MVC reads the parameter from the
+    // query string as well.
+    [InlineData("[HttpGet(\"{id}\")] [HttpGet(\"{id}/{key}\")]", "int id, VersionedKey key")]
+    public void Generator_ReportsNothing_ForAComplexValue_ThatMvcReadsFromTheQueryString(string httpAttributes, string parameters)
     {
-        // MVC reads the [FromQuery] Version from the query string, where the tool sends it.
         const string types = @"
     public sealed class VersionedKey
     {
@@ -122,7 +126,7 @@ public partial class McpToolGeneratorTests
 ";
         var source = UncalledRoutesSource(
             ApiControllerDeclaration,
-            "[HttpGet(\"{id}\")] [HttpGet(\"{id}/v/{version}\")] public Task<string> Find([FromRoute] VersionedKey key) => Task.FromResult(string.Empty);",
+            $"{httpAttributes} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);",
             types);
 
         Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
