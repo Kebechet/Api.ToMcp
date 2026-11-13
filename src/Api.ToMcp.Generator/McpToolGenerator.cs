@@ -24,6 +24,11 @@ namespace Api.ToMcp.Generator
         private const string RegistrationSourceName = "McpToolsRegistration";
 
         /// <summary>
+        /// Where the build targets create the config when ApiToMcpConfigPath is not set, relative to the project.
+        /// </summary>
+        private const string DefaultConfigPath = "Mcp/generator.json";
+
+        /// <summary>
         /// The full path of ApiToMcpConfigPath, which the build targets make a compiler-visible property.
         /// </summary>
         private const string ConfigPathBuildProperty = "build_property._McpConfigFullPath";
@@ -44,7 +49,8 @@ namespace Api.ToMcp.Generator
                 .Where(x => x.Match != ConfigFileMatch.None)
                 .Select((x, ct) => (x.Match, Config: ConfigParser.Parse(x.File.GetText(ct)?.ToString()) with { FilePath = x.File.Path }))
                 .Collect()
-                .Select((configs, _) => SelectConfig(configs))
+                .Combine(configPathProvider)
+                .Select((source, _) => SelectConfig(source.Left, source.Right))
                 .WithTrackingName(TrackingNames.Config);
 
             // Step 2: Find all controller classes
@@ -168,9 +174,14 @@ namespace Api.ToMcp.Generator
         /// The config at the configured path, else at that path in another case, else the first named generator.json,
         /// else the default config.
         /// </summary>
-        private static GeneratorConfigModel SelectConfig(ImmutableArray<(ConfigFileMatch Match, GeneratorConfigModel Config)> configs)
+        private static GeneratorConfigModel SelectConfig(
+            ImmutableArray<(ConfigFileMatch Match, GeneratorConfigModel Config)> configs,
+            string? configPath)
         {
-            return configs.OrderBy(x => x.Match).Select(x => x.Config).FirstOrDefault() ?? new GeneratorConfigModel();
+            if (configs.IsEmpty)
+                return new GeneratorConfigModel { ConfiguredFilePath = configPath };
+
+            return configs.OrderBy(x => x.Match).First().Config with { ConfiguredFilePath = configPath };
         }
 
         /// <summary>
@@ -598,8 +609,11 @@ namespace Api.ToMcp.Generator
             if (!selectedActions.IsEmpty && (config.FilePath == null || config.Mode != SelectionModeModel.SelectedOnly || config.Include.IsEmpty))
                 return GetUnbuildableRoutesAdvice(config, examples, selectedActions);
 
+            if (config.FilePath == null && config.ConfiguredFilePath is not null)
+                return $"No config is at ApiToMcpConfigPath, so the default config applies, whose include list is empty: create {config.ConfiguredFilePath} and list {examples} in its include";
+
             if (config.FilePath == null)
-                return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create Mcp/generator.json and list {examples} in its include";
+                return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create {DefaultConfigPath} and list {examples} in its include";
 
             if (config.Mode == SelectionModeModel.AllExceptExcluded)
                 return "The exclude list in generator.json leaves no action to expose: remove entries from it, or mark actions with [McpExpose]";
@@ -647,7 +661,7 @@ namespace Api.ToMcp.Generator
                 : $"{ids} say at each of them why";
 
             if (config.FilePath == null)
-                return $"{pointer}. Create Mcp/generator.json and list {examples} in its include";
+                return $"{pointer}. Create {config.ConfiguredFilePath ?? DefaultConfigPath} and list {examples} in its include";
 
             if (selectedActions.All(x => x.IsMinimalApiEndpoint))
                 return $"{pointer} and what to change, or select other endpoints or actions: in generator.json, or with [McpExpose]";

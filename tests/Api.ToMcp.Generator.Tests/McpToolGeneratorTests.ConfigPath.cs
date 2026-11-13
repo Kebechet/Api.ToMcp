@@ -131,6 +131,20 @@ public partial class McpToolGeneratorTests
         Assert.Contains("class ProductsController_GetAllTool", generated);
     }
 
+    [Fact]
+    public void Generator_TellsToCreateTheConfigAtTheConfiguredPath_WhenNoFileIsThere()
+    {
+        // Mcp/generator.json, which MCP006 named before, is not read when the build configures another path.
+        var configPath = Path.Combine(ProjectDirectory, "Config", "mcp-tools.json");
+
+        var diagnostic = Assert.Single(RunGeneratorWithConfigPath(configPath, out _));
+
+        Assert.Equal(NoToolsGeneratedId, diagnostic.Id);
+        Assert.Equal(
+            $"No MCP tools are generated: SelectedOnly mode selects none of the project's HTTP actions. No config is at ApiToMcpConfigPath, so the default config applies, whose include list is empty: create {configPath} and list controllers such as 'ProductsController' or actions such as 'ProductsController.GetById' in its include.",
+            diagnostic.GetMessage());
+    }
+
     private static string RunGeneratorWithConfigPath(string? configPath, params AdditionalText[] additionalFiles)
     {
         RunGeneratorWithConfigPath(configPath, out var generated, additionalFiles);
