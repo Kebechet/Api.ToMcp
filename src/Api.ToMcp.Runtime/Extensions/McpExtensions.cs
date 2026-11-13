@@ -59,7 +59,8 @@ public static class McpExtensions
             serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
             serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
             serviceProvider.GetRequiredService<InProcessApiPipeline>(),
-            serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value.ForwardedProtoHeaderName));
+            serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value.ForwardedProtoHeaderName))
+            .ConfigurePrimaryHttpMessageHandler(LeaveRedirectsToTheInvoker);
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
         services.TryAddSingleton<McpOutputSchemaBuilder>();
@@ -98,6 +99,26 @@ public static class McpExtensions
         }
 
         return services;
+    }
+
+    /// <summary>
+    /// Stops the invoker's client from following redirects, so the invoker follows only those back to the address the
+    /// tool called. A primary handler the app sets for the client after <see cref="AddMcpTools"/> replaces this one, and
+    /// keeps its own choice.
+    /// </summary>
+    private static void LeaveRedirectsToTheInvoker(HttpMessageHandler handler, IServiceProvider services)
+    {
+        var socketsHandler = handler as SocketsHttpHandler;
+        if (socketsHandler is not null)
+        {
+            socketsHandler.AllowAutoRedirect = false;
+        }
+
+        var clientHandler = handler as HttpClientHandler;
+        if (clientHandler is not null)
+        {
+            clientHandler.AllowAutoRedirect = false;
+        }
     }
 
     /// <summary>

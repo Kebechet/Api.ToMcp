@@ -103,15 +103,66 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
 
         if (jsonBody is not null)
         {
-            request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
+            request.Content = CreateJsonContent(jsonBody);
         }
 
         _logger.LogDebug("MCP invoking {Method} {Url}", method.Method, url);
 
         using var response = inProcessPipeline is not null
             ? await SendInProcessAsync(inProcessPipeline, request, caller, ct)
-            : await _httpClient.SendAsync(request, ct);
+            : await SendOverHttpAsync(request, jsonBody, ct);
         return await HandleResponse(response, ct);
+    }
+
+    /// <summary>
+    /// Sends the request over HTTP and follows a redirect as <see cref="InProcessApiPipeline"/> does: only back to the
+    /// scheme, host and port the tool called, so an action that redirects to a URL from its input cannot send the tool's
+    /// request to another server. Any other redirect comes back as it is. The invoker's client follows none itself,
+    /// unless the app gave it a handler of its own that does.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendOverHttpAsync(HttpRequestMessage request, string? jsonBody, CancellationToken ct)
+    {
+        var sent = request;
+        var body = jsonBody;
+        var response = await _httpClient.SendAsync(sent, ct);
+        for (var redirections = 0; redirections < InProcessApiPipeline.MaxAutomaticRedirections; redirections++)
+        {
+            var target = InProcessApiPipeline.GetRedirectTarget(response, sent.RequestUri!, PathString.Empty);
+            if (target is null)
+            {
+                return response;
+            }
+
+            var isRedirectedAsGet = InProcessApiPipeline.IsRedirectedAsGet((int)response.StatusCode, sent.Method);
+            if (isRedirectedAsGet)
+            {
+                body = null;
+            }
+
+            // HttpClient sends a request only once, so each hop is a new one. The hop leads back to the address the tool
+            // called, so it keeps Authorization, as in process.
+            var next = new HttpRequestMessage(isRedirectedAsGet ? HttpMethod.Get : sent.Method, target);
+            foreach (var header in sent.Headers)
+            {
+                next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            if (body is not null)
+            {
+                next.Content = CreateJsonContent(body);
+            }
+
+            response.Dispose();
+            if (sent != request)
+            {
+                sent.Dispose();
+            }
+
+            sent = next;
+            response = await _httpClient.SendAsync(sent, ct);
+        }
+
+        return response;
     }
 
     /// <summary>
@@ -209,6 +260,11 @@ public sealed class McpHttpInvoker : IMcpHttpInvoker
         {
             request.Headers.Add(_forwardedProtoHeaderName, Uri.UriSchemeHttps);
         }
+    }
+
+    private static StringContent CreateJsonContent(string jsonBody)
+    {
+        return new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
     }
 
     private static string NormalizeRoute(string route)

@@ -25,8 +25,8 @@ namespace DemoApi.IntegrationTests;
 /// Tools that call the API over HTTP, in an app on Kestrel's <c>http://</c> binding behind a reverse proxy that terminates
 /// TLS: the app trusts the proxy's forwarded headers and redirects HTTP to HTTPS. The MCP client names another server in
 /// <c>Host</c> and in the forwarded headers, none of which may reach the tool's request
-/// (https://github.com/Kebechet/Api.ToMcp/issues/48). The invoker's client follows no redirect, so a redirect comes back
-/// as an error result, and records every URL it is handed.
+/// (https://github.com/Kebechet/Api.ToMcp/issues/48). The invoker's client is the one <c>AddMcpTools</c> registers, which
+/// follows no redirect itself, and records every URL it is handed.
 /// </summary>
 public sealed class HttpApiCallsBehindAProxyTests
 {
@@ -125,6 +125,71 @@ public sealed class HttpApiCallsBehindAProxyTests
         AssertSeenAsTheServersOwnHttpsRequest(app, tool.Text);
     }
 
+    [Fact]
+    public async Task AToolsRequest_FollowsARedirectBackToTheAddressItCalled_KeepingTheSchemeAndAuthorization()
+    {
+        var requests = new List<(string Url, string? ForwardedProto)>();
+        await using var app = await StartBehindProxyAsync(KnownProxies.Default, requests);
+
+        var tool = await CallToolAsync(app, "parity_get", Route + "/moved", viaProxy: false);
+
+        Assert.Equal([(app.Urls.Single() + Route + "/moved", "https"), (app.Urls.Single() + Route, "https")], requests);
+        Assert.False(tool.IsError, tool.Text);
+        AssertSeenAsTheServersOwnHttpsRequest(app, tool.Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AToolsRequest_ReturnsARedirectToAnotherServer_AsItIs_AndSendsNothingThere(bool areApiCallsInProcess)
+    {
+        // An action that redirects to a URL from its input, called over HTTP, made the tool read any server the app
+        // reaches, as the invoker's client followed every redirect.
+        var internalServiceHits = 0;
+        var internalBuilder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
+        internalBuilder.WebHost.UseUrls("http://127.0.0.1:0");
+        internalBuilder.Logging.ClearProviders();
+        await using var internalService = internalBuilder.Build();
+        internalService.Run(context =>
+        {
+            Interlocked.Increment(ref internalServiceHits);
+            return context.Response.WriteAsync("SECRET of the internal service");
+        });
+        await internalService.StartAsync();
+
+        var requests = new List<(string Url, string? ForwardedProto)>();
+        await using var app = await StartAsync(requests, configureServices: services =>
+            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = areApiCallsInProcess));
+        var target = Uri.EscapeDataString(internalService.Urls.Single() + "/admin");
+
+        var tool = await CallToolAsync(app, "parity_get", Route + "/open-redirect?returnUrl=" + target, viaProxy: false);
+
+        Assert.True(tool.IsError);
+        Assert.Equal("HTTP 302: Found", tool.Text);
+        Assert.Equal(0, internalServiceHits);
+        Assert.DoesNotContain(requests, x => x.Url.StartsWith(internalService.Urls.Single(), StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("parity_get", "/redirect", null, "GET", "")]
+    [InlineData("parity_post", "/see-other", "{\"a\":1}", "GET", "")]
+    [InlineData("parity_post", "/temporary-redirect", "{\"a\":1}", "POST", "{\"a\":1}")]
+    public async Task AToolsRequest_FollowsARedirectIntoTheApp_AsHttpClientDoes(string toolName, string path, string? body, string expectedMethod, string expectedBody)
+    {
+        var requests = new List<(string Url, string? ForwardedProto)>();
+        await using var app = await StartAsync(requests, configureServices: services =>
+            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false));
+
+        var tool = await CallToolAsync(app, toolName, "/api/kestrel-parity" + path, viaProxy: false, body: body);
+
+        Assert.False(tool.IsError, tool.Text);
+        using var seen = JsonDocument.Parse(tool.Text);
+        Assert.Equal(expectedMethod, seen.RootElement.GetProperty("method").GetString());
+        Assert.Equal("/api/kestrel-parity/target", seen.RootElement.GetProperty("path").GetString());
+        Assert.Equal(expectedBody, seen.RootElement.GetProperty("body").GetString());
+        Assert.Equal(2, requests.Count);
+    }
+
     private static void AssertSeenAsTheServersOwnHttpsRequest(WebApplication app, string echoed)
     {
         // The client's X-Forwarded-For, X-Forwarded-Host and X-Forwarded-Prefix, which the app reads from loopback, would
@@ -169,9 +234,7 @@ public sealed class HttpApiCallsBehindAProxyTests
         builder.Logging.ClearProviders();
         builder.Services.AddControllers().AddApplicationPart(typeof(ProxyProbeController).Assembly);
         builder.Services.AddMcpTools(typeof(ParityProbeTools).Assembly);
-        builder.Services.AddHttpClient(nameof(IMcpHttpInvoker))
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false })
-            .AddHttpMessageHandler(() => new RecordingHandler(requests, forwardedProtoHeader));
+        builder.Services.AddHttpClient(nameof(IMcpHttpInvoker)).AddHttpMessageHandler(() => new RecordingHandler(requests, forwardedProtoHeader));
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
@@ -340,5 +403,17 @@ public sealed class ProxyProbeController : ControllerBase
             remoteIpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
             authorization = Request.Headers.Authorization.ToString()
         });
+    }
+
+    [HttpGet("moved")]
+    public IActionResult Moved()
+    {
+        return Redirect("/api/proxy-probe");
+    }
+
+    [HttpGet("open-redirect")]
+    public IActionResult OpenRedirect(string returnUrl)
+    {
+        return Redirect(returnUrl);
     }
 }
