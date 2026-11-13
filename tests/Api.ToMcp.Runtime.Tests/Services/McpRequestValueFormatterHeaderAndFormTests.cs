@@ -177,17 +177,24 @@ public class McpRequestValueFormatterHeaderAndFormTests
     }
 
     [Theory]
-    [InlineData("fa-IR", "0001-01-01")]
-    [InlineData("fa-IR", "0622-03-21")]
-    [InlineData("ar-SA", "1900-04-29")]
-    [InlineData("ar-SA", "9999-12-31")]
-    public void TryAddFormValue_ReturnsFalse_ForADateOutsideTheCalendarOfTheCurrentCulture(string cultureName, string date)
+    [InlineData("fa-IR", false, "0001-01-01")]
+    [InlineData("fa-IR", false, "0622-03-21")]
+    [InlineData("ar-SA", true, "1900-04-29")]
+    [InlineData("ar-SA", true, "9999-12-31")]
+    public void TryAddFormValue_ReturnsFalse_ForADateOutsideTheCalendarOfTheCurrentCulture(string cultureName, bool isUmAlQura, string date)
     {
         // ToString throws for it: the Persian calendar starts in 622, the Umm al-Qura one spans 1900 to 2077. A date
-        // property left out is 0001-01-01, in an object or in a collection.
+        // property left out is 0001-01-01, in an object or in a collection. ar-SA defaults to Umm al-Qura on Windows but
+        // to the Gregorian calendar with ICU on Linux, so the test sets the calendar itself.
         var day = DateOnly.Parse(date, CultureInfo.InvariantCulture);
+        var culture = (CultureInfo)CultureInfo.GetCultureInfo(cultureName).Clone();
+        if (isUmAlQura)
+        {
+            culture.DateTimeFormat.Calendar = new UmAlQuraCalendar();
+        }
+
         var previousCulture = CultureInfo.CurrentCulture;
-        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
+        CultureInfo.CurrentCulture = culture;
         try
         {
             Assert.False(TryAddFormValue([], "day", day));
