@@ -371,6 +371,10 @@ public partial class McpToolGeneratorTests
 
     public abstract class AbstractSlug
     {
+        public AbstractSlug()
+        {
+        }
+
         [FromRoute]
         public string? Slug { get; set; }
     }
@@ -422,6 +426,13 @@ public partial class McpToolGeneratorTests
     public sealed class PageAndSlugBindAttribute : BindAttribute
     {
         public PageAndSlugBindAttribute() : base(""Page"", ""Slug"")
+        {
+        }
+    }
+
+    public sealed class PageBindAttribute : BindAttribute
+    {
+        public PageBindAttribute(params string[] include) : base(""Page"")
         {
         }
     }
@@ -494,6 +505,7 @@ public partial class McpToolGeneratorTests
     // The generator cannot read what another property filter, or a [Bind] of the project's, lets MVC bind.
     [InlineData("[AllProperties] RouteSlugFilter f", false)]
     [InlineData("[PageAndSlugBind] RouteSlugFilter f", false)]
+    [InlineData("[PageBind(\"Slug\")] RouteSlugFilter f", false)]
     public void Generator_ReportsAPropertyOfARouteValue_OnlyWhereEveryBindIncludeListNamesIt(string parameter, bool isReported)
     {
         // MVC's complex binder binds only the properties every [Bind] include list of the parameter and its type names,
