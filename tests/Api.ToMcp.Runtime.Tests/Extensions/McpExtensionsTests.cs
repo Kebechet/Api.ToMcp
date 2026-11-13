@@ -1,8 +1,10 @@
+using System.Buffers;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Api.ToMcp.Abstractions;
+using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
@@ -13,6 +15,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -405,6 +408,84 @@ public class McpExtensionsTests
     }
 
     [Fact]
+    public async Task StartupCheck_Warns_WhenMvcWritesResponsesWithNewtonsoftJson()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddControllers().AddNewtonsoftJson();
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("Newtonsoft.Json (AddNewtonsoftJson)", warning.Message);
+        Assert.Contains("Generated tools with an output schema: 5,", warning.Message);
+        Assert.Contains("Minimal API", warning.Message);
+        Assert.Contains("\"structuredOutput\": false", warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_Warns_WhenMvcWritesResponsesWithAFormatterDerivedFromNewtonsofts()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddControllers(options => options.OutputFormatters.Insert(0, new AppNewtonsoftJsonOutputFormatter()));
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning);
+        Assert.Contains("Newtonsoft.Json (AddNewtonsoftJson)", warning.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_DoesNotWarnAboutNewtonsoftJson_WhenMvcWritesResponsesWithSystemTextJson()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddControllers();
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task StartupCheck_DoesNotWarnAboutNewtonsoftJson_WhenNoGeneratedToolHasAnOutputSchema()
+    {
+        // As with "structuredOutput": false, which leaves every generated tool without one.
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.AddControllers().AddNewtonsoftJson();
+                services.AddMcpTools(typeof(McpScope).Assembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
+    [Fact]
     public async Task StartupCheck_Warns_WhenMvcIgnoresCycles_InAResponseTypeThatCanContainItself()
     {
         var logs = new List<(LogLevel Level, string Message)>();
@@ -478,6 +559,17 @@ public class McpExtensionsTests
         await startupCheck.StartAsync(CancellationToken.None);
 
         Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning);
+    }
+
+    /// <summary>
+    /// A formatter an app derives from Newtonsoft's to write its responses its own way.
+    /// </summary>
+    private sealed class AppNewtonsoftJsonOutputFormatter : NewtonsoftJsonOutputFormatter
+    {
+        public AppNewtonsoftJsonOutputFormatter()
+            : base(new Newtonsoft.Json.JsonSerializerSettings(), ArrayPool<char>.Shared, new MvcOptions(), new MvcNewtonsoftJsonOptions())
+        {
+        }
     }
 
     private static void UsePerSessionExecutionContext(HttpServerTransportOptions options, HttpServerSessionMode sessionMode)

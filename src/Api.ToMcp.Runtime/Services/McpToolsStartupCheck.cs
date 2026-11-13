@@ -1,6 +1,7 @@
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Options;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -31,12 +32,19 @@ internal sealed class McpToolsStartupCheck : IHostedService
     /// </summary>
     private const char GenericArityMarker = '`';
 
+    /// <summary>
+    /// The formatter <c>AddNewtonsoftJson</c> puts in place of System.Text.Json's, matched by name so the runtime takes no
+    /// dependency on Newtonsoft.Json.
+    /// </summary>
+    private const string NewtonsoftJsonOutputFormatterTypeName = "Microsoft.AspNetCore.Mvc.Formatters.NewtonsoftJsonOutputFormatter";
+
     private readonly IServiceProvider _serviceProvider;
     private readonly XmlDocPropertyDescriber _propertyDescriber;
     private readonly McpOutputSchemaBuilder _outputSchemaBuilder;
     private readonly HttpServerTransportOptions _transportOptions;
     private readonly McpScopeOptions _scopeOptions;
     private readonly McpToolScopes _toolScopes;
+    private readonly MvcOptions _mvcOptions;
     private readonly ILogger<McpToolsStartupCheck> _logger;
 
     public McpToolsStartupCheck(
@@ -46,6 +54,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
         IOptions<HttpServerTransportOptions> transportOptions,
         IOptions<McpScopeOptions> scopeOptions,
         McpToolScopes toolScopes,
+        IOptions<MvcOptions> mvcOptions,
         ILogger<McpToolsStartupCheck> logger)
     {
         _serviceProvider = serviceProvider;
@@ -54,6 +63,7 @@ internal sealed class McpToolsStartupCheck : IHostedService
         _transportOptions = transportOptions.Value;
         _scopeOptions = scopeOptions.Value;
         _toolScopes = toolScopes;
+        _mvcOptions = mvcOptions.Value;
         _logger = logger;
     }
 
@@ -75,6 +85,14 @@ internal sealed class McpToolsStartupCheck : IHostedService
         {
             _logger.LogWarning(
                 "The app's MVC JSON options preserve references (ReferenceHandler.Preserve), which no JSON Schema describes, so generated tools advertise an output schema that accepts any value. Set \"structuredOutput\": false in generator.json to advertise none.");
+        }
+
+        var builtSchemaCount = _outputSchemaBuilder.BuiltSchemaCount;
+        if (builtSchemaCount > 0 && WritesResponsesWithNewtonsoftJson(_mvcOptions))
+        {
+            _logger.LogWarning(
+                "MVC writes responses with Newtonsoft.Json (AddNewtonsoftJson), but the output schemas of generated tools are built from MVC's System.Text.Json options, which Newtonsoft.Json does not use: [JsonProperty] names, [Newtonsoft.Json.JsonIgnore] and the converters of SerializerSettings, such as StringEnumConverter, are not in them, so a client that validates the structured content against them can reject the result. Generated tools with an output schema: {ToolCount}, counting those of Minimal API endpoints, whose responses System.Text.Json writes whatever MVC uses. Set \"structuredOutput\": false in generator.json to advertise none.",
+                builtSchemaCount);
         }
 
         var typesWithIgnoredCycles = _outputSchemaBuilder.TypesWithIgnoredCycles;
@@ -179,6 +197,28 @@ internal sealed class McpToolsStartupCheck : IHostedService
                 McpAuthenticationDefaults.AuthenticationScheme,
                 forwardScheme);
         }
+    }
+
+    /// <summary>
+    /// Whether <c>AddNewtonsoftJson</c>, or the app itself, put Newtonsoft's formatter, or one derived from it, among MVC's
+    /// output formatters, which then writes the JSON of an action's response instead of System.Text.Json's.
+    /// </summary>
+    private static bool WritesResponsesWithNewtonsoftJson(MvcOptions mvcOptions)
+    {
+        return mvcOptions.OutputFormatters.Any(formatter => IsOrDerivesFrom(formatter.GetType(), NewtonsoftJsonOutputFormatterTypeName));
+    }
+
+    private static bool IsOrDerivesFrom(Type type, string fullName)
+    {
+        for (Type? current = type; current is not null; current = current.BaseType)
+        {
+            if (current.FullName == fullName)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
