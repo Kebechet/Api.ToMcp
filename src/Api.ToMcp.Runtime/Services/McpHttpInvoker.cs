@@ -3,6 +3,7 @@ using System.Net.Mime;
 using System.Text;
 using System.Text.Json;
 using Api.ToMcp.Abstractions.Scopes;
+using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
@@ -13,7 +14,7 @@ namespace Api.ToMcp.Runtime.Services;
 
 public sealed class McpHttpInvoker : IMcpHttpInvoker
 {
-    private const string LoopPreventionHeader = "X-MCP-Internal-Call";
+    private const string LoopPreventionHeader = McpLoopPreventionMiddleware.LoopPreventionHeader;
     private const string LoopPreventionValue = "true";
     private const char PathSeparator = '/';
 

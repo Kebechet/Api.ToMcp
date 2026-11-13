@@ -12,7 +12,11 @@ namespace Api.ToMcp.Runtime.Middleware;
 /// </summary>
 public sealed class McpLoopPreventionMiddleware
 {
-    private const string LoopPreventionHeader = "X-MCP-Internal-Call";
+    /// <summary>
+    /// The header <see cref="Services.McpHttpInvoker"/> adds to a tool's own request to the API, by which this middleware
+    /// and the MCP endpoint tell it apart.
+    /// </summary>
+    internal const string LoopPreventionHeader = "X-MCP-Internal-Call";
 
     private static readonly PathString DefaultMcpPath = new("/" + McpExtensions.DefaultMcpPattern);
 
