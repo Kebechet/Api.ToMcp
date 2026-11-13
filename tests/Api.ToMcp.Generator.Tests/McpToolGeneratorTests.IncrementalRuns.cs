@@ -109,6 +109,36 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_GeneratesNoSourceAgain_AfterAnEditToAControllerRouteNoToolCalls()
+    {
+        // A tool calls its action under the controller's first [Route]; only MCP014 reads the others.
+        const string controller = @"
+namespace TestApi
+{
+    [Route(""api/orders"")]
+    [Route(""api/legacy/orders"")]
+    public class OrdersController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        public Task<string> GetById(Guid id) => Task.FromResult(string.Empty);
+
+        [HttpGet]
+        public Task<string> GetAll() => Task.FromResult(string.Empty);
+    }
+}
+";
+        var compilation = CreateCompilationOfFiles((OrdersControllerFile, Usings + controller));
+        var driver = CreateTrackingDriver(AllExceptExcludedConfig).RunGenerators(compilation);
+        var sources = GetGeneratedSources(driver);
+
+        driver = driver.RunGenerators(ReplaceText(compilation, OrdersControllerFile, "\"api/legacy/orders\"", "\"api/old/orders\""));
+
+        AssertSourceOutputReasons(driver, TrackingNames.ToolSources, IncrementalStepRunReason.Cached);
+        AssertSourceOutputReasons(driver, TrackingNames.Registration, IncrementalStepRunReason.Cached);
+        Assert.Equal(sources, GetGeneratedSources(driver));
+    }
+
+    [Fact]
     public void Generator_GeneratesNoSourceAgain_AfterAnEditThatOnlyMovesActions()
     {
         // Typing above an action moves it, and every action below it, which only diagnostics point at.

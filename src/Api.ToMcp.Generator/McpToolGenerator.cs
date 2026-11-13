@@ -260,7 +260,8 @@ namespace Api.ToMcp.Generator
             var tools = toolActions.Select((action, i) => new ToolSourceModel
             {
                 ClassName = toolClassNames[i],
-                Action = action with { SourceLocation = null },
+                // Only diagnostics read the other controller routes, so an edit to them generates no tool again.
+                Action = action with { SourceLocation = null, OtherControllerRoutes = EquatableArray<ServedRouteModel>.Empty },
                 Naming = config.Naming,
                 StructuredOutput = config.StructuredOutput
             }).ToImmutableArray();
