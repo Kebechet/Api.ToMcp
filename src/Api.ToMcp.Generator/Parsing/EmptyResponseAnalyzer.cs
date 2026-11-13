@@ -99,10 +99,17 @@ namespace Api.ToMcp.Generator.Parsing
         public static EquatableArray<BodyToAnalyzeModel> GetBodiesNeverEmpty(EquatableArray<BodyToAnalyzeModel> bodies, Compilation compilation, CancellationToken ct)
         {
             // One semantic model per file, which the actions declared in it share, kept only for this analysis. Each body is
-            // bound on its own, so they are analyzed in parallel: with many tools, this is most of a run after an edit.
+            // bound on its own, so they are analyzed in parallel: with many tools, this is most of a run after an edit. A
+            // compilation told not to build in parallel (/parallel-) gets one thread, as the compiler's own work does.
+            var options = new ParallelOptions { CancellationToken = ct };
+            if (!compilation.Options.ConcurrentBuild)
+            {
+                options.MaxDegreeOfParallelism = 1;
+            }
+
             var semanticModels = new ConcurrentDictionary<SyntaxTree, SemanticModel>();
             var canBeEmpty = new bool[bodies.Length];
-            Parallel.For(0, bodies.Length, new ParallelOptions { CancellationToken = ct }, i =>
+            Parallel.For(0, bodies.Length, options, i =>
                 canBeEmpty[i] = CanBodySucceedWithoutBody(bodies[i], compilation, semanticModels, ct));
 
             return bodies.Where((_, i) => !canBeEmpty[i]).ToImmutableArray();

@@ -134,6 +134,19 @@ namespace TestApi
     }
 
     [Fact]
+    public void Generator_ProvesTheBodies_InACompilationNotBuiltInParallel()
+    {
+        // /parallel- makes the analysis run on one thread.
+        var compilation = CreateCompilationOfFiles((ControllersFile, ControllersWithProvableBodies), (CatalogFile, CatalogSource));
+        compilation = compilation.WithOptions(compilation.Options.WithConcurrentBuild(false));
+
+        var driver = CreateTrackingDriver(AllExceptExcludedConfig).RunGenerators(compilation);
+
+        Assert.Equal(new[] { OrdersGetId, ProductsGetId, ProductsNewId }, GetBodiesNeverEmpty(driver).Bodies.OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Contains(StrictOutput, GetGeneratedSources(driver)["ProductsController_GetTool.g.cs"]);
+    }
+
+    [Fact]
     public void Generator_ProvesTheBody_WhenAParameterTypeIsOneTheGeneratorCannotSee()
     {
         // Source generators do not see each other's output, so a type another generator makes is an error type here.
