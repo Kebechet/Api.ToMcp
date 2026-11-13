@@ -586,10 +586,10 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var isBodyInferred = !endpoint.HttpMethods.Any(BodilessHttpMethods.Contains);
-            var bindings = new List<(EndpointInput Input, EndpointBinding Binding, string? QueryName)>();
+            var bindings = new List<(EndpointInput Input, EndpointBinding Binding, string? ModelName)>();
             foreach (var input in inputs)
             {
-                var (binding, queryName, problem) = GetEndpointBinding(input, isBodyInferred);
+                var (binding, modelName, problem) = GetEndpointBinding(input, isBodyInferred);
                 if (problem is not null)
                 {
                     return (ImmutableArray<ParameterInfoModel>.Empty, problem, false);
@@ -597,7 +597,7 @@ namespace Api.ToMcp.Generator.Parsing
 
                 if (binding != EndpointBinding.None)
                 {
-                    bindings.Add((input, binding, queryName));
+                    bindings.Add((input, binding, modelName));
                 }
             }
 
@@ -622,7 +622,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             var parameters = bindings
-                .Select(x => CreateEndpointParameter(x.Input, ToParameterSource(x.Binding), x.QueryName, compilation))
+                .Select(x => CreateEndpointParameter(x.Input, ToParameterSource(x.Binding), x.ModelName, compilation))
                 .ToImmutableArray();
 
             return (parameters, null, bindings.Any(x => !IsEffectivelyPublic(x.Input.Type)));
@@ -633,7 +633,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// input without an attribute is a service, as an endpoint reads one body at most. Without one, a single such
         /// input is the body; of several, all but one are services, and only the running app knows which.
         /// </summary>
-        private static string? ResolveBody(List<(EndpointInput Input, EndpointBinding Binding, string? QueryName)> bindings, string httpMethod)
+        private static string? ResolveBody(List<(EndpointInput Input, EndpointBinding Binding, string? ModelName)> bindings, string httpMethod)
         {
             var declaredBodies = bindings.Where(x => x.Binding == EndpointBinding.Body).ToList();
             var candidates = bindings.Where(x => x.Binding == EndpointBinding.BodyOrService).ToList();
@@ -667,7 +667,7 @@ namespace Api.ToMcp.Generator.Parsing
                 : null;
         }
 
-        private static string QuoteInputs(IEnumerable<(EndpointInput Input, EndpointBinding Binding, string? QueryName)> bindings)
+        private static string QuoteInputs(IEnumerable<(EndpointInput Input, EndpointBinding Binding, string? ModelName)> bindings)
         {
             var names = bindings.Select(x => $"'{x.Input.Name}'").ToList();
 
@@ -679,7 +679,7 @@ namespace Api.ToMcp.Generator.Parsing
         /// attribute, a type it fills itself, a <c>BindAsync</c>, a type it parses from one string, an array of those on an
         /// endpoint without a body, and otherwise a service or the body.
         /// </summary>
-        private static (EndpointBinding Binding, string? QueryName, string? Problem) GetEndpointBinding(EndpointInput input, bool isBodyInferred)
+        private static (EndpointBinding Binding, string? ModelName, string? Problem) GetEndpointBinding(EndpointInput input, bool isBodyInferred)
         {
             var attributes = input.Attributes;
             var type = input.Type;
@@ -751,7 +751,7 @@ namespace Api.ToMcp.Generator.Parsing
             }
         }
 
-        private static ParameterInfoModel CreateEndpointParameter(EndpointInput input, ParameterSourceModel source, string? queryName, Compilation compilation)
+        private static ParameterInfoModel CreateEndpointParameter(EndpointInput input, ParameterSourceModel source, string? modelName, Compilation compilation)
         {
             var type = input.Type;
             var isSimpleType = SimpleTypeClassifier.IsParsable(type);
@@ -770,7 +770,7 @@ namespace Api.ToMcp.Generator.Parsing
                     Source = source,
                     IsCollection = true,
                     Description = input.Description,
-                    QueryName = queryName
+                    ModelName = modelName
                 };
             }
 
@@ -794,7 +794,7 @@ namespace Api.ToMcp.Generator.Parsing
                     ? ExtractProperties(type, compilation)
                     : ImmutableArray<PropertyInfoModel>.Empty,
                 Description = input.Description,
-                QueryName = queryName
+                ModelName = modelName
             };
         }
 

@@ -191,6 +191,27 @@ namespace TestApi
 
         [HttpGet(""optional/{id?}"")]
         public object GetOptional() => new { id = RouteData.Values[""id""], path = Request.Path.Value };
+
+        // MVC binds a parameter under the name the first IModelNameProvider among its attributes, then its type's, gives.
+        [HttpGet(""binder-named"")]
+        public object GetBinderNamed([ModelBinder(Name = ""q"")] string? search) => new { search, query = Request.QueryString.Value };
+
+        [HttpGet(""query-bind-prefix"")]
+        public object GetQueryBindPrefix([FromQuery, Bind(Prefix = ""f"")] ProductFilter filter) => new { filter.City, query = Request.QueryString.Value };
+
+        [HttpGet(""route-named/{productId}"")]
+        public object GetRouteNamed([FromRoute(Name = ""productId"")] int id) => new { id, path = Request.Path.Value };
+
+        [HttpDelete(""route-named/{productCode}"")]
+        public object DeleteRouteNamed([FromRoute(Name = ""productCode"")] string code) => new { deleted = code };
+
+        // [ApiController] infers [FromQuery] for value, which the route does not name, and MVC reads it from ?code=.
+        [HttpGet(""binder-route/{code}"")]
+        public object GetBinderRoute([ModelBinder(Name = ""code"")] string value) => new { value, path = Request.Path.Value, query = Request.QueryString.Value };
+
+        // Under the prefix o, Order would read the route value o.orderId, which no route has, and City reads o.c.
+        [HttpGet(""route-object/{orderId}"")]
+        public object GetRouteObject([FromRoute(Name = ""o"")] AliasedRouteQuery q) => new { q.Order, q.City, query = Request.QueryString.Value };
     }
 
     // Without its id, a call to Get or Delete requests the URL that List or DeleteAll is served at.
@@ -282,6 +303,19 @@ namespace TestApi
 
         [HttpGet(""record-query-id/{id}"")]
         public object GetRecordQueryId(int id, RecordQueryId filter) => new { id, filterId = filter.Id, filter.City };
+
+        [HttpGet(""binder-route/{code}"")]
+        public object GetBinderRoute([ModelBinder(Name = ""code"")] string value) => new { value, path = Request.Path.Value, query = Request.QueryString.Value };
+
+        [HttpGet(""bind-prefix"")]
+        public object GetBindPrefix([Bind(Prefix = ""f"")] ProductFilter filter) => new { filter.City, query = Request.QueryString.Value };
+
+        [HttpGet(""type-prefix"")]
+        public object GetTypePrefix(PrefixedFilter filter) => new { filter.City, query = Request.QueryString.Value };
+
+        // MVC binds Id from s.Id under the prefix, never from the route value {id}, which the URL still needs.
+        [HttpGet(""bind-prefix/{id}"")]
+        public object GetBindPrefixShipment([Bind(Prefix = ""s"")] Shipment shipment) => new { shipment.Id, shipment.Note, query = Request.QueryString.Value };
     }
 
     [Flags]
@@ -522,6 +556,16 @@ namespace TestApi
     [InlineData("ItemsController_GetMultiTool", @"{}", @"{""id"":null,""path"":""/api/items/multi/""}")]
     [InlineData("ItemsController_DeleteOptTool", @"{""id"":""" + OrderGuid + @"""}", @"{""deleted"":""" + OrderGuid + @"""}")]
     [InlineData("ItemsController_DeleteFileTool", @"{""path"":""a/b""}", @"{""deleted"":""a/b""}")]
+    [InlineData("EchoController_GetBinderNamedTool", @"{""search"":""brno""}", @"{""search"":""brno"",""query"":""?q=brno""}")]
+    [InlineData("EchoController_GetQueryBindPrefixTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""query"":""?f.City=Brno""}")]
+    [InlineData("EchoController_GetRouteNamedTool", @"{""id"":7}", @"{""id"":7,""path"":""/api/route-named/7""}")]
+    [InlineData("EchoController_DeleteRouteNamedTool", @"{""code"":""p-1""}", @"{""deleted"":""p-1""}")]
+    [InlineData("EchoController_GetBinderRouteTool", @"{""value"":""A-7""}", @"{""value"":""A-7"",""path"":""/api/binder-route/A-7"",""query"":""?code=A-7""}")]
+    [InlineData("PlainEchoController_GetBinderRouteTool", @"{""value"":""A-7""}", @"{""value"":""A-7"",""path"":""/plain/binder-route/A-7"",""query"":""""}")]
+    [InlineData("EchoController_GetRouteObjectTool", @"{""q"":{""order"":""" + OrderGuid + @""",""city"":""Brno""}}", @"{""order"":""00000000-0000-0000-0000-000000000000"",""city"":""Brno"",""query"":""?o.c=Brno""}")]
+    [InlineData("PlainEchoController_GetBindPrefixTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""query"":""?f.City=Brno""}")]
+    [InlineData("PlainEchoController_GetTypePrefixTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno"",""query"":""?pf.City=Brno""}")]
+    [InlineData("PlainEchoController_GetBindPrefixShipmentTool", @"{""shipment"":{""id"":9,""note"":""x""}}", @"{""id"":9,""note"":""x"",""query"":""?s.Id=9&s.Note=x""}")]
     public async Task Tool_DeliversItsArguments_AsMvcBindsThem(string toolClassName, string arguments, string expectedEcho)
     {
         var (statusCode, body) = await _host.InvokeToolAsync(toolClassName, arguments);
@@ -597,12 +641,26 @@ namespace TestApi
         Assert.Equal("The argument 'id' fills the route value {id} of the API's URL, which cannot be empty, '.' or '..'.", GetText(result));
     }
 
+    [Fact]
+    public async Task Tool_NamesTheArgumentByItsOwnName_WhenItFillsTheRouteValueItsBindingNameNames()
+    {
+        // The input schema names the argument code; {productCode} is where [FromRoute(Name = "productCode")] sends it.
+        var requestCount = _host.RequestCount;
+
+        var result = await _host.CallToolAsync("EchoController_DeleteRouteNamedTool", @"{""code"":""""}");
+
+        Assert.True(requestCount == _host.RequestCount, $"The tool called the API, which answered {_host.LastResponse}");
+        Assert.True(result.IsError);
+        Assert.Equal("The argument 'code' fills the route value {productCode} of the API's URL, which cannot be empty, '.' or '..'.", GetText(result));
+    }
+
     [Theory]
     [InlineData("ItemsController_DeleteTool", "id")]
     [InlineData("ItemsController_GetTool", "id")]
     [InlineData("ItemsController_FindTool", "id")]
     [InlineData("ItemsController_DeleteOptTool", "id")]
     [InlineData("ItemsController_DeleteFileTool", "path")]
+    [InlineData("EchoController_DeleteRouteNamedTool", "code")]
     public void Tool_RequiresTheArgumentThatFillsARequiredRouteValue_WhateverItsType(string toolClassName, string argumentName)
     {
         var inputSchema = _host.GetInputSchema(toolClassName);

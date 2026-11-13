@@ -466,8 +466,9 @@ namespace Api.ToMcp.Generator.Parsing
                     IsCollection = IsCollection(param.Type),
                     Properties = properties,
                     Description = paramDocs.TryGetValue(param.Name, out var doc) ? doc : null,
-                    QueryName = GetFromQueryName(bindingAttributes) ??
-                        (declaredSource == ParameterSourceModel.Custom ? modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null) : null)
+                    // MVC binds every parameter under the first name these give, whatever its source
+                    // (BindingInfo.GetBindingInfo, then the model metadata, which reads the type's attributes too).
+                    ModelName = modelAttributes.Select(GetModelName).FirstOrDefault(x => x is not null)
                 });
             }
 
@@ -492,14 +493,6 @@ namespace Api.ToMcp.Generator.Parsing
             }
 
             return attributes;
-        }
-
-        private static string? GetFromQueryName(IEnumerable<AttributeData> attributes)
-        {
-            return attributes
-                .Where(x => x.AttributeClass?.Name == BindingAttributeNames.FromQuery)
-                .Select(GetModelName)
-                .FirstOrDefault(x => x is not null);
         }
 
         /// <summary>
@@ -672,7 +665,7 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The name an attribute implementing <c>IModelNameProvider</c>, such as <c>[FromQuery(Name = "q")]</c>, makes MVC
-        /// bind a value under, or null when it names none.
+        /// bind a value under, or null when it names none. <c>[Bind]</c> names it with its <c>Prefix</c>.
         /// </summary>
         private static string? GetModelName(AttributeData attribute)
         {
@@ -681,8 +674,12 @@ namespace Api.ToMcp.Generator.Parsing
                 return null;
             }
 
+            var namePropertyName = ResponseTypeResolver.IsOrImplements(attribute.AttributeClass!, BindingAttributeNames.Bind)
+                ? BindingAttributeNames.BindPrefixPropertyName
+                : BindingAttributeNames.ModelNamePropertyName;
+
             return attribute.NamedArguments
-                .Where(x => x.Key == BindingAttributeNames.ModelNamePropertyName)
+                .Where(x => x.Key == namePropertyName)
                 .Select(x => x.Value.Value as string)
                 .FirstOrDefault(x => !string.IsNullOrEmpty(x));
         }

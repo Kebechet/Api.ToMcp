@@ -460,6 +460,13 @@ namespace TestApi
         public string? Note { get; set; }
     }
 
+    // MVC binds every parameter of the type under the prefix, as it reads a parameter's model name from its type too.
+    [Bind(Prefix = ""pf"")]
+    public sealed class PrefixedFilter
+    {
+        public string? City { get; set; }
+    }
+
     public class BaseQuery
     {
         [FromQuery]
