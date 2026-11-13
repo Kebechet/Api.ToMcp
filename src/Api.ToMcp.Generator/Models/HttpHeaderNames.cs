@@ -65,6 +65,12 @@ internal static class HttpHeaderNames
     public const string ClientCert = "X-Client-Cert";
 
     /// <summary>
+    /// The client certificate Microsoft's certificate authentication docs have a custom proxy pass on to
+    /// <c>AddCertificateForwarding</c>.
+    /// </summary>
+    public const string SslCert = "X-SSL-CERT";
+
+    /// <summary>
     /// <c>X-Forwarded-For</c>, <c>-Proto</c>, <c>-Host</c> and <c>-Prefix</c>, which <c>UseForwardedHeaders</c> reads, and the
     /// <c>X-Forwarded-User</c>, <c>-Email</c> and <c>-Client-Cert</c> that authenticating proxies set.
     /// </summary>
@@ -138,4 +144,10 @@ internal static class HttpHeaderNames
     /// The client certificate a TLS-terminating proxy such as nginx is commonly set up to pass on.
     /// </summary>
     public const string SslClientPrefix = "X-SSL-Client-";
+
+    /// <summary>
+    /// The client certificate, its subject and its verification that the NGINX ingress for Kubernetes passes on, which
+    /// Microsoft's certificate authentication docs have <c>AddCertificateForwarding</c> read as <c>ssl-client-cert</c>.
+    /// </summary>
+    public const string NginxSslClientPrefix = "ssl-client-";
 }

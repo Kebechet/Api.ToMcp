@@ -196,12 +196,7 @@ public partial class McpToolGeneratorTests
     {
         // The runtime keeps its own list, as the generator cannot reference it; a header missing from it would be sent by a
         // hand-written request, and one the generator lacks would be taken from the AI.
-        var invoker = new McpHttpInvoker(
-            new HttpClient(new NoRequestHandler()),
-            new FixedBaseUrl(),
-            new HttpContextAccessor(),
-            NullLogger<McpHttpInvoker>.Instance,
-            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()));
+        var invoker = CreateInvokerThatSendsNothing();
         var headerNames = RequestHeaderRules.NeverSetNames.Concat(RequestHeaderRules.NeverSetPrefixes.Select(x => x + "Test"));
 
         foreach (var headerName in headerNames)
@@ -212,6 +207,78 @@ public partial class McpToolGeneratorTests
 
             Assert.True(exception is ArgumentException, $"{headerName}: {exception}");
         }
+    }
+
+    [Theory]
+    [InlineData("Authorization")]
+    [InlineData("Proxy-Authorization")]
+    [InlineData("Cookie")]
+    [InlineData("Host")]
+    [InlineData("X-MCP-Internal-Call")]
+    [InlineData("traceparent")]
+    [InlineData("tracestate")]
+    [InlineData("baggage")]
+    [InlineData("Correlation-Context")]
+    [InlineData("Content-Type")]
+    [InlineData("Content-Length")]
+    [InlineData("Transfer-Encoding")]
+    [InlineData("Content-Encoding")]
+    [InlineData("Content-Language")]
+    [InlineData("Content-Location")]
+    [InlineData("Content-MD5")]
+    [InlineData("Content-Range")]
+    [InlineData("Content-Disposition")]
+    [InlineData("Allow")]
+    [InlineData("Expires")]
+    [InlineData("Last-Modified")]
+    [InlineData("Connection")]
+    [InlineData("Upgrade")]
+    [InlineData("TE")]
+    [InlineData("Keep-Alive")]
+    [InlineData("Trailer")]
+    [InlineData("Proxy-Connection")]
+    [InlineData("X-HTTP-Method-Override")]
+    [InlineData("X-HTTP-Method")]
+    [InlineData("X-Method-Override")]
+    [InlineData("Forwarded")]
+    [InlineData("X-Forwarded-For")]
+    [InlineData("X-Original-Host")]
+    [InlineData("X-Real-IP")]
+    [InlineData("True-Client-IP")]
+    [InlineData("CF-Connecting-IP")]
+    [InlineData("X-Client-IP")]
+    [InlineData("X-Cluster-Client-IP")]
+    [InlineData("X-MS-CLIENT-PRINCIPAL-ID")]
+    [InlineData("X-MS-TOKEN-AAD-ID-TOKEN")]
+    [InlineData("X-ARR-ClientCert")]
+    [InlineData("X-Client-Cert")]
+    [InlineData("X-SSL-CERT")]
+    [InlineData("X-Auth-Request-Email")]
+    [InlineData("Remote-User")]
+    [InlineData("X-Remote-User")]
+    [InlineData("X-Goog-Authenticated-User-Email")]
+    [InlineData("X-Goog-IAP-JWT-Assertion")]
+    [InlineData("X-Amzn-Oidc-Identity")]
+    [InlineData("X-Amzn-Mtls-Clientcert")]
+    [InlineData("Cf-Access-Jwt-Assertion")]
+    [InlineData("X-Pomerium-Jwt-Assertion")]
+    [InlineData("X-SSL-Client-Cert")]
+    [InlineData("ssl-client-cert")]
+    [InlineData("ssl-client-subject-dn")]
+    [InlineData("ssl-client-verify")]
+    public void HeaderOfTheReadmeTable_IsNoArgumentOfTheTool_AndTheRuntimeInvokerRefusesIt(string headerName)
+    {
+        // The table of the headers a tool never sets, one case each, so a header dropped from both lists fails here: the
+        // tests that compare the lists with each other pass then.
+        var source = SimpleTypeSource($"[HttpGet(\"x\")] public Task<string> Find([FromHeader(Name = \"{headerName}\")] string? header, int page) => Task.FromResult(string.Empty);");
+        var request = new McpHttpRequest(HttpMethod.Get, "/x") { Headers = [new(headerName, "v")] };
+
+        var tool = GetToolClass(RunGenerator(source, AllExceptExcludedConfig), SimpleTypeToolClassName);
+        var exception = Record.Exception(() => CreateInvokerThatSendsNothing().SendAsync(request).GetAwaiter().GetResult());
+
+        Assert.DoesNotContain("header", tool);
+        Assert.Contains("[Description(\"Parameter: page\")] int page,", tool);
+        Assert.True(exception is ArgumentException, $"{headerName}: {exception}");
     }
 
     [Theory]
@@ -378,6 +445,19 @@ namespace TestApi
     }}
 }}
 ";
+    }
+
+    /// <summary>
+    /// An invoker the app constructs itself, whose client answers every request with 200 without sending it.
+    /// </summary>
+    private static McpHttpInvoker CreateInvokerThatSendsNothing()
+    {
+        return new McpHttpInvoker(
+            new HttpClient(new NoRequestHandler()),
+            new FixedBaseUrl(),
+            new HttpContextAccessor(),
+            NullLogger<McpHttpInvoker>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()));
     }
 
     private sealed class NoRequestHandler : HttpMessageHandler

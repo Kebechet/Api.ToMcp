@@ -64,7 +64,8 @@ namespace Api.ToMcp.Generator.Parsing
             HttpHeaderNames.ClientIp,
             HttpHeaderNames.ClusterClientIp,
             HttpHeaderNames.ArrClientCert,
-            HttpHeaderNames.ClientCert
+            HttpHeaderNames.ClientCert,
+            HttpHeaderNames.SslCert
         };
 
         /// <summary>
@@ -86,7 +87,8 @@ namespace Api.ToMcp.Generator.Parsing
             HttpHeaderNames.AmazonMtlsPrefix,
             HttpHeaderNames.CloudflareAccessPrefix,
             HttpHeaderNames.PomeriumPrefix,
-            HttpHeaderNames.SslClientPrefix
+            HttpHeaderNames.SslClientPrefix,
+            HttpHeaderNames.NginxSslClientPrefix
         };
 
         /// <summary>

@@ -26,6 +26,7 @@ internal static class ToolRequestHeaders
     private const string ClusterClientIp = "X-Cluster-Client-IP";
     private const string ArrClientCert = "X-ARR-ClientCert";
     private const string ClientCert = "X-Client-Cert";
+    private const string SslCert = "X-SSL-CERT";
     private const string ForwardedPrefix = "X-Forwarded-";
     private const string OriginalPrefix = "X-Original-";
     private const string ClientPrincipalPrefix = "X-MS-CLIENT-PRINCIPAL";
@@ -40,6 +41,7 @@ internal static class ToolRequestHeaders
     private const string CloudflareAccessPrefix = "Cf-Access-";
     private const string PomeriumPrefix = "X-Pomerium-";
     private const string SslClientPrefix = "X-SSL-Client-";
+    private const string NginxSslClientPrefix = "ssl-client-";
 
     private static readonly HashSet<string> Names = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -69,13 +71,14 @@ internal static class ToolRequestHeaders
         ClientIp,
         ClusterClientIp,
         ArrClientCert,
-        ClientCert
+        ClientCert,
+        SslCert
     };
 
     /// <summary>
     /// The starts of the header families: the forwarding headers, App Service Authentication, oauth2-proxy, forward-auth
     /// proxies such as Authelia, Kubernetes front-proxy authentication, Google IAP, the AWS Application Load Balancer,
-    /// Cloudflare Access, Pomerium, and a proxy's client certificate.
+    /// Cloudflare Access, Pomerium, and the client certificate of a proxy such as nginx or the NGINX ingress.
     /// </summary>
     private static readonly string[] Prefixes =
     [
@@ -92,7 +95,8 @@ internal static class ToolRequestHeaders
         AmazonMtlsPrefix,
         CloudflareAccessPrefix,
         PomeriumPrefix,
-        SslClientPrefix
+        SslClientPrefix,
+        NginxSslClientPrefix
     ];
 
     public static bool IsNeverSetFromArguments(string headerName)
