@@ -89,6 +89,8 @@ public partial class McpToolGeneratorTests
     [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"{id}/{slug}\")]", "int id, [FromServices] System.IServiceProvider slug")]
     [InlineData(ApiControllerDeclaration, "[HttpPost(\"{id}\")] [HttpPost(\"{id}/{note}\")]", "int id, [FromBody] Shipment note")]
     [InlineData(ApiControllerDeclaration, "[HttpPost(\"{id}\")] [HttpPost(\"{id}/{note}\")]", "int id, [FromForm] string? note")]
+    // [ApiController] reads a complex parameter without a binding attribute from the body, whatever the routes name.
+    [InlineData(ApiControllerDeclaration, "[HttpPost(\"{id}\")] [HttpPost(\"{id}/{shipment}\")]", "int id, Shipment shipment")]
     // The route the tool calls carries the value as well.
     [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}/{slug}\")] [HttpGet(\"{id}\")]", "int id, string? slug")]
     [InlineData(ApiControllerDeclaration, "[HttpGet(\"{id}\")] [HttpGet(\"x/{ID}\")]", "int id")]
@@ -100,6 +102,28 @@ public partial class McpToolGeneratorTests
     public void Generator_ReportsNothing_WhereNoValueOfTheActionIsLost(string controllerDeclaration, string httpAttributes, string parameters)
     {
         var source = UncalledRoutesSource(controllerDeclaration, $"{httpAttributes} public Task<string> Find({parameters}) => Task.FromResult(string.Empty);");
+
+        Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
+        Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UncalledRouteId);
+    }
+
+    [Fact]
+    public void Generator_ReportsNothing_ForAPropertyOfAFromRouteParameter_ThatMvcReadsFromTheQueryString()
+    {
+        // MVC reads the [FromQuery] Version from the query string, where the tool sends it.
+        const string types = @"
+    public sealed class VersionedKey
+    {
+        public int Id { get; set; }
+
+        [FromQuery]
+        public int Version { get; set; }
+    }
+";
+        var source = UncalledRoutesSource(
+            ApiControllerDeclaration,
+            "[HttpGet(\"{id}\")] [HttpGet(\"{id}/v/{version}\")] public Task<string> Find([FromRoute] VersionedKey key) => Task.FromResult(string.Empty);",
+            types);
 
         Assert.Empty(CompileWithGeneratedTools(source, AllExceptExcludedConfig));
         Assert.DoesNotContain(GetGeneratorDiagnostics(source, AllExceptExcludedConfig), x => x.Id == UncalledRouteId);
