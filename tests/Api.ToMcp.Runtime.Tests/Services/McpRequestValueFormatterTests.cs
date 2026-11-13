@@ -496,6 +496,71 @@ public class McpRequestValueFormatterTests
         Assert.Equal(new[] { "r.City=Brno" }, queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_ReadsTheBindingAttributesOfATypesPropertiesOnce_ForEveryCall()
+    {
+        // Reflection creates a property's attributes anew each time it is asked for them, so their count tells how often
+        // the properties of the type were decided: once, on its first call, not again on every call that sends it.
+        McpRequestValueFormatter.AddQueryValue([], "filter", new CountedFilter { Query = "squat" });
+        var attributesAfterFirstCall = CountedNameAttribute.CreatedCount;
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new CountedFilter { Query = "squat" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "other", new CountedFilter { Query = "bench" });
+
+        Assert.Equal(new[] { "filter.q=squat", "other.q=bench" }, queryParts);
+        Assert.True(attributesAfterFirstCall > 0);
+        Assert.Equal(attributesAfterFirstCall, CountedNameAttribute.CreatedCount);
+    }
+
+    [Fact]
+    public void AddQueryValue_DecidesTheSentPropertiesOfAValuesOwnType_NotOfTheTypeItIsPassedAs()
+    {
+        // The decision is kept per type: a derived value sent after its base type was decided sends its own properties.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "base", new BaseFilter { City = "Brno" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "derived", (BaseFilter)new DerivedFilter { City = "Praha", Page = 2 });
+
+        Assert.Equal(new[] { "base.City=Brno", "derived.Page=2", "derived.City=Praha" }, queryParts);
+    }
+
+    private sealed class CountedFilter
+    {
+        [CountedName("q")]
+        public string? Query { get; set; }
+    }
+
+    /// <summary>
+    /// A binding attribute that counts its instances. Only <see cref="CountedFilter"/> uses it, so no other test moves
+    /// the count.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property)]
+    private sealed class CountedNameAttribute : Attribute, IModelNameProvider
+    {
+        private static int _createdCount;
+
+        public CountedNameAttribute(string name)
+        {
+            Name = name;
+            Interlocked.Increment(ref _createdCount);
+        }
+
+        public static int CreatedCount => Volatile.Read(ref _createdCount);
+
+        public string Name { get; }
+    }
+
+    private class BaseFilter
+    {
+        public string? City { get; set; }
+    }
+
+    private sealed class DerivedFilter : BaseFilter
+    {
+        public int Page { get; set; }
+    }
+
     [BindNever]
     private sealed record NeverBoundRecord(string? City)
     {
