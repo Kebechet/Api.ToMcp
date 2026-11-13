@@ -496,6 +496,99 @@ public class McpRequestValueFormatterTests
         Assert.Equal(new[] { "r.City=Brno" }, queryParts);
     }
 
+    [Fact]
+    public void AddQueryValue_ReadsTheBindingAttributesOfATypesPropertiesOnce_ForEveryCall()
+    {
+        // Reflection creates a property's attributes anew each time it is asked for them, so their count tells how often
+        // the properties of the type were decided: once, on its first call, not again on every call that sends it.
+        McpRequestValueFormatter.AddQueryValue([], "filter", new CountedFilter { Query = "squat" });
+        var attributesAfterFirstCall = CountedNameAttribute.CreatedCount;
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "filter", new CountedFilter { Query = "squat" });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "other", new CountedFilter { Query = "bench" });
+
+        Assert.Equal(new[] { "filter.q=squat", "other.q=bench" }, queryParts);
+        Assert.True(attributesAfterFirstCall > 0);
+        Assert.Equal(attributesAfterFirstCall, CountedNameAttribute.CreatedCount);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsTheOwnPropertiesOfANestedValue_WhoseTypeDerivesFromThePropertysType()
+    {
+        // The properties are decided for the value's own type, not for the type the property declares, also after the
+        // declared type was decided for an earlier value under the same key.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "x", new FilterHolder { Filter = new BaseFilter { City = "Brno" } });
+        McpRequestValueFormatter.AddQueryValue(queryParts, "x", new FilterHolder { Filter = new DerivedFilter { City = "Praha", Page = 2 } });
+
+        Assert.Equal(new[] { "x.Filter.City=Brno", "x.Filter.Page=2", "x.Filter.City=Praha" }, queryParts);
+    }
+
+    [Fact]
+    public void AddQueryValue_SendsThePropertiesOfANestedNullableStruct_NotThoseOfNullable()
+    {
+        // A boxed T? is a T, which MVC binds under x.Range.From; Nullable<T>'s own HasValue and Value it binds nothing from.
+        var queryParts = new List<string>();
+
+        McpRequestValueFormatter.AddQueryValue(queryParts, "x", new DayRangeHolder { Range = new DayRange { From = 1, To = 5 } });
+
+        Assert.Equal(new[] { "x.Range.From=1", "x.Range.To=5" }, queryParts);
+    }
+
+    private sealed class CountedFilter
+    {
+        [CountedName("q")]
+        public string? Query { get; set; }
+    }
+
+    /// <summary>
+    /// A binding attribute that counts its instances. Only <see cref="CountedFilter"/> uses it, so no other test moves
+    /// the count.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property)]
+    private sealed class CountedNameAttribute : Attribute, IModelNameProvider
+    {
+        private static int _createdCount;
+
+        public CountedNameAttribute(string name)
+        {
+            Name = name;
+            Interlocked.Increment(ref _createdCount);
+        }
+
+        public static int CreatedCount => Volatile.Read(ref _createdCount);
+
+        public string Name { get; }
+    }
+
+    private class BaseFilter
+    {
+        public string? City { get; set; }
+    }
+
+    private sealed class DerivedFilter : BaseFilter
+    {
+        public int Page { get; set; }
+    }
+
+    private sealed class FilterHolder
+    {
+        public BaseFilter? Filter { get; set; }
+    }
+
+    private struct DayRange
+    {
+        public int From { get; set; }
+        public int To { get; set; }
+    }
+
+    private sealed class DayRangeHolder
+    {
+        public DayRange? Range { get; set; }
+    }
+
     [BindNever]
     private sealed record NeverBoundRecord(string? City)
     {
