@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ModelContextProtocol.Protocol;
@@ -96,6 +97,24 @@ public sealed class StructuredLinks
     public Uri Self { get; set; } = null!;
 
     public List<Uri> Images { get; set; } = [];
+
+    [Url]
+    public string? Homepage { get; set; }
+
+    [DataType(DataType.Url)]
+    public string? Page { get; set; }
+
+    [DataType(DataType.ImageUrl)]
+    public string? Logo { get; set; }
+
+    [DataType(DataType.DateTime)]
+    public string? UpdatedAt { get; set; }
+
+    [EmailAddress]
+    public string? Contact { get; set; }
+
+    [DataType(DataType.EmailAddress)]
+    public string? ContactAddress { get; set; }
 }
 
 /// <summary>Shaped like the tools the generator emits for actions with a typed response.</summary>

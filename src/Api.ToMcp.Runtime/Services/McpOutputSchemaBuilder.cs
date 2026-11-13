@@ -235,8 +235,9 @@ internal sealed class McpOutputSchemaBuilder
     /// <summary>
     /// The <c>date-time</c> and <c>time</c> formats require an offset, which MVC writes for a <c>DateTime</c> only when
     /// its kind is UTC or local (<c>"2026-09-28T00:00:00"</c> otherwise, as from a database) and never for a
-    /// <c>TimeOnly</c> (<c>"13:45:00"</c>), so both stay plain strings. So does a <c>Uri</c>, which MVC writes as the
-    /// string it was made from, relative ones included (<see cref="UriSchema"/>).
+    /// <c>TimeOnly</c> (<c>"13:45:00"</c>), so both stay plain strings. So do a <c>Uri</c>, which MVC writes as the
+    /// string it was made from, relative ones included, and a string its DataAnnotations give a format
+    /// (<see cref="UncheckedFormatSchema"/>).
     /// </summary>
     private static JsonNode RemoveFormatMvcCanMiss(AIJsonSchemaCreateContext context, JsonNode schema)
     {
@@ -246,7 +247,7 @@ internal sealed class McpOutputSchemaBuilder
             schemaObject.Remove(JsonSchemaKeywords.Format);
         }
 
-        return UriSchema.RemoveFormat(context, schema);
+        return UncheckedFormatSchema.RemoveFromOutput(context, schema);
     }
 
     /// <summary>

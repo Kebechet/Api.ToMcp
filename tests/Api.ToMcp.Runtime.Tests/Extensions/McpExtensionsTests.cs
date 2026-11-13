@@ -162,10 +162,30 @@ public class McpExtensionsTests
         // writes a Uri back as the string it was made from.
         var tools = BuildTools(services => services.AddMcpTools(ToolAssembly));
         var tool = tools.Single(x => x.ProtocolTool.Name == "generated_links").ProtocolTool;
+        var page = tool.InputSchema.GetProperty("properties").GetProperty("page").GetProperty("properties");
 
         Assert.Equal("""{"type":"string"}""", tool.InputSchema.GetProperty("properties").GetProperty("link").GetRawText());
-        Assert.DoesNotContain("\"format\"", tool.InputSchema.GetRawText());
+        Assert.Equal("""{"type":"string"}""", page.GetProperty("self").GetRawText());
+        Assert.Equal("""{"type":"string"}""", page.GetProperty("images").GetProperty("items").GetRawText());
         Assert.DoesNotContain("\"format\"", GetOutputSchema(tools, "generated_links").GetRawText());
+    }
+
+    [Theory]
+    [InlineData("page", """{"type":["string","null"]}""")]
+    [InlineData("logo", """{"type":["string","null"],"contentMediaType":"image/*"}""")]
+    [InlineData("updatedAt", """{"type":["string","null"]}""")]
+    [InlineData("contactAddress", """{"type":["string","null"]}""")]
+    [InlineData("homepage", """{"type":["string","null"],"format":"uri"}""")]
+    [InlineData("contact", """{"type":["string","null"],"format":"email"}""")]
+    public void AddMcpTools_ClaimsAFormat_ForAGeneratedToolsAnnotatedString_OnlyWhereMvcValidatesIt(string propertyName, string schema)
+    {
+        // MVC never validates [DataType], so such a string takes "/images/1.png" or "28.9.2026"; it validates [Url],
+        // which requires an absolute http, https or ftp URL, and [EmailAddress].
+        var tool = BuildTools(services => services.AddMcpTools(ToolAssembly)).Single(x => x.ProtocolTool.Name == "generated_links").ProtocolTool;
+
+        var property = tool.InputSchema.GetProperty("properties").GetProperty("page").GetProperty("properties").GetProperty(propertyName);
+
+        Assert.Equal(schema, property.GetRawText());
     }
 
     [Theory]

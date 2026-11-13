@@ -241,7 +241,7 @@ public static class McpExtensions
         var createOptions = new McpServerToolCreateOptions
         {
             Services = serviceProvider,
-            SchemaCreateOptions = isGenerated ? UriSchema.Apply(schemaCreateOptions) : schemaCreateOptions,
+            SchemaCreateOptions = isGenerated ? UncheckedFormatSchema.ApplyToInput(schemaCreateOptions) : schemaCreateOptions,
             SerializerOptions = isGenerated ? GeneratedToolArguments.SerializerOptions : null
         };
 
