@@ -10,6 +10,8 @@ namespace Api.ToMcp.Generator
         public const string Controllers = "Controllers";
         public const string Endpoints = "Endpoints";
         public const string Plan = "Plan";
+        public const string BodiesToAnalyze = "BodiesToAnalyze";
+        public const string BodiesNeverEmpty = "BodiesNeverEmpty";
         public const string ToolSources = "ToolSources";
         public const string Registration = "Registration";
         public const string Diagnostics = "Diagnostics";

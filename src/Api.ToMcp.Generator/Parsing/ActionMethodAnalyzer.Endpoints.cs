@@ -362,9 +362,10 @@ namespace Api.ToMcp.Generator.Parsing
                 RequiredScope = requiredScope,
                 Annotations = GetToolAnnotations(endpoint.HttpMethod, requiredScope, handlerMcpExpose, classMcpExpose),
                 OutputSchemaType = successType is null ? null : ResponseTypeResolver.ToTypeOfOperand(successType),
-                IsOutputNullable = successType is null ||
-                    responseType.HasBodylessSuccess ||
-                    (!IsNonNullableValueType(successType) && EmptyResponseAnalyzer.CanSucceedWithoutBody(handler!, compilation, ct)),
+                IsOutputNullable = successType is null || responseType.HasBodylessSuccess || !IsNonNullableValueType(successType),
+                BodyToAnalyze = successType is null || responseType.HasBodylessSuccess || IsNonNullableValueType(successType)
+                    ? null
+                    : EmptyResponseAnalyzer.GetBodyToAnalyze(handler!, ct),
                 SourceLocation = SourceLocationModel.From(endpoint.Location),
                 IsMinimalApiEndpoint = true,
                 OtherHttpMethods = endpoint.HttpMethods

@@ -202,6 +202,14 @@ namespace Api.ToMcp.Generator.Models
         public bool IsOutputNullable { get; init; } = true;
 
         /// <summary>
+        /// The method declaration whose body can prove <see cref="IsOutputNullable"/> false, or null when nothing can. The
+        /// proof binds the whole body, so it waits for the config: the generator runs it only for an action that becomes a
+        /// tool with an output schema. The tool's source model drops it after the proof, as it holds the place of the
+        /// declaration, which an edit that only moves the action changes.
+        /// </summary>
+        public BodyToAnalyzeModel? BodyToAnalyze { get; init; }
+
+        /// <summary>
         /// Where the action is declared in source, which an inherited action shares with every controller that inherits
         /// it; for an action declared in a referenced assembly, the controller's name. For a Minimal API endpoint, the
         /// <c>Map*</c> call that maps it.
@@ -267,6 +275,29 @@ namespace Api.ToMcp.Generator.Models
     {
         public EquatableArray<ToolSourceModel> Tools { get; init; } = EquatableArray<ToolSourceModel>.Empty;
         public EquatableArray<DiagnosticInfoModel> Diagnostics { get; init; } = EquatableArray<DiagnosticInfoModel>.Empty;
+
+        /// <summary>
+        /// The method declarations whose bodies can prove a tool's output schema need not allow null, each once: those of
+        /// the tools that get an output schema.
+        /// </summary>
+        public EquatableArray<BodyToAnalyzeModel> BodiesToAnalyze { get; init; } = EquatableArray<BodyToAnalyzeModel>.Empty;
+    }
+
+    /// <summary>
+    /// A method declaration whose body can prove that an action never succeeds without a body.
+    /// </summary>
+    internal sealed record BodyToAnalyzeModel
+    {
+        /// <summary>
+        /// The declaration's documentation ID, which finds the method in the compilation the proof runs on.
+        /// </summary>
+        public string MethodId { get; init; } = "";
+
+        /// <summary>
+        /// Where the declaration's name is, which finds the declaration when its documentation ID leads back to no method
+        /// or to several.
+        /// </summary>
+        public SourceLocationModel Declaration { get; init; } = new SourceLocationModel();
     }
 
     /// <summary>

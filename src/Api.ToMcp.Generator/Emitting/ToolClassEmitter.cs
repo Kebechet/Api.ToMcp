@@ -46,6 +46,15 @@ namespace Api.ToMcp.Generator.Emitting
             return Emit(tool.Action, tool.Naming, tool.StructuredOutput, tool.ClassName);
         }
 
+        /// <summary>
+        /// Whether the tool advertises an output schema, the only place <see cref="ActionInfoModel.IsOutputNullable"/> is
+        /// written to.
+        /// </summary>
+        internal static bool HasOutputSchema(ActionInfoModel action, bool structuredOutput)
+        {
+            return structuredOutput && action.OutputSchemaType != null;
+        }
+
         private static string Emit(ActionInfoModel action, NamingConfigModel naming, bool structuredOutput, string className)
         {
             var toolName = FormatToolName(action, naming);
@@ -75,7 +84,7 @@ namespace Api.ToMcp.Generator.Emitting
                 : $"    public static class {className}");
             sb.AppendLine("    {");
 
-            EmitToolMethod(sb, action, toolName, description, hasOutputSchema: structuredOutput && action.OutputSchemaType != null);
+            EmitToolMethod(sb, action, toolName, description, hasOutputSchema: HasOutputSchema(action, structuredOutput));
 
             sb.AppendLine("    }");
             sb.AppendLine("}");

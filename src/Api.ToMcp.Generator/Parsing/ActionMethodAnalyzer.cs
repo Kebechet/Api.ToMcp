@@ -176,9 +176,9 @@ namespace Api.ToMcp.Generator.Parsing
                     RequiredScope = requiredScope,
                     Annotations = GetToolAnnotations(httpInfo.Value.Method, requiredScope, actionMcpExposeAttr, controllerMcpExposeAttr),
                     OutputSchemaType = responseType.SuccessType is null ? null : ResponseTypeResolver.ToTypeOfOperand(responseType.SuccessType),
-                    IsOutputNullable = responseType.SuccessType is null ||
-                        responseType.HasBodylessSuccess ||
-                        EmptyResponseAnalyzer.CanSucceedWithoutBody(method, compilation, ct),
+                    BodyToAnalyze = responseType.SuccessType is null || responseType.HasBodylessSuccess
+                        ? null
+                        : EmptyResponseAnalyzer.GetBodyToAnalyze(method, ct),
                     // An action of a referenced assembly has no place in source, so its warnings point at the controller
                     // that inherits it, where a #pragma or an .editorconfig section can suppress them.
                     SourceLocation = SourceLocationModel.From(
