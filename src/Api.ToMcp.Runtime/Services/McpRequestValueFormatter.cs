@@ -75,6 +75,13 @@ public static class McpRequestValueFormatter
     private static readonly ConcurrentDictionary<Type, bool> HasModelBinderByType = new();
     private static readonly ConcurrentDictionary<Type, bool> HasDeclaredTypeConverterByType = new();
     private static readonly ConcurrentDictionary<Type, IReadOnlyDictionary<string, ParameterInfo>> ConstructorParametersByType = new();
+    private static readonly ConcurrentDictionary<Type, bool> IsNotBoundFromTheQueryByType = new();
+
+    /// <summary>
+    /// What MVC reads of each type's properties from the query string, decided on the type's first call, so that a call
+    /// only reads the values. Like the caches above, it holds one entry per type a tool sends, not per call.
+    /// </summary>
+    private static readonly ConcurrentDictionary<Type, QueryProperty[]> QueryPropertiesByType = new();
 
     /// <summary>
     /// Whether a route value, as a tool writes it into the URL, sends the request to another path: empty where the route
@@ -224,9 +231,33 @@ public static class McpRequestValueFormatter
 
     private static void AddProperties(List<string> queryParts, string prefix, object value, int depth)
     {
-        var type = value.GetType();
-        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-        foreach (var property in properties)
+        foreach (var property in GetQueryProperties(value.GetType()))
+        {
+            var key = $"{prefix}.{property.Name}";
+            var propertyValue = property.Property.GetValue(value);
+            if (propertyValue is not null && property.HasModelBinder)
+            {
+                AddBinderValue(queryParts, key, propertyValue);
+                continue;
+            }
+
+            AddValue(queryParts, key, propertyValue, depth);
+        }
+    }
+
+    private static QueryProperty[] GetQueryProperties(Type type)
+    {
+        return QueryPropertiesByType.GetOrAdd(type, FindQueryProperties);
+    }
+
+    /// <summary>
+    /// The properties of the type MVC can read from the query string, in the order the type gives them, each with the key
+    /// it reads it under and whether a model binder of its own reads it.
+    /// </summary>
+    private static QueryProperty[] FindQueryProperties(Type type)
+    {
+        var queryProperties = new List<QueryProperty>();
+        foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             // MVC binds only a property whose getter is public (PropertyHelper.GetVisibleProperties). A value it never
             // binds would still carry the prefix, which makes MVC bind the whole parameter under it.
@@ -242,16 +273,13 @@ public static class McpRequestValueFormatter
                 continue;
             }
 
-            var key = $"{prefix}.{GetBinderModelName(attributes, property)}";
-            var propertyValue = property.GetValue(value);
-            if (propertyValue is not null && attributes.OfType<IBinderTypeProviderMetadata>().Any(x => x.BinderType is not null))
-            {
-                AddBinderValue(queryParts, key, propertyValue);
-                continue;
-            }
-
-            AddValue(queryParts, key, propertyValue, depth);
+            queryProperties.Add(new QueryProperty(
+                property,
+                GetBinderModelName(attributes, property),
+                attributes.OfType<IBinderTypeProviderMetadata>().Any(x => x.BinderType is not null)));
         }
+
+        return queryProperties.ToArray();
     }
 
     /// <summary>
@@ -312,7 +340,7 @@ public static class McpRequestValueFormatter
 
     internal static bool IsNotBoundFromTheQuery(Type type)
     {
-        return TypesNotBoundFromTheQuery.Any(x => x.IsAssignableFrom(type));
+        return IsNotBoundFromTheQueryByType.GetOrAdd(type, x => TypesNotBoundFromTheQuery.Any(notBound => notBound.IsAssignableFrom(x)));
     }
 
     /// <summary>
@@ -443,4 +471,12 @@ public static class McpRequestValueFormatter
     {
         return method is { IsAbstract: false } && method.ReturnType == typeof(bool);
     }
+
+    /// <summary>
+    /// A property MVC can read from the query string.
+    /// </summary>
+    /// <param name="Property">The property, read on each call.</param>
+    /// <param name="Name">The key MVC reads it under after the prefix.</param>
+    /// <param name="HasModelBinder">Whether a model binder of its own reads it, which takes its value whole.</param>
+    private sealed record QueryProperty(PropertyInfo Property, string Name, bool HasModelBinder);
 }
