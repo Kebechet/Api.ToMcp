@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using ModelContextProtocol.Server;
 using Xunit;
 
@@ -22,6 +23,14 @@ public sealed class ParityRequest
 
     /// <summary>Declared in xunit.core, a NuGet package assembly: the build does not copy a package's .xml next to it.</summary>
     public FactAttribute? FromPackage { get; set; }
+
+    public Uri? Link { get; set; }
+
+    [DataType(DataType.ImageUrl)]
+    public string? Logo { get; set; }
+
+    [DataType(DataType.DateTime)]
+    public string? UpdatedAt { get; set; }
 }
 
 [McpServerToolType]

@@ -168,6 +168,18 @@ public class McpExtensionsTests
         Assert.DoesNotContain("\"format\"", GetOutputSchema(tools, "generated_links").GetRawText());
     }
 
+    [Theory]
+    [InlineData("link", "uri")]
+    [InlineData("logo", "uri")]
+    [InlineData("updatedAt", "date-time")]
+    public void AddMcpTools_LeavesTheFormatsOfAHandWrittenToolsInputSchema_ToTheSdk(string propertyName, string format)
+    {
+        // A hand-written tool receives the argument itself; what it accepts is the tool's own business.
+        var request = GetToolInputProperty(BuildTools(services => services.AddMcpTools(ToolAssembly)), "parity_static", "request");
+
+        Assert.Equal(format, request.GetProperty("properties").GetProperty(propertyName).GetProperty("format").GetString());
+    }
+
     [Fact]
     public async Task AddMcpTools_PassesARelativeUrl_ToAGeneratedTool()
     {
