@@ -1221,6 +1221,7 @@ namespace TestApi
     [InlineData(@"app.MapGet(""/api/mcp"", [McpExpose] () => 1);", "/api/mcp")]
     [InlineData(@"app.MapGet(""/mcpservers"", [McpExpose] () => 1);", "/mcpservers")]
     [InlineData(@"app.MapGroup(""/api"").MapGet(""/mcp"", [McpExpose] () => 1);", "/api/mcp")]
+    [InlineData(@"app.MapGroup(""/{tenant}"").MapGet(""/mcp"", [McpExpose] (string tenant) => tenant);", "/{routetenant}/mcp")]
     public void Endpoint_WhoseRouteOnlyHoldsMcp_GetsItsTool(string statement, string route)
     {
         var generated = RunGenerator(MinimalApi(statement), MinimalApisConfig);

@@ -68,6 +68,33 @@ public partial class McpToolGeneratorTests
         Assert.Contains($"var route = $\"{route}", generated);
     }
 
+    [Theory]
+    [InlineData("{tenant}/mcp", "items", "/{routetenant}/mcp/items")]
+    [InlineData("api", "{tenant}/mcp", "/api/{routetenant}/mcp")]
+    public void Action_WhoseFirstSegmentIsARouteValue_GetsItsTool(string controllerRoute, string actionRoute, string route)
+    {
+        // Only a route whose first segment is mcp is kept from MCP; a tool cannot send "" or "." for {tenant}, and
+        // UseMcpLoopPrevention refuses the request should the value make the URL /mcp/...
+        var controller = @"
+using Api.ToMcp.Abstractions;
+
+namespace TestApi
+{
+    [Route(""" + controllerRoute + @""")]
+    public class TenantsController : ControllerBase
+    {
+        [McpExpose]
+        [HttpGet(""" + actionRoute + @""")]
+        public Task<string> Get(string tenant) => Task.FromResult(tenant);
+    }
+}
+";
+        var generated = RunGenerator(Usings + controller, AllExceptExcludedConfig);
+
+        Assert.Contains("[McpServerTool(", generated);
+        Assert.Contains($"var route = $\"{route}\";", generated);
+    }
+
     /// <summary>
     /// <c>McpController</c>, whose <c>[controller]</c> token is <c>mcp</c>, with one <c>[McpExpose]</c> action.
     /// </summary>
