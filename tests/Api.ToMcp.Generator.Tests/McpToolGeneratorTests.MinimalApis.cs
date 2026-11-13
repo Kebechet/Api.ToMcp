@@ -1206,6 +1206,9 @@ namespace TestApi
     [InlineData(@"app.MapGet(""/mcp/status"", [McpExpose] () => 1);")]
     [InlineData(@"app.MapGet(""MCP/status"", [McpExpose] () => 1);")]
     [InlineData(@"app.MapGroup(""/Mcp"").MapGet(""/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGet(""~/mcp/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGroup(""~/mcp"").MapGet(""/status"", [McpExpose] () => 1);")]
+    [InlineData(@"app.MapGroup(""~/Mcp/"").MapGet(""status"", [McpExpose] () => 1);")]
     public void Endpoint_AtTheMcpRouteOrUnderIt_IsNeverExposed(string statement)
     {
         var source = MinimalApi(statement);
@@ -1223,6 +1226,18 @@ namespace TestApi
         var generated = RunGenerator(MinimalApi(statement), MinimalApisConfig);
 
         Assert.Contains("[McpServerTool(", generated);
+        Assert.Contains($"var route = $\"{route}\";", generated);
+    }
+
+    [Theory]
+    [InlineData(@"app.MapGet(""~/api/status"", [McpExpose] () => 1);", "/api/status")]
+    [InlineData(@"app.MapGroup(""~/api"").MapGet(""/status"", [McpExpose] () => 1);", "/api/status")]
+    [InlineData(@"app.MapGroup(""~/api/"").MapGet(""~/status"", [McpExpose] () => 1);", "/api/status")]
+    public void Endpoint_WithAnAppRelativePatternOrGroup_IsCalledWhereTheAppServesIt(string statement, string route)
+    {
+        // RoutePatternParser drops a leading "~/" from each pattern; "/~/api/status" answers 404.
+        var generated = RunGenerator(MinimalApi(statement), MinimalApisConfig);
+
         Assert.Contains($"var route = $\"{route}\";", generated);
     }
 
