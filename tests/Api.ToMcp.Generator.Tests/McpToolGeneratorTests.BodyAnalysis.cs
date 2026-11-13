@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Immutable;
+using System.IO;
 using System.Linq;
 using Api.ToMcp.Generator.Models;
 using Microsoft.CodeAnalysis;
@@ -107,6 +109,59 @@ namespace TestApi
         Assert.Equal(IncrementalStepRunReason.Unchanged, toolReasons["OrdersController_GetTool"]);
     }
 
+    [Fact]
+    public void Generator_ProvesTheBody_WhenAParameterTypeIsOneTheGeneratorCannotSee()
+    {
+        // Source generators do not see each other's output, so a type another generator makes is an error type here.
+        var source = StructuredOutputSource("public ActionResult<Product> Get([FromServices] IMadeByAnotherGenerator service) => new Product();");
+
+        var generated = GetGeneratedSources(CreateDriver(AllExceptExcludedConfig).RunGenerators(CreateCompilation(source)));
+
+        Assert.Contains(StrictOutput, generated[ToolClassName + ".g.cs"]);
+    }
+
+    [Fact]
+    public void Generator_ProvesTheBody_WhenAParameterTypeIsReachedThroughAnExternAlias()
+    {
+        var library = CreateCompilation("namespace Lib { public sealed class Service { } }").WithAssemblyName("Lib");
+        using var stream = new MemoryStream();
+        Assert.True(library.Emit(stream).Success);
+        var reference = MetadataReference.CreateFromImage(stream.ToArray(), new MetadataReferenceProperties(aliases: ImmutableArray.Create("V1")));
+        var source = "extern alias V1;\n" + StructuredOutputSource("public ActionResult<Product> Get([FromServices] V1::Lib.Service service) => new Product();");
+        var compilation = CreateCompilation(source).AddReferences(reference);
+        Assert.DoesNotContain(compilation.GetDiagnostics(), x => x.Severity == DiagnosticSeverity.Error);
+
+        var generated = GetGeneratedSources(CreateDriver(AllExceptExcludedConfig).RunGenerators(compilation));
+
+        Assert.Contains(StrictOutput, generated[ToolClassName + ".g.cs"]);
+    }
+
+    [Fact]
+    public void Generator_ProvesEachBody_OfTwoFileLocalClassesDeclaringTheSameHandler()
+    {
+        // Both handlers have one documentation ID, as a file-local class's name does not show in it; each tool is decided
+        // by its own handler's body.
+        var withAValue = MinimalApiUsings + MinimalApiModels + @"
+namespace TestApi
+{
+    file static class FileHandlers { public static Order Get() => new Order(); }
+    public static class EndpointsA { public static void Map(WebApplication app) => app.MapGet(""/a"", FileHandlers.Get).WithName(""A""); }
+}";
+        var withNull = MinimalApiUsings + @"
+namespace TestApi
+{
+    file static class FileHandlers { public static Order Get() => null!; }
+    public static class EndpointsB { public static void Map(WebApplication app) => app.MapGet(""/b"", FileHandlers.Get).WithName(""B""); }
+}";
+        var compilation = CreateCompilationOfFiles(("A.cs", withAValue), ("B.cs", withNull));
+        Assert.DoesNotContain(compilation.GetDiagnostics(), x => x.Severity == DiagnosticSeverity.Error);
+
+        var generated = GetGeneratedSources(CreateDriver(MinimalApisConfig).RunGenerators(compilation));
+
+        Assert.Contains("McpGeneratedTool(IsOutputNullable = false)", generated["FileHandlers_ATool.g.cs"]);
+        Assert.Contains("McpGeneratedTool(IsOutputNullable = true)", generated["FileHandlers_BTool.g.cs"]);
+    }
+
     /// <summary>
     /// The method declarations, by documentation ID, whose bodies the run analyzed.
     /// </summary>
@@ -114,6 +169,6 @@ namespace TestApi
     {
         var output = Assert.Single(GetStepOutputs(driver, TrackingNames.BodiesToAnalyze));
 
-        return ((EquatableArray<string>)output.Value).ToArray();
+        return ((EquatableArray<BodyToAnalyzeModel>)output.Value).Select(x => x.MethodId).ToArray();
     }
 }

@@ -63,12 +63,12 @@ namespace Api.ToMcp.Generator.Parsing
         private static readonly string[] ErrorHelperNames = { "Problem", "ValidationProblem" };
 
         /// <summary>
-        /// The method declaration whose body decides whether the action can succeed without a body, as its documentation
-        /// ID, or null when the action can: its return type says so, or it has no body in source to prove otherwise. The
-        /// flow analysis of the body binds all of it, so the generator runs it with <see cref="GetBodiesNeverEmpty"/> only
-        /// for the tools that get an output schema, once the config says which those are.
+        /// The method declaration whose body decides whether the action can succeed without a body, or null when the action
+        /// can: its return type says so, or it has no body in source to prove otherwise. The flow analysis of the body binds
+        /// all of it, so the generator runs it with <see cref="GetBodiesNeverEmpty"/> only for the tools that get an output
+        /// schema, once the config says which those are.
         /// </summary>
-        public static string? GetBodyToAnalyze(IMethodSymbol method, CancellationToken ct)
+        public static BodyToAnalyzeModel? GetBodyToAnalyze(IMethodSymbol method, CancellationToken ct)
         {
             var returnedType = UnwrapTask(method.ReturnType);
 
@@ -81,38 +81,40 @@ namespace Api.ToMcp.Generator.Parsing
             // for int. The body is the declaration's, the same for every controller that inherits the action, so its flow
             // analysis runs once per compilation instead of once per controller.
             var definition = method.OriginalDefinition;
+            var declaration = FindBodyDeclaration(definition, ct);
+            if (declaration is null)
+                return null;
 
-            return FindBodyDeclaration(definition, ct) is null ? null : DocumentationCommentId.CreateDeclarationId(definition);
+            return new BodyToAnalyzeModel
+            {
+                MethodId = DocumentationCommentId.CreateDeclarationId(definition),
+                Declaration = SourceLocationModel.From(declaration.Identifier.GetLocation())!
+            };
         }
 
         /// <summary>
         /// The method declarations, of those <see cref="GetBodyToAnalyze"/> named, whose bodies are proven to never succeed
         /// without a body.
         /// </summary>
-        public static EquatableArray<string> GetBodiesNeverEmpty(EquatableArray<string> methodIds, Compilation compilation, CancellationToken ct)
+        public static EquatableArray<BodyToAnalyzeModel> GetBodiesNeverEmpty(EquatableArray<BodyToAnalyzeModel> bodies, Compilation compilation, CancellationToken ct)
         {
             // One semantic model per file, which the actions declared in it share, kept only for this analysis. Each body is
             // bound on its own, so they are analyzed in parallel: with many tools, this is most of a run after an edit.
             var semanticModels = new ConcurrentDictionary<SyntaxTree, SemanticModel>();
-            var canBeEmpty = new bool[methodIds.Length];
-            Parallel.For(0, methodIds.Length, new ParallelOptions { CancellationToken = ct }, i =>
-                canBeEmpty[i] = CanBodySucceedWithoutBody(methodIds[i], compilation, semanticModels, ct));
+            var canBeEmpty = new bool[bodies.Length];
+            Parallel.For(0, bodies.Length, new ParallelOptions { CancellationToken = ct }, i =>
+                canBeEmpty[i] = CanBodySucceedWithoutBody(bodies[i], compilation, semanticModels, ct));
 
-            return methodIds.Where((_, i) => !canBeEmpty[i]).ToImmutableArray();
+            return bodies.Where((_, i) => !canBeEmpty[i]).ToImmutableArray();
         }
 
         private static bool CanBodySucceedWithoutBody(
-            string methodId,
+            BodyToAnalyzeModel body,
             Compilation compilation,
             ConcurrentDictionary<SyntaxTree, SemanticModel> semanticModels,
             CancellationToken ct)
         {
-            var methods = DocumentationCommentId.GetSymbolsForDeclarationId(methodId, compilation);
-            var method = methods.Length == 1 ? methods[0] as IMethodSymbol : null;
-            if (method is null)
-                return true;
-
-            var declaration = FindBodyDeclaration(method, ct);
+            var declaration = FindBodyDeclaration(body, compilation, ct);
             if (declaration == null)
                 return true;
 
@@ -123,12 +125,41 @@ namespace Api.ToMcp.Generator.Parsing
                 .Any(x => !IsProvenBodyOrError(x, declaration, semanticModel, ct));
         }
 
+        /// <summary>
+        /// The declaration of the method the documentation ID leads back to, else the declaration whose name is where the
+        /// scan found it. An ID leads back to no method when a parameter's type is one the compilation cannot bind, such
+        /// as a type another source generator makes, or one reached only through an <c>extern alias</c>; and to two when
+        /// two file-local classes declare the same method.
+        /// </summary>
+        private static MethodDeclarationSyntax? FindBodyDeclaration(BodyToAnalyzeModel body, Compilation compilation, CancellationToken ct)
+        {
+            var methods = DocumentationCommentId.GetSymbolsForDeclarationId(body.MethodId, compilation);
+            var method = methods.Length == 1 ? methods[0] as IMethodSymbol : null;
+            if (method is not null)
+                return FindBodyDeclaration(method, ct);
+
+            var location = body.Declaration.ToLocation(compilation);
+            var declaration = location.SourceTree?.GetRoot(ct).FindToken(location.SourceSpan.Start).Parent as MethodDeclarationSyntax;
+
+            return declaration is not null &&
+                declaration.Identifier.Span == location.SourceSpan &&
+                declaration.Identifier.Text == body.Declaration.Text &&
+                HasBody(declaration)
+                ? declaration
+                : null;
+        }
+
         private static MethodDeclarationSyntax? FindBodyDeclaration(IMethodSymbol method, CancellationToken ct)
         {
             return method.DeclaringSyntaxReferences
                 .Select(x => x.GetSyntax(ct))
                 .OfType<MethodDeclarationSyntax>()
-                .FirstOrDefault(x => x.Body != null || x.ExpressionBody != null);
+                .FirstOrDefault(HasBody);
+        }
+
+        private static bool HasBody(MethodDeclarationSyntax declaration)
+        {
+            return declaration.Body != null || declaration.ExpressionBody != null;
         }
 
         private static ITypeSymbol UnwrapTask(ITypeSymbol type)

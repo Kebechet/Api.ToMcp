@@ -264,7 +264,7 @@ namespace Api.ToMcp.Generator
                 BodiesToAnalyze = tools
                     .Where(x => x.Action.BodyToAnalyze is not null && ToolClassEmitter.HasOutputSchema(x.Action, x.StructuredOutput))
                     .Select(x => x.Action.BodyToAnalyze!)
-                    .Distinct(StringComparer.Ordinal)
+                    .Distinct()
                     .ToImmutableArray()
             };
         }
@@ -288,15 +288,23 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
-        /// The tools, with a strict output schema for each whose action's body is proven to never succeed without a body.
+        /// The tools, with a strict output schema for each whose action's body is proven to never succeed without a body,
+        /// and without the body to analyze, whose place in source changes when an edit only moves the action.
         /// </summary>
-        private static IEnumerable<ToolSourceModel> WithProvenOutputs(EquatableArray<ToolSourceModel> tools, EquatableArray<string> bodiesNeverEmpty)
+        private static IEnumerable<ToolSourceModel> WithProvenOutputs(EquatableArray<ToolSourceModel> tools, EquatableArray<BodyToAnalyzeModel> bodiesNeverEmpty)
         {
-            var neverEmpty = new HashSet<string>(bodiesNeverEmpty, StringComparer.Ordinal);
+            var neverEmpty = new HashSet<BodyToAnalyzeModel>(bodiesNeverEmpty);
 
-            return tools.Select(x => x.Action.BodyToAnalyze is not null && neverEmpty.Contains(x.Action.BodyToAnalyze)
-                ? x with { Action = x.Action with { IsOutputNullable = false } }
-                : x);
+            return tools.Select(x => x.Action.BodyToAnalyze is null
+                ? x
+                : x with
+                {
+                    Action = x.Action with
+                    {
+                        IsOutputNullable = x.Action.IsOutputNullable && !neverEmpty.Contains(x.Action.BodyToAnalyze),
+                        BodyToAnalyze = null
+                    }
+                });
         }
 
         /// <summary>
