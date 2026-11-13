@@ -563,6 +563,77 @@ namespace TestApi
         [HttpGet(""{id}/{slug}"")]
         public object Get(int id, string? slug) => new { id, slug, path = Request.Path.Value };
     }
+
+    // [ApiController] infers [FromRoute] by the parameter's own name, s, which no route names.
+    [ApiController]
+    [Route(""api/mcp014-binder"")]
+    public class Mcp014BinderController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, [ModelBinder(Name = ""slug"")] string? s) => new { id, s };
+    }
+
+    public sealed class Mcp014SlugFilter
+    {
+        [FromRoute]
+        public string? Slug { get; set; }
+
+        public int Page { get; set; }
+    }
+
+    // MVC binds a [FromRoute] property from the route alone, whatever its parameter's source.
+    [ApiController]
+    [Route(""api/mcp014-filter"")]
+    public class Mcp014FilterController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-filter"")]
+    public class Mcp014PlainFilterController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{slug}"")]
+        public object Get(int id, Mcp014SlugFilter f) => new { id, f.Slug, f.Page };
+    }
+
+    [Route(""plain/mcp014-tags"")]
+    public class Mcp014TagsController : ControllerBase
+    {
+        [HttpGet(""{id}"")]
+        [HttpGet(""{id}/{tags}"")]
+        public object Get(int id, [FromRoute] string[]? tags) => new { id, tags };
+    }
+
+    public sealed class Mcp014Key
+    {
+        public int Id { get; set; }
+
+        public int Version { get; set; }
+    }
+
+    // id arrives from the query string; key.Id only from {id}.
+    [ApiController]
+    [Route(""api/mcp014-key"")]
+    public class Mcp014KeyController : ControllerBase
+    {
+        [HttpGet(""all"")]
+        [HttpGet(""{id}"")]
+        public object Get([FromQuery] int? id, [FromRoute] Mcp014Key key) => new { id, keyId = key.Id };
+    }
+
+    // MVC binds key's properties under key.Version, which {version} is not.
+    [ApiController]
+    [Route(""api/mcp014-named-key"")]
+    public class Mcp014NamedKeyController : ControllerBase
+    {
+        [HttpGet(""all"")]
+        [HttpGet(""{version}"")]
+        public object Get([FromRoute(Name = ""key"")] Mcp014Key key) => new { key.Version };
+    }
 }
 ";
 
@@ -994,6 +1065,29 @@ namespace TestApi
         Assert.Equal(isReported, _host.GeneratorDiagnostics.Any(x => x.Id == "MCP014" && x.GetMessage().Contains($"'{toolClassName.Replace("_GetTool", "")}.Get'", StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData("Mcp014BinderController_GetTool", @"{""id"":7,""s"":""red""}", @"{""id"":7,""s"":""red""}", "/api/mcp014-binder/7/red", @"{""id"":7,""s"":null}", false)]
+    [InlineData("Mcp014FilterController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/api/mcp014-filter/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014PlainFilterController_GetTool", @"{""id"":7,""f"":{""slug"":""red"",""page"":2}}", @"{""id"":7,""slug"":null,""page"":2}", "/plain/mcp014-filter/7/red", @"{""id"":7,""slug"":""red"",""page"":0}", true)]
+    [InlineData("Mcp014TagsController_GetTool", @"{""id"":7,""tags"":[""a"",""b""]}", @"{""id"":7,""tags"":[]}", "/plain/mcp014-tags/7/a", @"{""id"":7,""tags"":[""a""]}", true)]
+    [InlineData("Mcp014KeyController_GetTool", @"{""id"":7,""key"":{""id"":7}}", @"{""id"":7,""keyId"":0}", "/api/mcp014-key/7", @"{""id"":null,""keyId"":7}", true)]
+    [InlineData("Mcp014NamedKeyController_GetTool", @"{""key"":{""version"":3}}", @"{""version"":0}", "/api/mcp014-named-key/3", @"{""version"":0}", false)]
+    public async Task Mcp014_IsReportedExactly_WhereTheToolLosesAValueThatARouteItDoesNotCallCarries(
+        string toolClassName, string arguments, string expectedToolEcho, string uncalledRoute, string expectedRouteEcho, bool isReported)
+    {
+        // What MVC binds through the tool, and at the route the tool does not call, which carries the value where
+        // MCP014 says the tool loses it, and does not where MVC binds it under another key or from the query string.
+        var result = await _host.CallToolAsync(toolClassName, arguments);
+        var toolEcho = _host.LastResponse.Body;
+        var (statusCode, routeEcho) = await _host.GetAsync(uncalledRoute);
+
+        Assert.True(result.IsError != true, GetText(result));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedToolEcho), JsonNode.Parse(toolEcho)), $"{toolClassName}: expected {expectedToolEcho}, MVC bound {toolEcho}");
+        Assert.Equal(StatusCodes.Status200OK, statusCode);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectedRouteEcho), JsonNode.Parse(routeEcho)), $"{uncalledRoute}: expected {expectedRouteEcho}, MVC bound {routeEcho}");
+        Assert.Equal(isReported, _host.GeneratorDiagnostics.Any(x => x.Id == "MCP014" && x.GetMessage().Contains($"'{toolClassName.Replace("_GetTool", "")}.Get'", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void EveryGeneratedTool_IsBuiltByTheMcpSdk()
     {
@@ -1227,6 +1321,15 @@ namespace TestApi
         }
 
         public int RequestCount => _invoker.RequestCount;
+
+        /// <summary>
+        /// Sends a GET request to the app, as a client of the route does, outside any tool.
+        /// </summary>
+        public async Task<(int StatusCode, string Body)> GetAsync(string path)
+        {
+            using var response = await _client.GetAsync(path);
+            return ((int)response.StatusCode, await response.Content.ReadAsStringAsync());
+        }
 
         public int GermanRequestCount => _germanRecorder.RequestCount;
 

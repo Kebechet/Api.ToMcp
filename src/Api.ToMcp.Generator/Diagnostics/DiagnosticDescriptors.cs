@@ -123,15 +123,15 @@ namespace Api.ToMcp.Generator.Diagnostics
 
         /// <summary>
         /// MVC serves the action at a route its tool does not call, as the tool calls the first route, and binds a value of
-        /// the action from that route alone, which the URL the tool sends cannot carry: a simple parameter that
-        /// <c>[ApiController]</c> reads from the route because a route names it, one with <c>[FromRoute]</c>, or a property
-        /// of a <c>[FromRoute]</c> parameter. An info, as the tool is the one it was: the route needs an action of its own.
-        /// See https://github.com/Kebechet/Api.ToMcp/issues/61.
+        /// the action from a route value of it alone, which the route the tool calls lacks: a simple parameter that
+        /// <c>[ApiController]</c> reads from the route because a route names it, a value with <c>[FromRoute]</c>, or a
+        /// property MVC reads from the route alone. An info, as the tool is the one it was: the route needs an action of its
+        /// own. See https://github.com/Kebechet/Api.ToMcp/issues/61.
         /// </summary>
         public static readonly DiagnosticDescriptor UncalledRoute = new DiagnosticDescriptor(
             id: "MCP014",
             title: "Route of an action that its tool does not call",
-            messageFormat: "The MCP tool of action '{0}.{1}' calls it at {2}, not at {3}, where MVC binds {4}, which that route alone carries. Give that route an action of its own for a tool to call it.",
+            messageFormat: "The MCP tool of action '{0}.{1}' calls it at {2}, not at {3}. MVC binds {4} from the route alone, and the route the tool calls has no such route {5}. Give that route an action of its own for a tool to call it.",
             category: "Api.ToMcp.Generator",
             DiagnosticSeverity.Info,
             isEnabledByDefault: true);

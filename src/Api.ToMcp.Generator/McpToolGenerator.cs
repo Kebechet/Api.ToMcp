@@ -23,6 +23,12 @@ namespace Api.ToMcp.Generator
         private const string RegistrationSourceName = "McpToolsRegistration";
 
         /// <summary>
+        /// The noun MCP014's message ends its clause on the values with, for one value and for several.
+        /// </summary>
+        private const string RouteValueNoun = "value";
+        private const string RouteValuesNoun = "values";
+
+        /// <summary>
         /// Where the build targets create the config when ApiToMcpConfigPath is not set, relative to the project.
         /// </summary>
         private const string DefaultConfigPath = "Mcp/generator.json";
@@ -339,7 +345,7 @@ namespace Api.ToMcp.Generator
 
         /// <summary>
         /// Informs at each action whose tool does not call a route MVC serves it at for the tool's HTTP method, where MVC
-        /// binds a value of the action that the route the tool calls cannot carry (MCP014).
+        /// binds a value of the action from the route alone that the route the tool calls lacks (MCP014).
         /// </summary>
         private static void ReportUncalledRoutes(List<DiagnosticInfoModel> diagnostics, ImmutableArray<ActionInfoModel> actions)
         {
@@ -354,7 +360,8 @@ namespace Api.ToMcp.Generator
                         action.Name,
                         $"{action.HttpMethod} {action.RouteTemplate}",
                         $"{action.HttpMethod} {template}",
-                        UncalledRouteValues.JoinWithAnd(lostValues)));
+                        UncalledRouteValues.JoinWithAnd(lostValues),
+                        lostValues.Count == 1 ? RouteValueNoun : RouteValuesNoun));
                 }
             }
         }

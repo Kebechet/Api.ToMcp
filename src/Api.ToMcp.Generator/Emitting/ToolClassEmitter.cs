@@ -757,7 +757,7 @@ namespace Api.ToMcp.Generator.Emitting
         /// <summary>
         /// The name MVC binds the parameter under, which the tool sends its value under; its argument keeps its own name.
         /// </summary>
-        private static string GetBinderModelName(ParameterInfoModel parameter)
+        internal static string GetBinderModelName(ParameterInfoModel parameter)
         {
             return parameter.ModelName ?? parameter.Name;
         }
@@ -766,7 +766,7 @@ namespace Api.ToMcp.Generator.Emitting
         /// The key MVC reads a property of a parameter bound without a prefix under, unless a binding attribute names the
         /// parameter: then under that name as the prefix, <c>o.c</c> (<c>ModelNames.CreatePropertyModelName</c>).
         /// </summary>
-        private static string GetPropertyModelName(ParameterInfoModel parameter, PropertyInfoModel property)
+        internal static string GetPropertyModelName(ParameterInfoModel parameter, PropertyInfoModel property)
         {
             return string.IsNullOrEmpty(parameter.ModelName)
                 ? GetBinderModelName(property)
