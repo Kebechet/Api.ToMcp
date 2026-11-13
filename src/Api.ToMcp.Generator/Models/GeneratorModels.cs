@@ -45,6 +45,18 @@ namespace Api.ToMcp.Generator.Models
         public string? FilePath { get; init; }
 
         /// <summary>
+        /// The full path of ApiToMcpConfigPath, which the package's build targets pass, or null for a project that does
+        /// not import them.
+        /// </summary>
+        public string? ConfiguredFilePath { get; init; }
+
+        /// <summary>
+        /// The other additional files named generator.json, which the generator passes over for the file at
+        /// <see cref="ConfiguredFilePath"/>. It read the first of them before the build passed that path.
+        /// </summary>
+        public EquatableArray<string> PassedOverFilePaths { get; init; } = EquatableArray<string>.Empty;
+
+        /// <summary>
         /// Why the generator.json could not be used as written, or null when it could. The config then holds what the
         /// generator falls back to.
         /// </summary>

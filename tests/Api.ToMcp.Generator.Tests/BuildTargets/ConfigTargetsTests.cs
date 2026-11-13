@@ -20,6 +20,15 @@ public sealed class ConfigTargetsTests : IDisposable
     private const string PackageTargetsFileName = "Kebechet.Api.ToMcp.targets";
     private const string GeneratorTargetsFileName = "Api.ToMcp.Generator.targets";
     private const string AdditionalFileMarker = "AdditionalFile=";
+    private const char AdditionalFileSeparator = '|';
+    private const string CompilerVisiblePropertyMarker = "CompilerVisibleProperty=";
+
+    /// <summary>
+    /// The property the generator reads the configured path from, as <c>build_property._McpConfigFullPath</c>.
+    /// </summary>
+    private const string ConfigPathProperty = "_McpConfigFullPath";
+
+    private const string UnrelatedGeneratorJsonItem = @"<AdditionalFiles Include=""openapi-generator.json"" />";
     private const string Config = @"{ ""schemaVersion"": 1, ""mode"": ""SelectedOnly"", ""include"": [""ProductsController""] }";
 
     private readonly string _projectDirectory = Path.Combine(Path.GetTempPath(), "ApiToMcp.TargetsTests", Guid.NewGuid().ToString("N"));
@@ -91,6 +100,109 @@ public sealed class ConfigTargetsTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Build_RegistersTheConfigAtTheConfiguredPath_WhateverItsName(bool isAbsolute)
+    {
+        // The configured file used to be left out while another item's name ended in generator.json.
+        var configPath = WriteConfig("Config", "mcp-tools.json");
+        var unrelatedPath = Path.Combine(_projectDirectory, "openapi-generator.json");
+        File.WriteAllText(unrelatedPath, "{}");
+        var configuredPath = isAbsolute ? configPath : "Config/mcp-tools.json";
+
+        var result = Build($"ApiToMcpConfigPath={configuredPath}", UnrelatedGeneratorJsonItem);
+
+        Assert.Equal(new[] { unrelatedPath, configPath }, result.AdditionalFiles);
+        Assert.Equal(configPath, result.GetCompilerVisibleProperty(ConfigPathProperty));
+        Assert.Null(result.GetWarning("MCP100"));
+        Assert.False(Directory.Exists(Path.Combine(_projectDirectory, "Mcp")), result.Output);
+    }
+
+    [Fact]
+    public void Build_GivesTheGeneratorAConfigOfAnotherNameInALowerCaseFolder()
+    {
+        // The generator takes the variant as the configured file, as their paths differ only in case.
+        var configPath = WriteConfig("config", "mcp-tools.json");
+
+        var result = Build("ApiToMcpConfigPath=Config/mcp-tools.json");
+
+        var additionalFile = Assert.Single(result.AdditionalFiles);
+        Assert.Equal(configPath, additionalFile, ignoreCase: true);
+        Assert.True(File.Exists(additionalFile), $"The generator gets {additionalFile}, which does not exist.{Environment.NewLine}{result.Output}");
+        Assert.Equal(Path.Combine(_projectDirectory, "Config", "mcp-tools.json"), result.GetCompilerVisibleProperty(ConfigPathProperty));
+        Assert.Null(result.GetWarning("MCP100"));
+        if (_isCaseSensitive)
+        {
+            Assert.StartsWith($"{configPath} : warning MCP101: ", result.GetWarning("MCP101"));
+        }
+    }
+
+    [Fact]
+    public void Build_RegistersTheConfiguredConfig_WhenThePropertyIsSetAfterTheImport()
+    {
+        // Directory.Build.targets, and the demo's, set properties after a package's targets are imported.
+        var configPath = WriteConfig("Config", "mcp-tools.json");
+
+        var result = Build(afterImport: ConfigPathSetAfterImport("Config/mcp-tools.json"));
+
+        Assert.Equal(new[] { configPath }, result.AdditionalFiles);
+        Assert.Equal(configPath, result.GetCompilerVisibleProperty(ConfigPathProperty));
+        Assert.Null(result.GetWarning("MCP100"));
+        Assert.Null(result.GetWarning("MCP101"));
+        Assert.False(Directory.Exists(Path.Combine(_projectDirectory, "Mcp")), result.Output);
+    }
+
+    [Fact]
+    public void Build_WritesTheStarterConfigAtTheConfiguredPath_WhenThePropertyIsSetAfterTheImport()
+    {
+        // A config at the default path must neither be taken for a case variant of the configured one nor stop the starter.
+        WriteConfig("Mcp");
+        var starterPath = Path.Combine(_projectDirectory, "Config", "generator.json");
+
+        var result = Build(afterImport: ConfigPathSetAfterImport("Config/generator.json"));
+
+        Assert.True(File.Exists(starterPath), result.Output);
+        Assert.StartsWith($"{starterPath} : warning MCP100: Api.ToMcp created a starter config at {starterPath},", result.GetWarning("MCP100"));
+        Assert.Null(result.GetWarning("MCP101"));
+        Assert.Equal(new[] { starterPath }, result.AdditionalFiles);
+        Assert.Equal(starterPath, result.GetCompilerVisibleProperty(ConfigPathProperty));
+    }
+
+    [Fact]
+    public void Build_RegistersTheConfiguredConfig_BesideAnItemWhosePathDiffersOnlyInCase()
+    {
+        // On a case-sensitive file system the item is another file, so only an item at exactly the configured path keeps
+        // the build from adding the configured file. Elsewhere it is the same file, which the generator takes once.
+        var configPath = WriteConfig("Config", "tools.json");
+        WriteConfig("Config", "TOOLS.json");
+
+        var result = Build("ApiToMcpConfigPath=Config/tools.json", @"<AdditionalFiles Include=""Config\TOOLS.json"" />");
+
+        Assert.Equal(new[] { Path.Combine(_projectDirectory, "Config", "TOOLS.json"), configPath }, result.AdditionalFiles);
+    }
+
+    [Fact]
+    public void Build_PassesTheGeneratorTheDefaultConfigPath_WhenThePropertyIsNotSet()
+    {
+        var configPath = WriteConfig("Mcp");
+
+        var result = Build();
+
+        Assert.Equal(new[] { configPath }, result.AdditionalFiles);
+        Assert.Equal(configPath, result.GetCompilerVisibleProperty(ConfigPathProperty));
+    }
+
+    [Fact]
+    public void Build_RegistersTheConfigOnce_WhenTheProjectListsItByHand()
+    {
+        var configPath = WriteConfig("Mcp");
+
+        var result = Build(items: @"<AdditionalFiles Include=""Mcp\generator.json"" />");
+
+        Assert.Equal(new[] { configPath }, result.AdditionalFiles);
+    }
+
     [Fact]
     public void Build_WritesAStarterConfig_BesideAnUnrelatedGeneratorJson()
     {
@@ -119,14 +231,26 @@ public sealed class ConfigTargetsTests : IDisposable
         }
     }
 
-    private BuildResult Build(string? properties = null, string? items = null)
+    /// <param name="afterImport">Project content after the targets' import, as Directory.Build.targets is.</param>
+    private BuildResult Build(string? properties = null, string? items = null, string? afterImport = null)
     {
         var projectPath = Path.Combine(_projectDirectory, "Fixture.proj");
+        // The fake GenerateMSBuildEditorConfigFileCore reads the compiler-visible properties as the SDK's does, before the
+        // targets that run before CoreCompile: a property those targets set comes too late for the generator.
         File.WriteAllText(projectPath, $@"<Project>
   <ItemGroup>{items}</ItemGroup>
   <Import Project=""{GetTargetsPath(PackageTargetsFileName)}"" />
-  <Target Name=""CoreCompile"">
-    <Message Importance=""high"" Text=""{AdditionalFileMarker}%(AdditionalFiles.FullPath)"" Condition=""'@(AdditionalFiles)' != ''"" />
+  {afterImport}
+  <Target Name=""GenerateMSBuildEditorConfigFileCore"">
+    <ItemGroup>
+      <_VisibleProperty Include=""@(CompilerVisibleProperty)"">
+        <Value>$(%(CompilerVisibleProperty.Identity))</Value>
+      </_VisibleProperty>
+    </ItemGroup>
+    <Message Importance=""high"" Text=""{CompilerVisiblePropertyMarker}%(_VisibleProperty.Identity)=%(_VisibleProperty.Value)"" Condition=""'@(_VisibleProperty)' != ''"" />
+  </Target>
+  <Target Name=""CoreCompile"" DependsOnTargets=""GenerateMSBuildEditorConfigFileCore"">
+    <Message Importance=""high"" Text=""{AdditionalFileMarker}@(AdditionalFiles->'%(FullPath)', '{AdditionalFileSeparator}')"" Condition=""'@(AdditionalFiles)' != ''"" />
   </Target>
 </Project>");
 
@@ -164,9 +288,14 @@ public sealed class ConfigTargetsTests : IDisposable
         return new BuildResult(output);
     }
 
-    private string WriteConfig(string folderName)
+    private static string ConfigPathSetAfterImport(string configPath)
     {
-        var configPath = Path.Combine(_projectDirectory, folderName, "generator.json");
+        return $"<PropertyGroup><ApiToMcpConfigPath>{configPath}</ApiToMcpConfigPath></PropertyGroup>";
+    }
+
+    private string WriteConfig(string folderName, string fileName = "generator.json")
+    {
+        var configPath = Path.Combine(_projectDirectory, folderName, fileName);
         Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
         File.WriteAllText(configPath, Config);
 
@@ -235,10 +364,21 @@ public sealed class ConfigTargetsTests : IDisposable
 
         public string Output { get; }
 
+        /// <summary>
+        /// Every item, as a transform lists them: batching on <c>%(FullPath)</c> would merge two whose paths differ only in
+        /// case.
+        /// </summary>
         public IReadOnlyList<string> AdditionalFiles => _lines
             .Where(x => x.StartsWith(AdditionalFileMarker, StringComparison.Ordinal))
-            .Select(x => x.Substring(AdditionalFileMarker.Length))
+            .SelectMany(x => x.Substring(AdditionalFileMarker.Length).Split(AdditionalFileSeparator))
             .ToList();
+
+        public string? GetCompilerVisibleProperty(string name)
+        {
+            var prefix = $"{CompilerVisiblePropertyMarker}{name}=";
+
+            return _lines.Where(x => x.StartsWith(prefix, StringComparison.Ordinal)).Select(x => x.Substring(prefix.Length)).FirstOrDefault();
+        }
 
         public string? GetWarning(string code)
         {

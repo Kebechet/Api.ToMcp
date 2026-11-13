@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 using Api.ToMcp.Generator.Diagnostics;
 using Api.ToMcp.Generator.Emitting;
@@ -21,16 +23,34 @@ namespace Api.ToMcp.Generator
         private const string GeneratedSourceSuffix = ".g.cs";
         private const string RegistrationSourceName = "McpToolsRegistration";
 
+        /// <summary>
+        /// Where the build targets create the config when ApiToMcpConfigPath is not set, relative to the project.
+        /// </summary>
+        private const string DefaultConfigPath = "Mcp/generator.json";
+
+        /// <summary>
+        /// The full path of ApiToMcpConfigPath, which the build targets make a compiler-visible property.
+        /// </summary>
+        private const string ConfigPathBuildProperty = "build_property._McpConfigFullPath";
+
         private const char EntryActionSeparator = ConventionNames.EntryActionSeparator;
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            // Step 1: Read generator.json configuration
+            // Step 1: Read the config: the additional file at the path the build targets pass from ApiToMcpConfigPath,
+            // whatever its name, else the first named generator.json, as a project without the targets, or with no file
+            // at that path, lists its config by hand.
+            var configPathProvider = context.AnalyzerConfigOptionsProvider
+                .Select((options, _) => GetConfigPath(options.GlobalOptions));
+
             var configProvider = context.AdditionalTextsProvider
-                .Where(file => file.Path.EndsWith(ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase))
-                .Select((file, ct) => ConfigParser.Parse(file.GetText(ct)?.ToString()) with { FilePath = file.Path })
+                .Combine(configPathProvider)
+                .Select((source, _) => (File: source.Left, Match: MatchConfigFile(source.Left.Path, source.Right)))
+                .Where(x => x.Match != ConfigFileMatch.None)
+                .Select((x, ct) => (x.Match, Config: ConfigParser.Parse(x.File.GetText(ct)?.ToString()) with { FilePath = x.File.Path }))
                 .Collect()
-                .Select((configs, _) => configs.FirstOrDefault() ?? new GeneratorConfigModel())
+                .Combine(configPathProvider)
+                .Select((source, _) => SelectConfig(source.Left, source.Right))
                 .WithTrackingName(TrackingNames.Config);
 
             // Step 2: Find all controller classes
@@ -92,6 +112,89 @@ namespace Api.ToMcp.Generator
         }
 
         /// <summary>
+        /// The full path of the config the build targets pass from ApiToMcpConfigPath, or null when the project does not
+        /// import them.
+        /// </summary>
+        private static string? GetConfigPath(AnalyzerConfigOptions options)
+        {
+            return options.TryGetValue(ConfigPathBuildProperty, out var configPath) && !string.IsNullOrWhiteSpace(configPath)
+                ? NormalizePath(configPath)
+                : null;
+        }
+
+        /// <summary>
+        /// How the additional file can be the config. A path that differs from the configured one only in case counts, as
+        /// on a case-sensitive file system MSBuild hands the generator such a file when the configured one is missing
+        /// (MCP101), but after the configured file itself, which can be among the additional files as well. The name
+        /// matches only in full: a file such as openapi-generator.json is another tool's.
+        /// </summary>
+        private static ConfigFileMatch MatchConfigFile(string filePath, string? configPath)
+        {
+            if (configPath is not null)
+            {
+                var fullPath = NormalizePath(filePath);
+                if (string.Equals(fullPath, configPath, StringComparison.Ordinal))
+                    return ConfigFileMatch.ConfiguredPath;
+
+                if (string.Equals(fullPath, configPath, StringComparison.OrdinalIgnoreCase))
+                    return ConfigFileMatch.ConfiguredPathInAnotherCase;
+            }
+
+            return string.Equals(GetFileName(filePath), ConventionNames.ConfigFileName, StringComparison.OrdinalIgnoreCase)
+                ? ConfigFileMatch.FileName
+                : ConfigFileMatch.None;
+        }
+
+        /// <summary>
+        /// The file name, cut at the platform's separators rather than by <see cref="Path.GetFileName(string)"/>, which on
+        /// .NET Framework, where an IDE can run the generator, throws for a character it does not allow in paths.
+        /// </summary>
+        private static string GetFileName(string path)
+        {
+            return path.Substring(path.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }) + 1);
+        }
+
+        /// <summary>
+        /// The path written one way, as the build and the IDE write the same path differently: with <c>/</c> or <c>\</c>,
+        /// or with a <c>..</c> segment from a relative item. A path the platform rejects stays as it is.
+        /// </summary>
+        private static string NormalizePath(string path)
+        {
+            try
+            {
+                return Path.GetFullPath(path);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return path;
+            }
+        }
+
+        /// <summary>
+        /// The config at the configured path, else at that path in another case, else the first named generator.json,
+        /// else the default config. The files named generator.json elsewhere that the configured one wins over are
+        /// recorded for MCP015.
+        /// </summary>
+        private static GeneratorConfigModel SelectConfig(
+            ImmutableArray<(ConfigFileMatch Match, GeneratorConfigModel Config)> configs,
+            string? configPath)
+        {
+            if (configs.IsEmpty)
+                return new GeneratorConfigModel { ConfiguredFilePath = configPath };
+
+            var selected = configs.OrderBy(x => x.Match).First();
+            var passedOver = selected.Match == ConfigFileMatch.FileName
+                ? ImmutableArray<string>.Empty
+                : configs.Where(x => x.Match == ConfigFileMatch.FileName).Select(x => x.Config.FilePath!).ToImmutableArray();
+
+            return selected.Config with
+            {
+                ConfiguredFilePath = configPath,
+                PassedOverFilePaths = passedOver
+            };
+        }
+
+        /// <summary>
         /// The tools to generate for the controllers' actions and the Minimal API endpoints the config selects, and the
         /// diagnostics to report. The endpoints of each class become the actions of one controller-like model, so a
         /// config entry names them as it names a controller's actions.
@@ -126,6 +229,8 @@ namespace Api.ToMcp.Generator
                 ReportNoToolsGenerated(diagnostics, controllers, config, entryNames, selectedActions, controllerEntryNames);
             }
 
+            ReportPassedOverConfigFiles(diagnostics, config);
+
             // An unknown mode keeps the file's lists, so their entries are reported even next to MCP001.
             ReportUnmatchedEntries(diagnostics, controllers, config, entryNames);
             ReportIncludeEntriesNamingControllerAndEndpoints(diagnostics, config, controllerEntryNames, endpointClasses);
@@ -148,6 +253,24 @@ namespace Api.ToMcp.Generator
                 Tools = tools.ToImmutableArray(),
                 Diagnostics = diagnostics.ToImmutableArray()
             };
+        }
+
+        /// <summary>
+        /// Warns at each additional file named generator.json that the generator passes over for the file at
+        /// ApiToMcpConfigPath (MCP015): it read such a file before the build passed that path, so a project that lists its
+        /// config elsewhere by hand now reads another one, such as the starter the build wrote at the default path.
+        /// </summary>
+        private static void ReportPassedOverConfigFiles(List<DiagnosticInfoModel> diagnostics, GeneratorConfigModel config)
+        {
+            foreach (var passedOverFilePath in config.PassedOverFilePaths)
+            {
+                diagnostics.Add(DiagnosticInfoModel.InFile(
+                    DiagnosticDescriptors.PassedOverConfigFile,
+                    passedOverFilePath,
+                    default,
+                    config.FilePath,
+                    passedOverFilePath));
+            }
         }
 
         /// <summary>
@@ -516,8 +639,11 @@ namespace Api.ToMcp.Generator
             if (!selectedActions.IsEmpty && (config.FilePath == null || config.Mode != SelectionModeModel.SelectedOnly || config.Include.IsEmpty))
                 return GetUnbuildableRoutesAdvice(config, examples, selectedActions);
 
+            if (config.FilePath == null && config.ConfiguredFilePath is not null)
+                return $"No config is at ApiToMcpConfigPath, so the default config applies, whose include list is empty: create {config.ConfiguredFilePath} and list {examples} in its include";
+
             if (config.FilePath == null)
-                return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create Mcp/generator.json and list {examples} in its include";
+                return $"No generator.json is among the project's AdditionalFiles, so the default config applies, whose include list is empty: create {DefaultConfigPath} and list {examples} in its include";
 
             if (config.Mode == SelectionModeModel.AllExceptExcluded)
                 return "The exclude list in generator.json leaves no action to expose: remove entries from it, or mark actions with [McpExpose]";
@@ -565,7 +691,7 @@ namespace Api.ToMcp.Generator
                 : $"{ids} say at each of them why";
 
             if (config.FilePath == null)
-                return $"{pointer}. Create Mcp/generator.json and list {examples} in its include";
+                return $"{pointer}. Create {config.ConfiguredFilePath ?? DefaultConfigPath} and list {examples} in its include";
 
             if (selectedActions.All(x => x.IsMinimalApiEndpoint))
                 return $"{pointer} and what to change, or select other endpoints or actions: in generator.json, or with [McpExpose]";
@@ -809,6 +935,17 @@ namespace Api.ToMcp.Generator
             return quoted.Count == 1
                 ? quoted[0]
                 : $"{string.Join(", ", quoted.Take(quoted.Count - 1))} and {quoted[quoted.Count - 1]}";
+        }
+
+        /// <summary>
+        /// How an additional file can be the config, in the order the generator prefers them.
+        /// </summary>
+        private enum ConfigFileMatch
+        {
+            ConfiguredPath,
+            ConfiguredPathInAnotherCase,
+            FileName,
+            None
         }
     }
 }
