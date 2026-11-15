@@ -431,6 +431,20 @@ This is on by default; `options.ArePropertyDescriptionsFromXmlDocs = false` in `
 
 A hand-written `[McpServerTool]` that returns your own type is described too: the SDK builds a schema for its return type as well, and the same XML descriptions are applied to it. Clients see that schema only when the tool sets `UseStructuredContent = true`, but the return type's assembly counts either way, so without its `.xml` it is named in the startup warning.
 
+### Server instructions
+
+A tool description covers one tool. Guidance that spans several tools - which one to call first, what the IDs mean, what never to do - goes into the server instructions, which the client receives once when it connects. Set them through the MCP SDK's options, next to `AddMcpTools`:
+
+```csharp
+using ModelContextProtocol.Server;
+
+builder.Services.AddMcpTools(Assembly.GetExecutingAssembly());
+builder.Services.Configure<McpServerOptions>(options =>
+    options.ServerInstructions = "This API manages orders. Call search_orders before get_order.");
+```
+
+The server sends them in the `initialize` result (protocol 2025-11-25) and in the `server/discover` result (2026-07-28). How a client uses them is up to the client.
+
 ## Output Schema and Structured Content
 
 A generated tool advertises its action's success response type as the tool's `outputSchema` in `tools/list`, and returns a successful call's body as `structuredContent` next to the text content. Clients and models then know what a tool returns without guessing from a JSON blob. A failed call is unchanged: `isError: true` with the status and body as text, and no structured content (see [Error handling](#error-handling)).
