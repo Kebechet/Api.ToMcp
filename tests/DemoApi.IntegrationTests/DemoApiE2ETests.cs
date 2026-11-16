@@ -287,6 +287,25 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task McpProtocol_ToolsCall_IsServedInProcess_WhenATestStillGivesTheInvokersClientATestServerHandler()
+    {
+        // The 2.x way to send the tools' requests over HTTP to the test server. The handler can be created only once the
+        // test server has started, so the startup check looks at the client's handlers only then; the handler gets nothing.
+        var handlerRequests = 0;
+        await using var client = await ConnectMcpClientAsync(configureServices: services =>
+            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+                new CountingHandler(((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler(), () => Interlocked.Increment(ref handlerRequests))));
+
+        var result = await client.CallToolAsync(
+            "Products_GetById",
+            new Dictionary<string, object?> { ["id"] = LaptopId.ToString() });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Equal(0, handlerRequests);
+    }
+
+    [Fact]
     public async Task McpProtocol_ToolsCall_SendsTheHeaderAndTheFormTheActionReads()
     {
         // AddReview reads the review [FromForm] and the Idempotency-Key [FromHeader]; the tool used to send the review as
@@ -895,6 +914,23 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class CountingHandler : DelegatingHandler
+    {
+        private readonly Action _count;
+
+        public CountingHandler(HttpMessageHandler innerHandler, Action count)
+            : base(innerHandler)
+        {
+            _count = count;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _count();
+            return base.SendAsync(request, cancellationToken);
         }
     }
 
