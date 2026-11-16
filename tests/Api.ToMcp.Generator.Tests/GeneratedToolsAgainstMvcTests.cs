@@ -334,6 +334,11 @@ namespace TestApi
     [Route(""plain"")]
     public class PlainEchoController : ControllerBase
     {
+        // Without [ApiController] MVC runs the action without the header the tool never sends, and records the error.
+        [HttpGet(""trace"")]
+        public object GetTrace([FromHeader(Name = ""traceparent""), System.ComponentModel.DataAnnotations.Required] string trace, string? note) =>
+            new { trace, note, isValid = ModelState.IsValid };
+
         [HttpPost(""search"")]
         public object PostSearch(ProductFilter filter) => filter;
 
@@ -1002,6 +1007,7 @@ namespace TestApi
     [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]
     [InlineData("EchoController_GetNanTool", @"{}", @"{""isNaN"":true,""inf"":true,""negInf"":true,""query"":""""}")]
     [InlineData("EchoController_GetNanTool", @"{""value"":1.5}", @"{""isNaN"":false,""inf"":true,""negInf"":true,""query"":""?value=1.5""}")]
+    [InlineData("PlainEchoController_GetTraceTool", @"{""note"":""n1""}", @"{""trace"":null,""note"":""n1"",""isValid"":false}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]

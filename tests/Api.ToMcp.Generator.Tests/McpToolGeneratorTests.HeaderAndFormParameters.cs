@@ -217,6 +217,21 @@ public partial class McpToolGeneratorTests
         Assert.DoesNotContain(SimpleTypeToolClassName, generated);
     }
 
+    [Theory]
+    [InlineData("[FromHeader(Name = \"traceparent\")] string trace")]
+    [InlineData("[FromHeader(Name = \"X-Forwarded-Proto\"), System.ComponentModel.DataAnnotations.Required] string? scheme")]
+    [InlineData("[FromHeader(Name = \"Cookie\"), Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] string session")]
+    public void Generator_GivesATool_ToAnActionOfAControllerWithoutApiController_RequiringAHeaderAToolNeverSets(string parameter)
+    {
+        // Without [ApiController] MVC refuses no call for a missing value: it runs the action with the parameter null and the
+        // error in ModelState.
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[HttpGet(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        Assert.DoesNotContain("TryAddHeaderValue", tool);
+    }
+
     [Fact]
     public void RuntimeInvoker_RefusesEveryHeaderTheGeneratorNeverSets()
     {
