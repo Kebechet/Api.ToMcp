@@ -12,7 +12,7 @@ namespace Api.ToMcp.Runtime.Services;
 /// Serves a generated tool's API request inside this process, through the request pipeline the host built for the
 /// server: every middleware a request the server receives passes, the startup filters' included, with no socket and no
 /// address to call. The request carries the connection of the MCP request it is made for, as the same client's next
-/// request would.
+/// request would, and <see cref="IMcpToolRequestFeature"/>, by which the app tells it from that client's own requests.
 /// </summary>
 /// <remarks>
 /// The hosting layer around the pipeline is not part of it: the request is not logged or counted as one the server
@@ -371,6 +371,7 @@ internal sealed class InProcessApiPipeline
             features.Set<IHttpResponseFeature>(response.Feature);
             features.Set<IHttpResponseBodyFeature>(responseBody);
             features.Set<IHttpRequestLifetimeFeature>(lifetime);
+            features.Set<IMcpToolRequestFeature>(new McpToolRequestFeature(McpToolCallName.Current));
             features.Set<IHttpConnectionFeature>(new HttpConnectionFeature
             {
                 ConnectionId = caller?.Connection.Id ?? Guid.NewGuid().ToString("N"),

@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -177,6 +179,36 @@ public class InProcessApiPipelineTests
         using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller, CancellationToken.None);
 
         Assert.Equal($"203.0.113.7:50123|10.0.0.1:8080|{certificate.Thumbprint}", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_MarksTheRequest_AsATools_WithNoToolName_OutsideAToolCall()
+    {
+        var pipeline = BuildToolRequestEcho();
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, CancellationToken.None);
+
+        Assert.Equal("True|", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SendAsync_MarksTheRequest_WithTheNameOfTheToolWhoseCallSentIt()
+    {
+        var pipeline = BuildToolRequestEcho();
+        await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions());
+        var context = new RequestContext<CallToolRequestParams>(
+            server,
+            new JsonRpcRequest { Method = RequestMethods.ToolsCall },
+            new CallToolRequestParams { Name = "products_get" });
+        var handler = McpToolCallName.Create(async (_, cancellationToken) =>
+        {
+            using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, cancellationToken);
+            return new CallToolResult { Content = [new TextContentBlock { Text = await response.Content.ReadAsStringAsync(cancellationToken) }] };
+        });
+
+        var result = await handler(context, CancellationToken.None);
+
+        Assert.Equal("True|products_get", Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text);
     }
 
     [Fact]
@@ -847,6 +879,15 @@ public class InProcessApiPipelineTests
 
             await context.Response.WriteAsync("allowed");
         }));
+    }
+
+    /// <summary>
+    /// An app that answers whether the request is a tool's, and the tool's name.
+    /// </summary>
+    private static InProcessApiPipeline BuildToolRequestEcho()
+    {
+        return Build(app => app.Run(context =>
+            context.Response.WriteAsync($"{context.IsMcpToolRequest()}|{context.Features.Get<IMcpToolRequestFeature>()?.ToolName}")));
     }
 
     private static HttpRequestMessage CreatePostRequest()

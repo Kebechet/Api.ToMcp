@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using Xunit;
 
 namespace DemoApi.IntegrationTests;
@@ -59,6 +60,35 @@ public class McpLoopPreventionTests
         Assert.NotEqual(RefusalText, await response.Content.ReadAsStringAsync());
     }
 
+    [Theory]
+    [InlineData("ai", "/ai")]
+    [InlineData("tenants/{tenant}/assistant", "/tenants/acme/assistant")]
+    public async Task RefusesAToolsInProcessRequest_ToTheMcpEndpoint_WithoutTheMiddleware(string pattern, string path)
+    {
+        // https://github.com/Kebechet/Api.ToMcp/issues/100
+        await using var app = await StartAppAsync(pattern, useLoopPrevention: false);
+        await using var client = await ConnectAsync(app, path);
+
+        var result = await client.CallToolAsync("parity_post", new Dictionary<string, object?> { ["route"] = path, ["body"] = "{}" });
+
+        Assert.True(result.IsError);
+        Assert.Equal($"HTTP 400: Bad Request - {RefusalText}", ((TextContentBlock)result.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task ServesAClientsRequest_ThatCarriesTheHeader_WithoutTheMiddleware()
+    {
+        // https://github.com/Kebechet/Api.ToMcp/issues/100: any client can send the header, which marks no request a tool's
+        // without the middleware.
+        await using var app = await StartAppAsync("ai", useLoopPrevention: false);
+        await using var client = await ConnectAsync(app, "/ai", new Dictionary<string, string> { [LoopPreventionHeader] = "true" });
+
+        var result = await client.CallToolAsync("parity_get", new Dictionary<string, object?> { ["route"] = "/api/status" });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal("up", ((TextContentBlock)result.Content[0]).Text);
+    }
+
     [Fact]
     public async Task ServesTheMcpEndpoint_ToAClient_AtThePatternItIsMappedAt()
     {
@@ -105,6 +135,22 @@ public class McpLoopPreventionTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(RefusalText, await response.Content.ReadAsStringAsync());
+    }
+
+    private static async Task<McpClient> ConnectAsync(WebApplication app, string path, Dictionary<string, string>? headers = null)
+    {
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost" + path),
+                TransportMode = HttpTransportMode.StreamableHttp,
+                AdditionalHeaders = headers
+            },
+            app.GetTestClient(),
+            NullLoggerFactory.Instance,
+            ownsHttpClient: true);
+
+        return await McpClient.CreateAsync(transport);
     }
 
     private static async Task<WebApplication> StartAppAsync(string pattern, bool useLoopPrevention = true, bool routeAfterLoopPrevention = false, bool mapWithTheSdk = false)

@@ -30,7 +30,7 @@ Api.ToMcp analyzes your existing ASP.NET Core controllers and Minimal API endpoi
 - **Flexible Selection** - Choose between allowlist (`SelectedOnly`) or blocklist (`AllExceptExcluded`) modes
 - **Customizable Naming** - Configure tool naming format via `generator.json`
 - **In-Process API Calls** - A tool runs its API request through your app's own middleware pipeline inside the process, as a request the server receives: no socket, and no address to configure behind a reverse proxy
-- **Loop Prevention** - Built-in middleware prevents infinite recursion when MCP tools call back to the API
+- **Loop Prevention** - The MCP endpoint refuses a tool's own request, so a tool cannot call back into the MCP server
 - **Auth Forwarding** - Authentication headers from MCP requests are forwarded to API calls
 - **OAuth Sign-In Discovery** - Serves the OAuth protected resource metadata and the `401` and `403` scope challenges with which Claude.ai, ChatGPT and MCP Inspector sign a user in
 - **Request Correlation** - A tool call and the API request it makes share one W3C trace, so their log entries and OpenTelemetry spans can be matched by trace ID
@@ -718,7 +718,7 @@ A redirect is followed as `HttpClient` follows one, up to 50 times: a `303` turn
 
 The tool sends the request through the invoker's `HttpClient`, and its message handlers run around the request as they do around one sent over HTTP (see [Custom HTTP Invocation](#custom-http-invocation)). The client applies its `Timeout`, 100 seconds unless you configure it, and fails a call that outlasts it as it fails any other. Canceling the call ends it at once, even when your action does not watch `HttpContext.RequestAborted`, as long as the client's message handlers pass the cancellation token on; the request is aborted, and finishes and is cleaned up in the background. A handler that sends the request on without the token keeps the call waiting for your action, past the `Timeout` too, as it does over HTTP.
 
-The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Partition by user, or turn the option off, if that matters. Over HTTP, the request came from the server itself.
+The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Give the tool's requests a partition of their own for each client, as [Telling a tool's request apart](#telling-a-tools-request-apart) shows. Over HTTP, the request came from the server itself.
 
 To send the request over HTTP instead, to the address from [Base URL Resolution](#base-url-resolution), turn the option off:
 
@@ -727,6 +727,47 @@ builder.Services.AddMcpTools(Assembly.GetExecutingAssembly(), options => options
 ```
 
 The tools also call over HTTP through an `McpHttpInvoker` you create with its constructor, and in an app whose host never builds a request pipeline, which an ASP.NET Core host always does when it starts.
+
+### Telling a tool's request apart
+
+In process, the tool's request carries `IMcpToolRequestFeature`, which the invoker sets on the request's own features. No client can send it, unlike the `X-MCP-Internal-Call` header, so your code can rely on it, in a rate limiter's partition, a middleware or a logger:
+
+```csharp
+using Api.ToMcp.Runtime;
+
+if (context.IsMcpToolRequest())
+{
+    var toolName = context.Features.Get<IMcpToolRequestFeature>()!.ToolName;
+}
+```
+
+`ToolName` is the name of the tool whose call sent the request, as the MCP client called it. It is `null` only when code of your own calls the invoker outside a tool call, which includes work a tool call started, such as a task or a timer, once that call has ended. A tool's request over HTTP, with `AreApiCallsInProcess` off, is one the server receives, and carries no feature; there only the header marks it. The MCP endpoint refuses a request that carries the feature; see [What the tool's request carries](#what-the-tools-request-carries).
+
+A rate limiter that covers the MCP endpoint, such as a global one, counts the MCP request against the client already, so give the tool's requests a partition of their own for each client, keyed by the mark and the client's address:
+
+```csharp
+using System.Threading.RateLimiting;
+using Api.ToMcp.Runtime;
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+    {
+        var address = context.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+        var partitionKey = context.IsMcpToolRequest() ? "mcp-tool:" + address : address;
+
+        return RateLimitPartition.GetConcurrencyLimiter(partitionKey, _ => new ConcurrencyLimiterOptions { PermitLimit = 1 });
+    });
+});
+
+var app = builder.Build();
+app.UseRateLimiter();
+```
+
+Do not leave the tool's requests without a limiter: a client that drops its MCP request frees its permit while the tool's request keeps running, so the client could run any number of them at once.
+
+When only your API's endpoints are limited, with `RequireRateLimiting` or `[EnableRateLimiting]`, the MCP request holds no permit, so the client's own partition needs no change: the tool's request counts against the client as its own request to the API does. If you want the tool's requests in a partition of their own anyway, key it by the tool and the client together, such as `ToolName` and the address, never by `ToolName` alone, which every client would share.
 
 ## Base URL Resolution
 
@@ -838,7 +879,7 @@ A tool call reaches your API as two requests: the MCP client's `POST /mcp`, and 
 | Header | Where it comes from |
 |---|---|
 | `Authorization` | Copied from the MCP request, when it parses as an authentication header |
-| `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` a request that targets the MCP endpoint, or any path under `/mcp`, is refused |
+| `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` a tool's request over HTTP that targets the MCP endpoint, or any path under `/mcp`, is refused; see below |
 | `X-Forwarded-Proto: https` | Over HTTP only: added by the invoker when it calls an `http://` address on loopback for an MCP request that came in over HTTPS, so the app serves it as HTTPS too, under the name `ForwardedHeadersOptions.ForwardedProtoHeaderName` gives; see [Base URL Resolution](#base-url-resolution) |
 | The action's `[FromHeader]` headers | The tool's arguments; see [Where each argument is sent](#where-each-argument-is-sent) |
 | `Accept-Language` | With a form, when the MCP request ran `UseRequestLocalization`: the culture it picked for the MCP request, which the tool writes the form's numbers and dates in, so that the app reads the form in it; see [Limitations](#limitations). Such a tool's request also runs in the MCP request's UI language, while a tool's request without a form runs in the app's default |
@@ -848,7 +889,9 @@ No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, the 
 
 Over HTTP (with `AreApiCallsInProcess` off), .NET's `HttpClient` also sends the current `Activity` as a `traceparent` header, with `tracestate` and `baggage` (`Correlation-Context` on .NET 8 and 9) when the MCP request has them, and ASP.NET Core continues that trace for the request. The request comes from the server itself, or from a proxy when `McpTools:BaseUrl` leads through one, not from the client.
 
-`X-MCP-Internal-Call` also tells a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope. It is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (only the MCP endpoint and paths under `/mcp` refuse it), so never let it skip authentication or authorization. The refusal comes from the endpoint `MapMcpEndpoint` maps, at whatever pattern it is given, route parameters included, and wherever `UseRouting` sits in the pipeline. `UseMcpLoopPrevention` itself also refuses it on any path under `/mcp`, as it always has, which covers an endpoint mapped there with the SDK's `MapMcp` directly.
+`X-MCP-Internal-Call` is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (with `UseMcpLoopPrevention`, only the MCP endpoint and paths under `/mcp` refuse it), so never let it skip authentication or authorization. To tell a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope, use `HttpContext.IsMcpToolRequest()`, which no client can fake; see [Telling a tool's request apart](#telling-a-tools-request-apart).
+
+Loop prevention keeps a tool from starting an MCP request inside a tool call. The endpoint `MapMcpEndpoint` maps refuses a tool's in-process request, with `400` and `MCP endpoints cannot be called internally to prevent loops.`, with or without `UseMcpLoopPrevention`, at whatever pattern it is given, route parameters included, and wherever `UseRouting` sits in the pipeline. `UseMcpLoopPrevention` is needed for the requests only the header marks: with it, that endpoint also refuses a request that carries `X-MCP-Internal-Call`, as a tool's request over HTTP does, and the middleware itself refuses such a request on any path under `/mcp`, as it always has, which covers an endpoint mapped there with the SDK's `MapMcp` directly.
 
 ### Logs
 
@@ -1030,7 +1073,7 @@ With [OAuth sign-in discovery](#oauth-sign-in-claudeai-chatgpt-mcp-inspector) on
 - The Inspector lists what the running app registered. After changing `generator.json` or an attribute, rebuild, restart the app and connect again.
 - The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes only `[McpExpose]` actions until you list others or switch to `AllExceptExcluded`. The build that creates it warns with `MCP100`, and `MCP006` follows while no tool is generated.
 - A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included, so again only `[McpExpose]` actions. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Both give build warning `MCP001`, pointing at what could not be read; see [Troubleshooting](#troubleshooting).
-- An action at `/mcp` or under it, in any letter case, such as `mcp/status`, is never exposed, not even with `[McpExpose]` (loop prevention). The generator compares whole segments from the start of the route, so `api/mcp`, `api/mcpservers` and `api/settings/mcp-status` get their tools: with `UseMcpLoopPrevention`, the MCP endpoint that `MapMcpEndpoint` maps refuses a tool's request wherever it is mapped (see [What the tool's request carries](#what-the-tools-request-carries)).
+- An action at `/mcp` or under it, in any letter case, such as `mcp/status`, is never exposed, not even with `[McpExpose]` (loop prevention). The generator compares whole segments from the start of the route, so `api/mcp`, `api/mcpservers` and `api/settings/mcp-status` get their tools: the MCP endpoint that `MapMcpEndpoint` maps refuses a tool's request wherever it is mapped, one over HTTP only with `UseMcpLoopPrevention` (see [What the tool's request carries](#what-the-tools-request-carries)).
 - An action that is not `public` is skipped without a diagnostic, as is one MVC serves only for HTTP methods a tool does not send (`[HttpHead]`, `[HttpOptions]`, `[AcceptVerbs("HEAD")]`), for every method (a `[Route]` alone), or through conventional routing. Attributes derived from MVC's routing attributes, or implementing their interfaces, count like MVC's own; see [Controllers and Actions](#controllers-and-actions).
 - An action declared on a base controller is a tool of each concrete controller that inherits it, named after that controller (`Products_GetAll`, not `Crud_GetAll`); an abstract base class gets none. Classes and methods MVC does not serve get no tool, among them `[NonController]` classes, `[NonAction]` methods, overrides of `ToString`, `Equals` or `GetHashCode`, and the `IDisposable.Dispose` implementation. See [Controllers and Actions](#controllers-and-actions).
 - Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
@@ -1185,13 +1228,16 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim. In process, the API call also carries the MCP request's client certificate; cookies are never forwarded.
 - When scope validation is enabled, the request must be authenticated and the mapped scope must cover the tool's required scope (`Read`/`Write`/`Delete`).
 
+**Tool calls return `429`, or `503`, from a rate limiter.**
+- In process, the tool's request carries the MCP request's connection, so a limiter partitioned by client address or connection counts it against the client that still holds the MCP request. `503` is the status the limiter refuses with unless `RejectionStatusCode` is set. Give the tool's requests a partition of their own for each client, by `HttpContext.IsMcpToolRequest()` and the client's address; see [Telling a tool's request apart](#telling-a-tools-request-apart).
+
 ## How It Works
 
 1. **Compile Time**: The source generator scans your controllers for HTTP actions, and your code for the Minimal API endpoints it maps
 2. **Code Generation**: For each selected endpoint, a tool class is generated with `[McpServerToolType]` attribute
 3. **Startup**: `AddMcpTools` registers every `[McpServerToolType]` class of the assembly (generated and hand-written) and builds the tools and their argument schemas when the host starts, so a tool that cannot be created fails at startup rather than at the first request
 4. **Runtime**: When an MCP client calls a tool, the tool runs your API's request through your app's own middleware pipeline, inside the process; see [How Tools Call Your API](#how-tools-call-your-api)
-5. **Loop Prevention**: The `X-MCP-Internal-Call` header prevents MCP endpoints from being called recursively
+5. **Loop Prevention**: The MCP endpoint refuses a tool's own request, marked by `IMcpToolRequestFeature` in process and by the `X-MCP-Internal-Call` header over HTTP, so it is not called recursively
 
 ### Where each argument is sent
 
