@@ -41,6 +41,7 @@ public class McpInvokerHttpClientTests
     private const string ProviderBaseUrl = "http://localhost:5000";
 
     private static readonly Assembly ToolAssembly = typeof(StaticParityTools).Assembly;
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
 
     private readonly List<string> _primaryRequests = [];
 
@@ -231,6 +232,143 @@ public class McpInvokerHttpClientTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TheToolsRequest_IsServedInProcessWithoutTheClient_WhenTheAppTakesTheInProcessHandlersFilterAway(bool isReplaced)
+    {
+        using var provider = BuildProvider(services =>
+        {
+            services.AddHttpClient(ClientName)
+                .AddHttpMessageHandler(() => new HeaderSettingHandler(ApiKeyHeader, "secret"))
+                .ConfigureHttpClient(client => client.DefaultRequestHeaders.Add(TenantHeader, "t1"));
+            TakeTheBuilderFiltersAway(services, isReplaced);
+        });
+        BuildEchoPipeline(provider);
+
+        var result = await CallAsync(provider);
+
+        var seen = Echoed(result);
+        Assert.Equal(CallerToken, seen.GetProperty("authorization").GetString());
+        Assert.Equal("true", seen.GetProperty("internalCall").GetString());
+        Assert.Equal("", seen.GetProperty("apiKey").GetString());
+        Assert.Equal("", seen.GetProperty("tenant").GetString());
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public async Task TheClientsTimeout_FailsACallServedWithoutTheClient_AsHttpClientDoes()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var provider = BuildProvider(services =>
+        {
+            services.AddHttpClient(ClientName).ConfigureHttpClient(client => client.Timeout = TimeSpan.FromMilliseconds(200));
+            TakeTheBuilderFiltersAway(services, isReplaced: false);
+        });
+        BuildPipeline(provider, _ => release.Task);
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<TaskCanceledException>(() => CallAsync(provider).WaitAsync(CallTimeout));
+            Assert.IsType<TimeoutException>(exception.InnerException);
+            Assert.Contains("HttpClient.Timeout", exception.Message);
+            Assert.Empty(_primaryRequests);
+        }
+        finally
+        {
+            release.SetResult();
+        }
+    }
+
+    [Fact]
+    public async Task ACanceledCallServedWithoutTheClient_ThrowsTheCallersCancellation_AsHttpClientDoes()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var provider = BuildProvider(services => TakeTheBuilderFiltersAway(services, isReplaced: false));
+        BuildPipeline(provider, _ =>
+        {
+            started.SetResult();
+            return release.Task;
+        });
+        using var cancellation = new CancellationTokenSource();
+
+        try
+        {
+            var calling = CallAsync(provider, invoker => invoker.GetAsync("/api/status", cancellation.Token));
+            await started.Task.WaitAsync(CallTimeout);
+            cancellation.Cancel();
+
+            var exception = await Assert.ThrowsAsync<TaskCanceledException>(() => calling.WaitAsync(CallTimeout));
+            Assert.Equal(cancellation.Token, exception.CancellationToken);
+            Assert.Empty(_primaryRequests);
+        }
+        finally
+        {
+            release.SetResult();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TheStartupCheck_Warns_WhenTheAppTakesTheInProcessHandlersFilterAway_AndNamesTheFix(bool isReplaced)
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(services => TakeTheBuilderFiltersAway(services, isReplaced), logs: logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(nameof(IHttpMessageHandlerBuilderFilter)));
+        Assert.Contains(ClientName, warning.Message);
+        Assert.Contains("RemoveAll<IHttpMessageHandlerBuilderFilter>()", warning.Message);
+        Assert.Contains("Replace", warning.Message);
+        Assert.Contains("message handlers and DefaultRequestHeaders do not apply", warning.Message);
+        Assert.Contains("TryAddEnumerable", warning.Message);
+        Assert.Contains("RemoveAllLoggers()", warning.Message);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task TheStartupCheck_DoesNotWarnAboutTheClient_WhenItServesInProcess_OrCallsGoOverHttp(bool isInProcess, bool areFiltersTakenAway)
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = isInProcess);
+                if (areFiltersTakenAway)
+                {
+                    TakeTheBuilderFiltersAway(services, isReplaced: false);
+                }
+            },
+            logs: logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(nameof(IHttpMessageHandlerBuilderFilter)));
+    }
+
+    [Fact]
+    public void TheInProcessHandlerCheck_LooksAtTheClientsChainOnce()
+    {
+        using var provider = BuildProvider(_ => { });
+        var handlerFactory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+        var created = 0;
+        var check = new InProcessApiHandlerCheck(() =>
+        {
+            Interlocked.Increment(ref created);
+            return handlerFactory.CreateHandler(ClientName);
+        });
+
+        Assert.True(check.IsInTheClientsChain);
+        Assert.True(check.IsInTheClientsChain);
+        Assert.Equal(1, created);
+    }
+
     [Fact]
     public async Task TheInvokersRequest_GoesThroughTheAppsHandlers_ToThePrimaryHandler_WhenInProcessCallsAreOff()
     {
@@ -300,6 +438,21 @@ public class McpInvokerHttpClientTests
         services.AddHttpClient(ClientName).ConfigurePrimaryHttpMessageHandler(() => new RecordingPrimaryHandler(_primaryRequests));
 
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// The two recipes that take the client factory's logging filter away, run after <c>AddMcpTools</c>, which take the
+    /// filter <c>AddMcpTools</c> registers first away with it: <c>RemoveAll</c> every filter, and <c>Replace</c> the first.
+    /// </summary>
+    private static void TakeTheBuilderFiltersAway(IServiceCollection services, bool isReplaced)
+    {
+        if (isReplaced)
+        {
+            services.Replace(ServiceDescriptor.Singleton<IHttpMessageHandlerBuilderFilter, AppLoggingFilter>());
+            return;
+        }
+
+        services.RemoveAll<IHttpMessageHandlerBuilderFilter>();
     }
 
     /// <summary>
@@ -480,6 +633,17 @@ public class McpInvokerHttpClientTests
 
         public void LogRequestFailed(object? context, HttpRequestMessage request, HttpResponseMessage? response, Exception exception, TimeSpan elapsed)
         {
+        }
+    }
+
+    /// <summary>
+    /// A filter an app puts in place of the client factory's logging filter.
+    /// </summary>
+    private sealed class AppLoggingFilter : IHttpMessageHandlerBuilderFilter
+    {
+        public Action<HttpMessageHandlerBuilder> Configure(Action<HttpMessageHandlerBuilder> next)
+        {
+            return next;
         }
     }
 

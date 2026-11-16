@@ -66,6 +66,7 @@ public static class McpExtensions
                     serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
                     serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
                     serviceProvider.GetRequiredService<InProcessApiPipeline>(),
+                    serviceProvider.GetRequiredService<InProcessApiHandlerCheck>(),
                     forwardedHeaders.ForwardedProtoHeaderName,
                     ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
             })
@@ -139,7 +140,9 @@ public static class McpExtensions
     /// Has <see cref="InProcessApiHandler"/> serve the requests the invoker marks for in process, below every other handler
     /// of its client. The client factory runs its first filter last, after the client's own configuration and every other
     /// filter, so <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one
-    /// that adds the factory's logging handlers. A filter registered later already runs before it.
+    /// that adds the factory's logging handlers. A filter registered later already runs before it. App code that removes
+    /// filters after <see cref="AddMcpTools"/> can take this one away too, which <see cref="InProcessApiHandlerCheck"/>
+    /// finds.
     /// </summary>
     private static void ServeInProcessBelowEveryHandler(IServiceCollection services, string clientName)
     {
@@ -147,6 +150,8 @@ public static class McpExtensions
             new InProcessApiHandlerFilter(clientName, serviceProvider.GetRequiredService<InProcessApiPipeline>()));
         var firstFilter = services.FirstOrDefault(x => x.ServiceType == typeof(IHttpMessageHandlerBuilderFilter) && !x.IsKeyedService);
         services.Insert(firstFilter is null ? services.Count : services.IndexOf(firstFilter), filter);
+        services.TryAddSingleton(serviceProvider => new InProcessApiHandlerCheck(
+            () => serviceProvider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(clientName)));
     }
 
     /// <summary>

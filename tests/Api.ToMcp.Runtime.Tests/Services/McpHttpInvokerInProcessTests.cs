@@ -184,6 +184,20 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
+    public async Task GetAsync_ServesTheRequestInProcess_WithoutTheClient_WhenTheClientLacksTheInProcessHandler()
+    {
+        _accessor.HttpContext = CreateCaller();
+        var invoker = CreateInvoker(BuildEchoPipeline(), hasInProcessHandler: false);
+
+        var result = await invoker.GetAsync("/api/products/7");
+
+        var seen = Echoed(result);
+        Assert.Equal("api.example.com", seen.GetProperty("host").GetString());
+        Assert.Equal("Bearer caller-token", seen.GetProperty("authorization").GetString());
+        Assert.Empty(_httpHandler.Requests);
+    }
+
+    [Fact]
     public async Task GetAsync_ReportsAnErrorStatus_AsAnErrorResult_InProcess()
     {
         _accessor.HttpContext = CreateCaller();
@@ -227,13 +241,21 @@ public class McpHttpInvokerInProcessTests
     /// The invoker with a client built as <c>AddMcpTools</c> builds it: <see cref="InProcessApiHandler"/> right above the
     /// primary handler, which records every request it gets.
     /// </summary>
+    /// <remarks>
+    /// Without <paramref name="hasInProcessHandler"/>, the client has the primary handler alone, as when the app took away
+    /// the filter that adds <see cref="InProcessApiHandler"/>.
+    /// </remarks>
     private McpHttpInvoker CreateInvoker(
         InProcessApiPipeline pipeline,
         McpScopeOptions? scopeOptions = null,
         TimeSpan? timeout = null,
-        ISelfBaseUrlProvider? baseUrlProvider = null)
+        ISelfBaseUrlProvider? baseUrlProvider = null,
+        bool hasInProcessHandler = true)
     {
-        var httpClient = new HttpClient(new InProcessApiHandler(pipeline) { InnerHandler = _httpHandler });
+        HttpMessageHandler chain = hasInProcessHandler
+            ? new InProcessApiHandler(pipeline) { InnerHandler = _httpHandler }
+            : _httpHandler;
+        var httpClient = new HttpClient(chain);
         if (timeout is not null)
         {
             httpClient.Timeout = timeout.Value;
@@ -245,7 +267,8 @@ public class McpHttpInvokerInProcessTests
             _accessor,
             NullLogger<McpHttpInvoker>.Instance,
             Microsoft.Extensions.Options.Options.Create(scopeOptions ?? new McpScopeOptions()),
-            pipeline);
+            pipeline,
+            new InProcessApiHandlerCheck(() => chain));
     }
 
     private DefaultBaseUrlProvider CreateDefaultBaseUrlProvider(string boundAddress)

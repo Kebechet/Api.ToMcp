@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -93,6 +95,26 @@ public sealed class DevelopmentHostTests
         Assert.NotEqual(true, result.IsError);
         Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
         Assert.Contains(LaptopId, Assert.Single(requests));
+    }
+
+    [Fact]
+    public async Task AnAppThatRemovesEveryHandlerBuilderFilter_StartsInDevelopment_AndServesAToolCallInProcess_NotThroughThePrimaryHandler()
+    {
+        var requests = new List<string>();
+        await using var app = await StartAsync(hasAuthentication: false, configureServices: services =>
+        {
+            services.AddHttpClient(nameof(IMcpHttpInvoker))
+                .AddHttpMessageHandler(() => new RecordingHandler(requests))
+                .ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
+            services.RemoveAll<IHttpMessageHandlerBuilderFilter>();
+        });
+        await using var client = await ConnectAsync(app.Urls.Single(), authorization: null);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Empty(requests);
     }
 
     private static async Task<WebApplication> StartAsync(bool hasAuthentication, Action<IServiceCollection> configureServices)
