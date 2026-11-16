@@ -99,6 +99,7 @@ public static class McpExtensions
             .WithHttpTransport()
             .WithRequestFilters(filters =>
             {
+                filters.AddCallToolFilter(McpToolCallName.Create);
                 filters.AddCallToolFilter(McpScopeValidationFilter.Create);
                 filters.AddCallToolFilter(McpRequestInvokerCheck.Create);
             });
