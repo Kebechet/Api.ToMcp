@@ -78,9 +78,13 @@ internal sealed class InProcessApiPipeline
     /// The app aborted the request, or threw after its response started, which a server answers by dropping the
     /// connection.
     /// </exception>
+    /// <exception cref="InvalidOperationException">The host has not built the pipeline.</exception>
     public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken cancellationToken)
     {
-        var application = _application ?? throw new InvalidOperationException("The host has not built the app's request pipeline yet.");
+        var application = _application ?? throw new InvalidOperationException(
+            $"The tool's API request {request.Method} {request.RequestUri} cannot run: a tool runs its API request in process, through the app's request pipeline, " +
+            "and the host has not built it. An ASP.NET Core web host builds it when it starts, so call a tool only once the app has started, with app.Run(), " +
+            "app.StartAsync() or WebApplicationFactory, and register no IApplicationBuilderFactory of your own after AddMcpTools.");
         var forwardedPathBase = GetForwardedPathBase(caller);
 
         var response = await ServeAsync(application, request, caller, forwardedPathBase, cancellationToken);

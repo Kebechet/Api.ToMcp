@@ -17,10 +17,10 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -42,6 +42,8 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     /// A protocol from before 2026-07-28, which allowed only objects as output schemas and structured content.
     /// </summary>
     private const string OlderProtocolVersion = "2025-06-18";
+
+    private const string BaseUrlKey = "McpTools:BaseUrl";
 
     private readonly WebApplicationFactory<Program> _factory;
 
@@ -92,15 +94,9 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task GeneratedTool_InvokesApiEndToEnd_ThroughRuntimeInvoker()
     {
-        // Wire the runtime invoker to the in-memory test server so a generated tool's call
-        // travels the real path: tool -> IMcpHttpInvoker -> HTTP -> ASP.NET pipeline -> controller.
-        var client = _factory.CreateClient();
-        var invoker = new McpHttpInvoker(
-            client,
-            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
-            new HttpContextAccessor(),
-            NullLogger<McpHttpInvoker>.Instance,
-            Options.Create(new McpScopeOptions()));
+        // The app's own invoker, so a generated tool's call travels the real path:
+        // tool -> IMcpHttpInvoker -> the app's pipeline, in process -> controller.
+        var invoker = CreateDirectInvoker();
 
         var toolType = typeof(Program).Assembly
             .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
@@ -119,13 +115,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     {
         // A cancelled token must abort the call. If the generated tool dropped the token
         // (passing default), this request would instead succeed and return data.
-        var client = _factory.CreateClient();
-        var invoker = new McpHttpInvoker(
-            client,
-            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
-            new HttpContextAccessor(),
-            NullLogger<McpHttpInvoker>.Instance,
-            Options.Create(new McpScopeOptions()));
+        var invoker = CreateDirectInvoker();
 
         var toolType = typeof(Program).Assembly
             .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
@@ -161,13 +151,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     {
         // A non-2xx downstream response must surface as isError = true on the tool result
         // (issue #7) - conditioned, not thrown - so the model sees a deliberate failure.
-        var client = _factory.CreateClient();
-        var invoker = new McpHttpInvoker(
-            client,
-            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
-            new HttpContextAccessor(),
-            NullLogger<McpHttpInvoker>.Instance,
-            Options.Create(new McpScopeOptions()));
+        var invoker = CreateDirectInvoker();
 
         var toolType = typeof(Program).Assembly
             .GetType("Api.ToMcp.Generated.ProductsController_GetByIdTool", throwOnError: true)!;
@@ -279,46 +263,35 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task McpProtocol_ToolsCall_SendsTheApiRequestOverHttp_WhenInProcessCallsAreOff()
+    public async Task McpProtocol_ToolsCall_FailsSayingToRemoveIt_WhenATestRegistersTheInvokerAgainAsATypedClient()
     {
-        var requests = new List<string>();
+        // The 2.x way to hand the invoker a TestServer handler; under WebApplicationFactory the tools run in process.
+        var exceptions = new List<Exception>();
         await using var client = await ConnectMcpClientAsync(configureServices: services =>
         {
-            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false);
-            services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
-            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(serviceProvider =>
-                new RecordingHandler(((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler(), requests));
+            services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>().ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+                ((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler());
+            services.AddSingleton<ILoggerProvider>(new ExceptionLoggerProvider(exceptions));
         });
 
         var result = await client.CallToolAsync(
             "Products_GetById",
             new Dictionary<string, object?> { ["id"] = LaptopId.ToString() });
 
-        Assert.NotEqual(true, result.IsError);
-        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
-        Assert.Contains(LaptopId.ToString(), Assert.Single(requests));
+        Assert.True(result.IsError);
+        Assert.Equal("An error occurred invoking 'Products_GetById'.", ((TextContentBlock)result.Content[0]).Text);
+        lock (exceptions)
+        {
+            Assert.Contains(exceptions, x => x is InvalidOperationException && x.Message.StartsWith("McpHttpInvoker is registered as a typed client", StringComparison.Ordinal));
+        }
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task McpProtocol_ToolsCall_SendsTheHeaderAndTheFormTheActionReads(bool areApiCallsInProcess)
+    [Fact]
+    public async Task McpProtocol_ToolsCall_SendsTheHeaderAndTheFormTheActionReads()
     {
         // AddReview reads the review [FromForm] and the Idempotency-Key [FromHeader]; the tool used to send the review as
         // JSON and no header, so the action stored an empty review without its key.
-        var requests = new List<string>();
-        await using var client = await ConnectMcpClientAsync(configureServices: services =>
-        {
-            if (areApiCallsInProcess)
-            {
-                return;
-            }
-
-            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false);
-            services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
-            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(serviceProvider =>
-                new RecordingHandler(((TestServer)serviceProvider.GetRequiredService<IServer>()).CreateHandler(), requests));
-        });
+        await using var client = await ConnectMcpClientAsync();
 
         var result = await CallToolRawAsync(client, "Products_AddReview", new JsonObject
         {
@@ -333,7 +306,6 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(5, review["rating"]!.GetValue<int>());
         Assert.Equal("Fast & quiet = 100% worth it", review["comment"]!.GetValue<string>());
         Assert.Equal("req-42", review["idempotencyKey"]!.GetValue<string>());
-        Assert.Equal(areApiCallsInProcess ? 0 : 1, requests.Count);
     }
 
     [Fact]
@@ -739,6 +711,7 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
 
         Assert.Contains(entries, x => x.Level == LogLevel.Debug && x.Message.Contains("MCP tools"));
         Assert.Empty(entries.Where(x => x.Level == LogLevel.Warning && x.Message.Contains("XML documentation")));
+        Assert.DoesNotContain(entries, x => x.Level == LogLevel.Error);
     }
 
     private static JsonElement GetOutputSchema(IList<McpClientTool> tools, string toolName)
@@ -815,15 +788,16 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion });
     }
 
-    private McpHttpInvoker CreateDirectInvoker()
+    /// <summary>
+    /// The invoker the app registers, called outside an MCP request, as code of the app's own would call it. Such a
+    /// request is named at <c>McpTools:BaseUrl</c>, as the test server is bound to no address, and runs in process.
+    /// </summary>
+    private IMcpHttpInvoker CreateDirectInvoker()
     {
-        var client = _factory.CreateClient();
-        return new McpHttpInvoker(
-            client,
-            new FixedBaseUrlProvider(client.BaseAddress!.ToString().TrimEnd('/')),
-            new HttpContextAccessor(),
-            NullLogger<McpHttpInvoker>.Instance,
-            Options.Create(new McpScopeOptions()));
+        var factory = _factory.WithWebHostBuilder(builder => builder.ConfigureAppConfiguration(configuration =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?> { [BaseUrlKey] = "http://localhost" })));
+
+        return factory.Services.GetRequiredService<IMcpHttpInvoker>();
     }
 
     private static MethodInfo GetGeneratedInvokeMethod(string toolTypeName)
@@ -895,6 +869,35 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         private static Task<CallToolResult> Answer() => Task.FromResult(new CallToolResult { Content = { new TextContentBlock { Text = "{}" } } });
     }
 
+    /// <summary>
+    /// Collects the exception of every log entry that has one.
+    /// </summary>
+    private sealed class ExceptionLoggerProvider(List<Exception> exceptions) : ILoggerProvider, ILogger
+    {
+        public ILogger CreateLogger(string categoryName) => this;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (exception is null)
+            {
+                return;
+            }
+
+            lock (exceptions)
+            {
+                exceptions.Add(exception);
+            }
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
     private sealed class RefusingHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -903,34 +906,4 @@ public class DemoApiE2ETests : IClassFixture<WebApplicationFactory<Program>>
         }
     }
 
-    /// <summary>
-    /// Records the URI of every request it passes on.
-    /// </summary>
-    private sealed class RecordingHandler : DelegatingHandler
-    {
-        private readonly List<string> _requests;
-
-        public RecordingHandler(HttpMessageHandler innerHandler, List<string> requests)
-            : base(innerHandler)
-        {
-            _requests = requests;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            lock (_requests)
-            {
-                _requests.Add(request.RequestUri!.ToString());
-            }
-
-            return base.SendAsync(request, cancellationToken);
-        }
-    }
-
-    private sealed class FixedBaseUrlProvider : ISelfBaseUrlProvider
-    {
-        private readonly string _baseUrl;
-        public FixedBaseUrlProvider(string baseUrl) => _baseUrl = baseUrl;
-        public string GetBaseUrl() => _baseUrl;
-    }
 }

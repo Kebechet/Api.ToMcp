@@ -150,16 +150,40 @@ public sealed class InProcessKestrelParityTests
         Assert.StartsWith("HTTP 302: Found", tool.Text);
     }
 
+    [Fact]
+    public async Task AToolsRequest_ReturnsARedirectToAnotherServer_AsItIs_AndSendsNothingThere()
+    {
+        // An action that redirects to a URL from its input, called over HTTP, made the tool read any server the app
+        // reaches, as the invoker's client followed every redirect.
+        var internalServiceHits = 0;
+        var internalBuilder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
+        internalBuilder.WebHost.UseUrls("http://127.0.0.1:0");
+        internalBuilder.Logging.ClearProviders();
+        await using var internalService = internalBuilder.Build();
+        internalService.Run(context =>
+        {
+            Interlocked.Increment(ref internalServiceHits);
+            return context.Response.WriteAsync("SECRET of the internal service");
+        });
+        await internalService.StartAsync();
+        await using var app = await StartAsync();
+        var target = Uri.EscapeDataString(internalService.Urls.Single() + "/admin");
+
+        var tool = await CallToolAsync(app, "parity_get", Route + "/open-redirect?returnUrl=" + target);
+
+        Assert.True(tool.IsError);
+        Assert.Equal("HTTP 302: Found", tool.Text);
+        Assert.Equal(0, internalServiceHits);
+    }
+
     [Theory]
-    [InlineData(true, "/headers-form")]
-    [InlineData(false, "/headers-form")]
-    [InlineData(true, "/form-redirect")]
-    [InlineData(false, "/form-redirect")]
-    public async Task AToolsHeadersAndForm_ReachTheAction_AsThoseOfARequestSentToTheServer(bool areApiCallsInProcess, string path)
+    [InlineData("/headers-form")]
+    [InlineData("/form-redirect")]
+    public async Task AToolsHeadersAndForm_ReachTheAction_AsThoseOfARequestSentToTheServer(string path)
     {
         // Kestrel drops the spaces around a header value and HttpClient sends a header's values as one line, which the
         // in-process request has to match; a 307 keeps the method, the form and the headers.
-        await using var app = await StartAsync(areApiCallsInProcess: areApiCallsInProcess);
+        await using var app = await StartAsync();
         using var client = new HttpClient();
         using var direct = new HttpRequestMessage(HttpMethod.Post, app.Urls.Single() + Route + "/headers-form")
         {
@@ -185,11 +209,9 @@ public sealed class InProcessKestrelParityTests
     }
 
     [Theory]
-    [InlineData(true, ClientIpHeader)]
-    [InlineData(false, ClientIpHeader)]
-    [InlineData(true, ClientCertificateHeader)]
-    [InlineData(false, ClientCertificateHeader)]
-    public async Task AToolsRequest_CarriesNoHeaderTheAppTrustsFromItsProxy_UnderANameTheAppConfigured(bool areApiCallsInProcess, string header)
+    [InlineData(ClientIpHeader)]
+    [InlineData(ClientCertificateHeader)]
+    public async Task AToolsRequest_CarriesNoHeaderTheAppTrustsFromItsProxy_UnderANameTheAppConfigured(string header)
     {
         // The app trusts these from a request of its loopback proxy, which a request sent straight to it shows: with them
         // the AI would choose the client's address an allow list sees, or the certificate the user is signed in with.
@@ -203,7 +225,6 @@ public sealed class InProcessKestrelParityTests
                 app.UseForwardedHeaders();
                 app.UseCertificateForwarding();
             },
-            areApiCallsInProcess,
             services =>
             {
                 services.Configure<ForwardedHeadersOptions>(options =>
@@ -233,10 +254,8 @@ public sealed class InProcessKestrelParityTests
             tool.Text);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task AToolsForm_IsReadInTheCultureTheAppPickedForItsMcpRequest(bool areApiCallsInProcess)
+    [Fact]
+    public async Task AToolsForm_IsReadInTheCultureTheAppPickedForItsMcpRequest()
     {
         // The app picks en-US for the MCP request from the client's Accept-Language, so the tool writes 1234.25 as
         // "1,234.25", and would pick its de-DE default for a request that names no culture, which reads that as 123425.
@@ -244,8 +263,7 @@ public sealed class InProcessKestrelParityTests
         await using var app = await StartAsync(
             app => app.UseRequestLocalization(new RequestLocalizationOptions { DefaultRequestCulture = new RequestCulture(cultures[0]) }
                 .AddSupportedCultures(cultures)
-                .AddSupportedUICultures(cultures)),
-            areApiCallsInProcess);
+                .AddSupportedUICultures(cultures)));
 
         var tool = await CallToolAsync(
             app.Urls.Single(),
@@ -257,10 +275,8 @@ public sealed class InProcessKestrelParityTests
         Assert.Equal("{\"amount\":1234.25,\"language\":\"en-US\",\"culture\":\"en-US\"}", tool.Text);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task AToolsForm_IsRefused_WhenItsCultureArgumentWouldMakeTheAppReadItInAnotherCulture(bool areApiCallsInProcess)
+    [Fact]
+    public async Task AToolsForm_IsRefused_WhenItsCultureArgumentWouldMakeTheAppReadItInAnotherCulture()
     {
         // The app picked en-US for the MCP request, and would pick de-DE for the tool's request, which reads the 1.5 the
         // tool wrote in en-US as 15.
@@ -268,8 +284,7 @@ public sealed class InProcessKestrelParityTests
         await using var app = await StartAsync(
             app => app.UseRequestLocalization(new RequestLocalizationOptions { DefaultRequestCulture = new RequestCulture(cultures[0]) }
                 .AddSupportedCultures(cultures)
-                .AddSupportedUICultures(cultures)),
-            areApiCallsInProcess);
+                .AddSupportedUICultures(cultures)));
 
         var tool = await CallToolAsync(
             app.Urls.Single(),
@@ -281,14 +296,12 @@ public sealed class InProcessKestrelParityTests
         Assert.StartsWith("The argument 'language' is sent as the request header 'Accept-Language', which picks the culture the app reads the tool's form in", tool.Text);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task AToolsForm_WithACultureArgument_IsSentAsItIs_WhenTheAppRunsNoRequestLocalization(bool areApiCallsInProcess)
+    [Fact]
+    public async Task AToolsForm_WithACultureArgument_IsSentAsItIs_WhenTheAppRunsNoRequestLocalization()
     {
         // Without UseRequestLocalization the app reads the form in the server's culture, which the tool wrote it in, so the
         // language is the action's own data.
-        await using var app = await StartAsync(areApiCallsInProcess: areApiCallsInProcess);
+        await using var app = await StartAsync();
 
         var tool = await CallToolAsync(
             app.Urls.Single(),
@@ -345,13 +358,12 @@ public sealed class InProcessKestrelParityTests
 
     private static async Task<WebApplication> StartAsync(
         Action<WebApplication>? configure = null,
-        bool areApiCallsInProcess = true,
         Action<IServiceCollection>? configureServices = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
-        ConfigureServices(builder.Services, areApiCallsInProcess);
+        ConfigureServices(builder.Services);
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
@@ -364,26 +376,14 @@ public sealed class InProcessKestrelParityTests
         return app;
     }
 
-    /// <param name="areApiCallsInProcess">
-    /// Whether the tools call the API in process, with an HTTP client that refuses every request, or over HTTP to the
-    /// server's own address.
-    /// </param>
-    private static void ConfigureServices(IServiceCollection services, bool areApiCallsInProcess)
-    {
-        services.AddControllers().AddApplicationPart(typeof(KestrelParityController).Assembly);
-        if (areApiCallsInProcess)
-        {
-            services.AddMcpTools(typeof(ParityProbeTools).Assembly);
-            services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
-            return;
-        }
-
-        services.AddMcpTools(typeof(ParityProbeTools).Assembly, options => options.AreApiCallsInProcess = false);
-    }
-
+    /// <summary>
+    /// The tools with an HTTP client whose primary handler refuses every request.
+    /// </summary>
     private static void ConfigureServices(IServiceCollection services)
     {
-        ConfigureServices(services, areApiCallsInProcess: true);
+        services.AddControllers().AddApplicationPart(typeof(KestrelParityController).Assembly);
+        services.AddMcpTools(typeof(ParityProbeTools).Assembly);
+        services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
     }
 
     private static Task<(HttpStatusCode Status, string Body)> SendDirectlyAsync(WebApplication app, HttpMethod method, string route, string? body = null)
@@ -526,6 +526,12 @@ public sealed class KestrelParityController : ControllerBase
     public IActionResult RedirectElsewhere()
     {
         return Redirect("http://elsewhere.invalid" + TargetPath);
+    }
+
+    [HttpGet("open-redirect")]
+    public IActionResult OpenRedirect(string returnUrl)
+    {
+        return Redirect(returnUrl);
     }
 
     [HttpPost("headers-form")]

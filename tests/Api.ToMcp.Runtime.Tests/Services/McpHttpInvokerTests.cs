@@ -5,14 +5,12 @@ using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting.Server;
-using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Localization;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using Moq;
@@ -21,11 +19,15 @@ using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
 
+/// <summary>
+/// The request the invoker builds and sends through its client, and the result it makes of the response. The client here
+/// is a mock that records each request and answers it, in place of the handlers <c>AddMcpTools</c> gives it, which serve
+/// the request in process.
+/// </summary>
 public class McpHttpInvokerTests
 {
     private const string BaseUrl = "https://localhost:5000";
     private const string LoopPreventionHeader = "X-MCP-Internal-Call";
-    private const string ForwardedProtoHeader = "X-Forwarded-Proto";
 
     private readonly Mock<ISelfBaseUrlProvider> _baseUrlProviderMock;
     private readonly Mock<IHttpContextAccessor> _httpContextAccessorMock;
@@ -46,15 +48,21 @@ public class McpHttpInvokerTests
         _scopeOptionsMock.Setup(x => x.Value).Returns(new McpScopeOptions());
     }
 
-    private McpHttpInvoker CreateInvoker()
+    private McpHttpInvoker CreateInvoker(IEnumerable<string>? proxyHeaderNames = null)
     {
-        var httpClient = new HttpClient(_httpMessageHandlerMock.Object);
+        // The mocked handler stands for the chain AddMcpTools builds, whose in-process handler the check finds, so every
+        // request goes through the client.
+        var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var pipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance, InProcessRequestDiagnostics.Create(services));
         return new McpHttpInvoker(
-            httpClient,
+            new HttpClient(_httpMessageHandlerMock.Object),
             _baseUrlProviderMock.Object,
             _httpContextAccessorMock.Object,
             _loggerMock.Object,
-            _scopeOptionsMock.Object);
+            _scopeOptionsMock.Object,
+            pipeline,
+            new InProcessApiHandlerCheck(() => true, () => new InProcessApiHandler(pipeline)),
+            proxyHeaderNames);
     }
 
     private void SetupHttpResponse(HttpStatusCode statusCode, string content, Action<HttpRequestMessage>? requestCallback = null)
@@ -856,186 +864,35 @@ public class McpHttpInvokerTests
 
     #endregion
 
-    #region BuildUrl Base Url Tests
+    #region BuildUrl Tests
 
-    [Theory]
-    [InlineData("http://localhost:8080")]
-    [InlineData("http://127.0.0.1:8080")]
-    [InlineData("http://[::1]:8080")]
-    public async Task BuildUrl_ForwardsTheScheme_ToAnyProvidersHttpAddressOnLoopback_WhenTheRequestCameInOverHttps(string baseUrl)
+    [Fact]
+    public async Task BuildUrl_NamesTheRequestAtTheAddressTheMcpRequestCameTo_NotAtTheProviders()
     {
-        // Decided from the address the invoker calls, so a provider that wraps the default one forwards it too.
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns(baseUrl);
+        HttpRequestMessage? capturedRequest = null;
+        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
         SetupHttpContextWithSchemeAndHost("https", "api.satis.fit:8443");
 
+        var invoker = CreateInvoker();
+        await invoker.GetAsync("/api/changelog");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://api.satis.fit:8443/api/changelog", capturedRequest.RequestUri?.ToString());
+        _baseUrlProviderMock.Verify(x => x.GetBaseUrl(), Times.Never);
+    }
+
+    [Fact]
+    public async Task BuildUrl_NamesTheRequestAtTheProvidersAddress_WhenTheMcpRequestHasNoHost()
+    {
         HttpRequestMessage? capturedRequest = null;
         SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
+        SetupHttpContext("Bearer test-token");
 
         var invoker = CreateInvoker();
         await invoker.GetAsync("/api/changelog");
 
         Assert.NotNull(capturedRequest);
-        Assert.Equal(baseUrl + "/api/changelog", capturedRequest.RequestUri?.ToString());
-        Assert.Equal(["https"], capturedRequest.Headers.GetValues(ForwardedProtoHeader));
-    }
-
-    [Fact]
-    public async Task BuildUrl_UsesTheProvidersHttpAddressOffLoopbackAsGiven_WithoutTheScheme()
-    {
-        // The app trusts forwarded headers from loopback only, by default.
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://api.internal:8080");
-        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = CreateInvoker();
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("http://api.internal:8080/api/changelog", capturedRequest.RequestUri?.ToString());
-        Assert.False(capturedRequest.Headers.Contains(ForwardedProtoHeader));
-    }
-
-    [Fact]
-    public async Task BuildUrl_ForwardsTheScheme_UnderTheHeaderNameTheAppReads()
-    {
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("http://localhost:8080");
-        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = new McpHttpInvoker(
-            new HttpClient(_httpMessageHandlerMock.Object),
-            _baseUrlProviderMock.Object,
-            _httpContextAccessorMock.Object,
-            _loggerMock.Object,
-            _scopeOptionsMock.Object,
-            inProcessPipeline: null,
-            forwardedProtoHeaderName: "X-Forwarded-Scheme");
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal(["https"], capturedRequest.Headers.GetValues("X-Forwarded-Scheme"));
-        Assert.False(capturedRequest.Headers.Contains(ForwardedProtoHeader));
-    }
-
-    [Theory]
-    [InlineData("internal.example:8443")]
-    [InlineData("169.254.169.254")]
-    public async Task BuildUrl_SendsNoRequestToTheHostAnHttpsRequestNames_ButToTheServersHttpBinding(string requestHost)
-    {
-        // The Host header is the client's to set: https://github.com/Kebechet/Api.ToMcp/issues/48
-        var requests = new List<(string Url, string? ForwardedProto)>();
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => requests.Add((
-            r.RequestUri!.ToString(),
-            r.Headers.TryGetValues(ForwardedProtoHeader, out var values) ? string.Join(",", values) : null)));
-        SetupHttpContextWithSchemeAndHost("https", requestHost, "Bearer caller-token");
-        var invoker = CreateInvokerWithDefaultProvider(["http://+:8080"], configuredBaseUrl: null);
-
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.Equal([("http://localhost:8080/api/changelog", "https")], requests);
-        Assert.DoesNotContain(requests, x => x.Url.Contains(requestHost.Split(':')[0]));
-    }
-
-    [Fact]
-    public async Task BuildUrl_ForwardsNoScheme_ForARequestThatCameInOverHttp()
-    {
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-        SetupHttpContextWithSchemeAndHost("http", "localhost:8080");
-        var invoker = CreateInvokerWithDefaultProvider(["http://+:8080"], configuredBaseUrl: null);
-
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
-        Assert.False(capturedRequest.Headers.Contains(ForwardedProtoHeader));
-    }
-
-    [Theory]
-    [InlineData("http://10.0.0.5:8080")]
-    [InlineData("http://api.corp.example")]
-    public async Task BuildUrl_SendsNothing_WhenAnHttpsRequestsOnlyAddressIsAnHttpBindingOffLoopback(string boundAddress)
-    {
-        // The caller's token would go in clear text off the machine.
-        var requests = new List<string>();
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => requests.Add(r.RequestUri!.ToString()));
-        SetupHttpContextWithSchemeAndHost("https", "api.example.com", "Bearer caller-token");
-        var invoker = CreateInvokerWithDefaultProvider([boundAddress], configuredBaseUrl: null);
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => invoker.GetAsync("/api/changelog"));
-
-        Assert.Contains("McpTools:BaseUrl", exception.Message);
-        Assert.Empty(requests);
-    }
-
-    [Fact]
-    public async Task BuildUrl_UsesTheConfiguredHttpBaseUrlAsGiven_WhenTheRequestCameInOverHttps()
-    {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["McpTools:BaseUrl"] = "http://localhost:8080" })
-            .Build();
-        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
-        var baseUrlProvider = new DefaultBaseUrlProvider(new Mock<IServer>().Object, configuration, _httpContextAccessorMock.Object);
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = new McpHttpInvoker(
-            new HttpClient(_httpMessageHandlerMock.Object),
-            baseUrlProvider,
-            _httpContextAccessorMock.Object,
-            _loggerMock.Object,
-            _scopeOptionsMock.Object);
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("http://localhost:8080/api/changelog", capturedRequest.RequestUri?.ToString());
-        Assert.Equal(["https"], capturedRequest.Headers.GetValues(ForwardedProtoHeader));
-    }
-
-    [Fact]
-    public async Task BuildUrl_UsesTheProvidersHttpsAddress()
-    {
-        _baseUrlProviderMock.Setup(x => x.GetBaseUrl()).Returns("https://localhost:5100");
-        SetupHttpContextWithSchemeAndHost("https", "api.satis.fit");
-
-        HttpRequestMessage? capturedRequest = null;
-        SetupHttpResponse(HttpStatusCode.OK, "response", r => capturedRequest = r);
-
-        var invoker = CreateInvoker();
-        await invoker.GetAsync("/api/changelog");
-
-        Assert.NotNull(capturedRequest);
-        Assert.Equal("https://localhost:5100/api/changelog", capturedRequest.RequestUri?.ToString());
-        Assert.False(capturedRequest.Headers.Contains(ForwardedProtoHeader));
-    }
-
-    private McpHttpInvoker CreateInvokerWithDefaultProvider(string[] boundAddresses, string? configuredBaseUrl)
-    {
-        var addressesFeature = new ServerAddressesFeature();
-        foreach (var address in boundAddresses)
-        {
-            addressesFeature.Addresses.Add(address);
-        }
-
-        var features = new FeatureCollection();
-        features.Set<IServerAddressesFeature>(addressesFeature);
-        var server = new Mock<IServer>();
-        server.Setup(x => x.Features).Returns(features);
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["McpTools:BaseUrl"] = configuredBaseUrl })
-            .Build();
-
-        return new McpHttpInvoker(
-            new HttpClient(_httpMessageHandlerMock.Object),
-            new DefaultBaseUrlProvider(server.Object, configuration, _httpContextAccessorMock.Object),
-            _httpContextAccessorMock.Object,
-            _loggerMock.Object,
-            _scopeOptionsMock.Object);
+        Assert.Equal($"{BaseUrl}/api/changelog", capturedRequest.RequestUri?.ToString());
     }
 
     #endregion
@@ -1443,14 +1300,7 @@ public class McpHttpInvokerTests
 
     private McpHttpInvoker CreateInvokerTrustingProxyHeaders(ForwardedHeadersOptions forwardedHeaders, CertificateForwardingOptions certificateForwarding)
     {
-        return new McpHttpInvoker(
-            new HttpClient(_httpMessageHandlerMock.Object),
-            _baseUrlProviderMock.Object,
-            _httpContextAccessorMock.Object,
-            _loggerMock.Object,
-            _scopeOptionsMock.Object,
-            inProcessPipeline: null,
-            proxyHeaderNames: ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
+        return CreateInvoker(ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
     }
 
     #endregion

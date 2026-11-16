@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text.Json;
 using Api.ToMcp.Runtime.Middleware;
-using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
 using Api.ToMcp.Tests.Shared;
@@ -18,7 +17,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Http.Logging;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
 using Moq;
 using Xunit;
@@ -27,8 +25,8 @@ namespace Api.ToMcp.Runtime.Tests.Extensions;
 
 /// <summary>
 /// The invoker's named <see cref="HttpClient"/>, as <c>AddMcpTools</c> registers it and an app configures it: every call
-/// goes through it, and a request served in process passes every handler the app gives it. The client's primary handler
-/// records each request it gets, which only a request sent over HTTP reaches.
+/// goes through it, and is served in process after every handler the app gives it. The app sets a primary handler that
+/// records each request it gets, which <c>AddMcpTools</c> replaces with one that refuses every request.
 /// </summary>
 public class McpInvokerHttpClientTests
 {
@@ -38,7 +36,6 @@ public class McpInvokerHttpClientTests
     private const string TenantHeader = "X-Tenant";
     private const string ClientDefaultsHeader = "X-Client-Defaults";
     private const string LoopPreventionHeader = McpLoopPreventionMiddleware.LoopPreventionHeader;
-    private const string ProviderBaseUrl = "http://localhost:5000";
 
     private static readonly Assembly ToolAssembly = typeof(StaticParityTools).Assembly;
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
@@ -130,7 +127,7 @@ public class McpInvokerHttpClientTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void TheInProcessHandler_SitsBelowEveryOtherHandler_RightAboveTheAppsPrimaryHandler(bool isConfiguredBeforeAddMcpTools)
+    public void TheInProcessHandler_SitsBelowEveryOtherHandler_RightAboveAPrimaryHandlerThatRefusesEveryRequest(bool isConfiguredBeforeAddMcpTools)
     {
         using var provider = BuildProvider(
             services =>
@@ -148,7 +145,79 @@ public class McpInvokerHttpClientTests
         Assert.Single(handlers.OfType<InProcessApiHandler>());
         Assert.Equal(2, handlers.OfType<HeaderSettingHandler>().Count());
         Assert.Contains(handlers, x => x is LoggingHttpMessageHandler);
-        Assert.IsType<RecordingPrimaryHandler>(primaryHandler);
+        Assert.IsType<RefusingPrimaryHandler>(primaryHandler);
+    }
+
+    [Fact]
+    public async Task ThePrimaryHandler_RefusesEveryRequest_SoNoRequestLeavesTheProcess()
+    {
+        // Without the in-process handler, the request would go over the network to the host the MCP request names, which
+        // is the client's to set: https://github.com/Kebechet/Api.ToMcp/issues/48
+        using var provider = BuildProvider(_ => { });
+        var (_, primaryHandler) = WalkTheChain(provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(ClientName));
+        using var client = new HttpClient(primaryHandler, disposeHandler: false);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetAsync("https://internal.example/api/status"));
+
+        Assert.Equal(
+            "The tool's API request GET https://internal.example/api/status reached the primary handler of the invoker's HttpClient, which never sends a request " +
+            "over the network: a tool's request runs in process only, through InProcessApiHandler, which is missing from the client's handlers.",
+            exception.Message);
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public void ThePrimaryHandler_IsReplacedAfterTheFactorysMetricsFilterConfiguredTheAppsOwn()
+    {
+        // The metrics filter gives a SocketsHttpHandler the app's meter factory once the client's configuration has run. The
+        // in-process filter runs after it, so the metrics filter never sees the refusing handler, which stays.
+        var appsPrimaryHandler = new SocketsHttpHandler();
+        using var provider = BuildProvider(_ => { }, primaryHandler: () => appsPrimaryHandler);
+
+        var (_, primaryHandler) = WalkTheChain(provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(ClientName));
+
+        Assert.IsType<RefusingPrimaryHandler>(primaryHandler);
+        Assert.NotNull(appsPrimaryHandler.MeterFactory);
+    }
+
+    [Fact]
+    public async Task ARequestOtherCodeSendsThroughTheInvokersClient_IsServedInProcessToo()
+    {
+        using var provider = BuildProvider(_ => { });
+        BuildPipeline(provider, context => context.Response.WriteAsync($"{context.Request.Host} {context.Request.Path}"));
+        using var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(ClientName);
+
+        var body = await client.GetStringAsync("https://elsewhere.example/api/status");
+
+        Assert.Equal("elsewhere.example /api/status", body);
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public async Task ACall_FailsSayingWhy_WhenTheHostBuiltNoPipeline()
+    {
+        using var provider = BuildProvider(_ => { });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CallAsync(provider));
+
+        Assert.StartsWith("The tool's API request GET https://api.example.com/api/status cannot run: a tool runs its API request in process", exception.Message);
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public async Task ACallOutsideAnMcpRequest_IsServedInProcess_NamedAtTheConfiguredBaseUrl()
+    {
+        using var provider = BuildProvider(services => services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["McpTools:BaseUrl"] = "https://api.example.com/" })
+            .Build()));
+        BuildPipeline(provider, context => context.Response.WriteAsync($"{context.Request.Scheme} {context.Request.Host} {context.Request.Path}"));
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = null;
+
+        var result = await provider.GetRequiredService<IMcpHttpInvoker>().GetAsync("/api/status");
+
+        Assert.False(result.IsError, Text(result));
+        Assert.Equal("https api.example.com /api/status", Text(result));
+        Assert.Empty(_primaryRequests);
     }
 
     [Fact]
@@ -191,8 +260,8 @@ public class McpInvokerHttpClientTests
     [Fact]
     public async Task ARedirectThePipelineLeavesAsItIs_ComesBackAsAnErrorResult_AndIsNotFollowedAgain()
     {
-        // The redirect leaves the path base a proxy gave the MCP request, so the pipeline does not follow it. Over HTTP the
-        // invoker follows every redirect to the address it called, which this one is.
+        // The redirect leaves the path base a proxy gave the MCP request, so the pipeline does not follow it. The invoker
+        // follows none itself, though this one leads to the scheme, host and port it named.
         var hits = 0;
         using var provider = BuildProvider(_ => { });
         BuildPipeline(provider, context =>
@@ -319,6 +388,7 @@ public class McpInvokerHttpClientTests
         var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
 
         await startupCheck.StartAsync(CancellationToken.None);
+        await startupCheck.StartedAsync(CancellationToken.None);
 
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(nameof(IHttpMessageHandlerBuilderFilter)));
         Assert.Contains(ClientName, warning.Message);
@@ -329,27 +399,17 @@ public class McpInvokerHttpClientTests
         Assert.Contains("RemoveAllLoggers()", warning.Message);
     }
 
-    [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public async Task TheStartupCheck_DoesNotWarnAboutTheClient_WhenItServesInProcess_OrCallsGoOverHttp(bool isInProcess, bool areFiltersTakenAway)
+    [Fact]
+    public async Task TheStartupCheck_DoesNotWarnAboutTheClient_WhenItServesInProcess()
     {
         var logs = new List<(LogLevel Level, string Message)>();
-        using var provider = BuildProvider(
-            services =>
-            {
-                services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = isInProcess);
-                if (areFiltersTakenAway)
-                {
-                    TakeTheBuilderFiltersAway(services, isReplaced: false);
-                }
-            },
-            logs: logs);
+        using var provider = BuildProvider(_ => { }, logs: logs);
         var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
 
         await startupCheck.StartAsync(CancellationToken.None);
+        await startupCheck.StartedAsync(CancellationToken.None);
 
-        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(nameof(IHttpMessageHandlerBuilderFilter)));
+        Assert.DoesNotContain(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(ClientName));
     }
 
     [Fact]
@@ -406,6 +466,7 @@ public class McpInvokerHttpClientTests
         var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
 
         await startupCheck.StartAsync(CancellationToken.None);
+        await startupCheck.StartedAsync(CancellationToken.None);
 
         var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(ClientName));
         Assert.Contains("IHttpClientFactory registered after AddMcpTools", warning.Message);
@@ -413,51 +474,16 @@ public class McpInvokerHttpClientTests
         Assert.Contains("ConfigurePrimaryHttpMessageHandler", warning.Message);
     }
 
-    [Fact]
-    public async Task TheInvokersRequest_GoesThroughTheAppsHandlers_ToThePrimaryHandler_WhenInProcessCallsAreOff()
-    {
-        using var provider = BuildProvider(services =>
-        {
-            services.Configure<McpScopeOptions>(options => options.AreApiCallsInProcess = false);
-            services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider(ProviderBaseUrl));
-            services.AddHttpClient(ClientName).AddHttpMessageHandler(() => new HeaderSettingHandler(ApiKeyHeader, "secret"));
-        });
-        BuildEchoPipeline(provider);
-
-        var result = await CallAsync(provider);
-
-        Assert.Equal("over http", Text(result));
-        Assert.Equal([$"{ProviderBaseUrl}/api/status secret"], _primaryRequests);
-    }
-
-    [Fact]
-    public async Task AnInvokerFromThePublicConstructor_SendsThroughThePrimaryHandler_OfTheClientThatServesInProcess()
-    {
-        using var provider = BuildProvider(_ => { });
-        BuildEchoPipeline(provider);
-        var accessor = provider.GetRequiredService<IHttpContextAccessor>();
-        accessor.HttpContext = CreateCaller();
-        var invoker = new McpHttpInvoker(
-            provider.GetRequiredService<IHttpClientFactory>().CreateClient(ClientName),
-            new FixedBaseUrlProvider(ProviderBaseUrl),
-            accessor,
-            NullLogger<McpHttpInvoker>.Instance,
-            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()));
-
-        var result = await invoker.GetAsync("/api/status");
-
-        Assert.Equal("over http", Text(result));
-        Assert.Equal([$"{ProviderBaseUrl}/api/status "], _primaryRequests);
-    }
-
     /// <summary>
     /// The app's services with <c>AddMcpTools</c>, and the configuration of the invoker's client registered before or
-    /// after it. The client's primary handler is set by the app after <c>AddMcpTools</c> either way.
+    /// after it. The client's primary handler is set by the app after <c>AddMcpTools</c> either way: one that records every
+    /// request, unless <paramref name="primaryHandler"/> gives another.
     /// </summary>
     private ServiceProvider BuildProvider(
         Action<IServiceCollection> configureClient,
         bool isConfiguredBeforeAddMcpTools = false,
-        List<(LogLevel Level, string Message)>? logs = null)
+        List<(LogLevel Level, string Message)>? logs = null,
+        Func<HttpMessageHandler>? primaryHandler = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(logging =>
@@ -479,7 +505,7 @@ public class McpInvokerHttpClientTests
             configureClient(services);
         }
 
-        services.AddHttpClient(ClientName).ConfigurePrimaryHttpMessageHandler(() => new RecordingPrimaryHandler(_primaryRequests));
+        services.AddHttpClient(ClientName).ConfigurePrimaryHttpMessageHandler(primaryHandler ?? (() => new RecordingPrimaryHandler(_primaryRequests)));
 
         return services.BuildServiceProvider();
     }
@@ -707,21 +733,6 @@ public class McpInvokerHttpClientTests
         public HttpClient CreateClient(string name)
         {
             return new HttpClient(new RecordingPrimaryHandler(_requests));
-        }
-    }
-
-    private sealed class FixedBaseUrlProvider : ISelfBaseUrlProvider
-    {
-        private readonly string _baseUrl;
-
-        public FixedBaseUrlProvider(string baseUrl)
-        {
-            _baseUrl = baseUrl;
-        }
-
-        public string GetBaseUrl()
-        {
-            return _baseUrl;
         }
     }
 }

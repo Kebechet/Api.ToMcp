@@ -3,16 +3,15 @@ using Microsoft.AspNetCore.Http;
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
-/// The innermost handler of the invoker's <see cref="HttpClient"/>, right above its primary handler. It serves a request
-/// the invoker marked with <see cref="ServeInProcess"/> through <see cref="InProcessApiPipeline"/>, after every other
-/// handler of the client has run, and never passes it on to the primary handler. Any other request goes on to the primary
-/// handler, which sends it over HTTP.
+/// The innermost handler of the invoker's <see cref="HttpClient"/>, right above its primary handler. It serves every
+/// request through <see cref="InProcessApiPipeline"/>, after every other handler of the client has run, for the MCP request
+/// the invoker gave it with <see cref="SetCaller"/>, and never passes a request on to the primary handler.
 /// </summary>
 internal sealed class InProcessApiHandler : DelegatingHandler
 {
-    private const string InProcessCallOptionName = "Api.ToMcp.InProcessCall";
+    private const string CallerOptionName = "Api.ToMcp.Caller";
 
-    private static readonly HttpRequestOptionsKey<InProcessCall> InProcessCallKey = new(InProcessCallOptionName);
+    private static readonly HttpRequestOptionsKey<HttpContext> CallerKey = new(CallerOptionName);
 
     private readonly InProcessApiPipeline _pipeline;
 
@@ -22,26 +21,21 @@ internal sealed class InProcessApiHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Marks the request to be served in process, for the tool call that came in <paramref name="caller"/>.
+    /// Gives the request the MCP request the tool call came in, whose connection and path base it carries. A tool call
+    /// outside an MCP request has none.
     /// </summary>
-    public static void ServeInProcess(HttpRequestMessage request, HttpContext? caller)
+    public static void SetCaller(HttpRequestMessage request, HttpContext? caller)
     {
-        request.Options.Set(InProcessCallKey, new InProcessCall(caller));
+        if (caller is not null)
+        {
+            request.Options.Set(CallerKey, caller);
+        }
     }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        if (!request.Options.TryGetValue(InProcessCallKey, out var inProcessCall))
-        {
-            return base.SendAsync(request, cancellationToken);
-        }
+        request.Options.TryGetValue(CallerKey, out var caller);
 
-        return _pipeline.SendAsync(request, inProcessCall.Caller, cancellationToken);
+        return _pipeline.SendAsync(request, caller, cancellationToken);
     }
-
-    /// <summary>
-    /// The mark. It wraps the MCP request, as <see cref="HttpRequestOptions"/> reads a null value as none, and a tool call
-    /// outside an MCP request has none.
-    /// </summary>
-    private sealed record InProcessCall(HttpContext? Caller);
 }

@@ -4,7 +4,9 @@ using Api.ToMcp.Runtime;
 using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Moq.Protected;
@@ -36,13 +38,18 @@ public class McpHttpInvokerScopeTests
         var scopeOptionsMock = new Mock<IOptions<McpScopeOptions>>();
         scopeOptionsMock.Setup(x => x.Value).Returns(options);
 
-        var httpClient = new HttpClient(_httpMessageHandlerMock.Object);
+        // The mocked handler stands for the chain AddMcpTools builds, whose in-process handler the check finds, so every
+        // request goes through the client.
+        var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var pipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance, InProcessRequestDiagnostics.Create(services));
         return new McpHttpInvoker(
-            httpClient,
+            new HttpClient(_httpMessageHandlerMock.Object),
             _baseUrlProviderMock.Object,
             _httpContextAccessorMock.Object,
             _loggerMock.Object,
-            scopeOptionsMock.Object);
+            scopeOptionsMock.Object,
+            pipeline,
+            new InProcessApiHandlerCheck(() => true, () => new InProcessApiHandler(pipeline)));
     }
 
     private void SetupAuthenticatedUser(string claimName, string claimValue)

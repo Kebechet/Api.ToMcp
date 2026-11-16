@@ -8,7 +8,6 @@ using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Options;
 using ModelContextProtocol.Protocol;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,6 +15,12 @@ using HeaderNames = Microsoft.Net.Http.Headers.HeaderNames;
 
 namespace Api.ToMcp.Runtime.Services;
 
+/// <summary>
+/// The <see cref="IMcpHttpInvoker"/> that <c>AddMcpTools</c> registers, which runs a tool's API request in process,
+/// through the app's own request pipeline, after the message handlers of its named <see cref="HttpClient"/>,
+/// <c>IMcpHttpInvoker</c>. Only <c>AddMcpTools</c> creates it; registering it again as a typed client, with
+/// <c>services.AddHttpClient&lt;IMcpHttpInvoker, McpHttpInvoker&gt;()</c>, makes every tool call fail.
+/// </summary>
 public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
 {
     private const string LoopPreventionHeader = McpLoopPreventionMiddleware.LoopPreventionHeader;
@@ -27,24 +32,9 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<McpHttpInvoker> _logger;
     private readonly McpScopeOptions _scopeOptions;
-    private readonly InProcessApiPipeline? _inProcessPipeline;
+    private readonly InProcessApiPipeline _inProcessPipeline;
     private readonly InProcessApiHandlerCheck? _inProcessHandlerCheck;
-    private readonly string _forwardedProtoHeaderName;
     private readonly HashSet<string> _proxyHeaderNames;
-
-    /// <summary>
-    /// An invoker that sends every request over HTTP. Only the invoker <c>AddMcpTools</c> registers is handed the app's
-    /// request pipeline to serve the requests in process.
-    /// </summary>
-    public McpHttpInvoker(
-        HttpClient httpClient,
-        ISelfBaseUrlProvider baseUrlProvider,
-        IHttpContextAccessor httpContextAccessor,
-        ILogger<McpHttpInvoker> logger,
-        IOptions<McpScopeOptions> scopeOptions)
-        : this(httpClient, baseUrlProvider, httpContextAccessor, logger, scopeOptions, inProcessPipeline: null)
-    {
-    }
 
     /// <summary>
     /// The invoker <c>AddMcpTools</c> registers, which serves a request in process through
@@ -58,9 +48,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         IHttpContextAccessor httpContextAccessor,
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions,
-        InProcessApiPipeline? inProcessPipeline,
+        InProcessApiPipeline inProcessPipeline,
         InProcessApiHandlerCheck? inProcessHandlerCheck = null,
-        string? forwardedProtoHeaderName = null,
         IEnumerable<string>? proxyHeaderNames = null)
     {
         _httpClient = httpClient;
@@ -70,7 +59,6 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         _scopeOptions = scopeOptions.Value;
         _inProcessPipeline = inProcessPipeline;
         _inProcessHandlerCheck = inProcessHandlerCheck;
-        _forwardedProtoHeaderName = forwardedProtoHeaderName ?? ForwardedHeadersDefaults.XForwardedProtoHeaderName;
         _proxyHeaderNames = new HashSet<string>(proxyHeaderNames ?? [], StringComparer.OrdinalIgnoreCase);
     }
 
@@ -139,20 +127,12 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
             }
         }
 
-        var inProcessPipeline = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured
-            ? _inProcessPipeline
-            : null;
-        var url = inProcessPipeline is not null && caller is not null && caller.Request.Host.HasValue
+        var url = caller is not null && caller.Request.Host.HasValue
             ? BuildInProcessUrl(caller.Request, request.Route)
             : BuildUrl(request.Route);
 
         using var message = new HttpRequestMessage(request.Method, url);
         ConfigureRequest(message);
-        if (inProcessPipeline is null)
-        {
-            ForwardTheScheme(message, caller);
-        }
-
         AddHeaders(message, request.Headers);
         if (request.FormBody is not null && mcpRequestCulture is not null)
         {
@@ -163,9 +143,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
 
         _logger.LogDebug("MCP invoking {Method} {Url}", request.Method.Method, url);
 
-        using var response = inProcessPipeline is not null
-            ? await SendInProcessAsync(inProcessPipeline, message, caller, ct)
-            : await SendOverHttpAsync(message, request, ct);
+        using var response = await SendInProcessAsync(message, caller, ct);
         return await HandleResponse(response, ct);
     }
 
@@ -243,73 +221,22 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     }
 
     /// <summary>
-    /// Sends the request over HTTP and follows a redirect as <see cref="InProcessApiPipeline"/> does: only back to the
-    /// scheme, host and port the tool called, so an action that redirects to a URL from its input cannot send the tool's
-    /// request to another server. Any other redirect comes back as it is. The invoker's client follows none itself,
-    /// unless the app gave it a handler of its own that does. Each hop sends the JSON body or the form of
-    /// <paramref name="body"/> again, unless the redirect turns the request into a GET.
+    /// Sends the request through the invoker's client, for the tool call that came in <paramref name="caller"/>: it passes
+    /// the client's handlers and gets its default headers and <see cref="HttpClient.Timeout"/>, and
+    /// <see cref="InProcessApiHandler"/> serves it in process in place of the primary handler. The pipeline follows each
+    /// redirect back into the app itself, so the response that comes back is final. When the client lacks that handler, or
+    /// comes from a client factory the app registered, the request could reach a primary handler of the app's that sends it
+    /// over the network, so it is served without the client instead.
     /// </summary>
-    private async Task<HttpResponseMessage> SendOverHttpAsync(HttpRequestMessage request, McpHttpRequest body, CancellationToken ct)
-    {
-        var sent = request;
-        McpHttpRequest? hopBody = body;
-        var response = await _httpClient.SendAsync(sent, ct);
-        for (var redirections = 0; redirections < InProcessApiPipeline.MaxAutomaticRedirections; redirections++)
-        {
-            var target = InProcessApiPipeline.GetRedirectTarget(response, sent.RequestUri!, PathString.Empty);
-            if (target is null)
-            {
-                return response;
-            }
-
-            var isRedirectedAsGet = InProcessApiPipeline.IsRedirectedAsGet((int)response.StatusCode, sent.Method);
-            if (isRedirectedAsGet)
-            {
-                hopBody = null;
-            }
-
-            // HttpClient sends a request only once, so each hop is a new one. The hop leads back to the address the tool
-            // called, so it keeps Authorization, as in process.
-            var next = new HttpRequestMessage(isRedirectedAsGet ? HttpMethod.Get : sent.Method, target);
-            foreach (var header in sent.Headers)
-            {
-                next.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-
-            if (hopBody is not null)
-            {
-                next.Content = CreateContent(hopBody);
-            }
-
-            response.Dispose();
-            if (sent != request)
-            {
-                sent.Dispose();
-            }
-
-            sent = next;
-            response = await _httpClient.SendAsync(sent, ct);
-        }
-
-        return response;
-    }
-
-    /// <summary>
-    /// Sends the request through the invoker's client, marked to be served in process: it passes the client's handlers and
-    /// gets its default headers and <see cref="HttpClient.Timeout"/>, and <see cref="InProcessApiHandler"/> serves it in
-    /// place of the primary handler. The pipeline follows each redirect back into the app itself, so the response that
-    /// comes back is final. When the client lacks that handler, or comes from a client factory the app registered, the
-    /// marked request could reach the primary handler and leave the process, so it is served without the client instead.
-    /// </summary>
-    private Task<HttpResponseMessage> SendInProcessAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
+    private Task<HttpResponseMessage> SendInProcessAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
     {
         var isServedByTheClient = _inProcessHandlerCheck is not null && _inProcessHandlerCheck.IsInTheClientsChain;
         if (!isServedByTheClient)
         {
-            return SendWithoutTheClientAsync(pipeline, request, caller, ct);
+            return SendWithoutTheClientAsync(request, caller, ct);
         }
 
-        InProcessApiHandler.ServeInProcess(request, caller);
+        InProcessApiHandler.SetCaller(request, caller);
 
         return _httpClient.SendAsync(request, ct);
     }
@@ -319,13 +246,13 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     /// its <see cref="HttpClient.Timeout"/>, and fails a timed-out or canceled call with the exceptions
     /// <see cref="HttpClient"/> throws, so the call ends as it does through the client.
     /// </summary>
-    private async Task<HttpResponseMessage> SendWithoutTheClientAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendWithoutTheClientAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_httpClient.Timeout);
         try
         {
-            return await pipeline.SendAsync(request, caller, timeout.Token);
+            return await _inProcessPipeline.SendAsync(request, caller, timeout.Token);
         }
         catch (OperationCanceledException exception) when (ct.IsCancellationRequested)
         {
@@ -377,7 +304,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     }
 
     /// <summary>
-    /// The route at the provider's address, used as given, whatever host the MCP request names.
+    /// The route at the provider's address, which names a request outside an MCP request, or under one without a host, to
+    /// the app. The request runs in process like any other, so the address is never called.
     /// </summary>
     private string BuildUrl(string route)
     {
@@ -392,24 +320,6 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     private static string BuildInProcessUrl(HttpRequest caller, string route)
     {
         return caller.Scheme + Uri.SchemeDelimiter + caller.Host.ToUriComponent() + caller.PathBase.ToUriComponent() + NormalizeRoute(route);
-    }
-
-    /// <summary>
-    /// Tells the app that a request at an <c>http://</c> address on loopback stands for an MCP request that came in over
-    /// <c>https://</c>, whatever provider gave the address.
-    /// </summary>
-    private void ForwardTheScheme(HttpRequestMessage request, HttpContext? caller)
-    {
-        // When behind a reverse proxy, Kestrel only listens on HTTP but UseHttpsRedirection()
-        // redirects internal self-calls to HTTPS which doesn't exist locally. The app trusts the
-        // proxy's X-Forwarded-Proto, and ForwardedHeadersOptions trusts loopback, where a call to
-        // a loopback address comes from, by default, so the header keeps the call on HTTPS as its
-        // MCP request was. Off loopback the app would not trust it.
-        var url = request.RequestUri!;
-        if (caller is not null && caller.Request.IsHttps && url.Scheme == Uri.UriSchemeHttp && url.IsLoopback)
-        {
-            request.Headers.Add(_forwardedProtoHeaderName, Uri.UriSchemeHttps);
-        }
     }
 
     private static StringContent CreateJsonContent(string jsonBody)

@@ -10,6 +10,7 @@ using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.CodeAnalysis;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -475,16 +476,20 @@ namespace TestApi
     }
 
     /// <summary>
-    /// An invoker the app constructs itself, whose client answers every request with 200 without sending it.
+    /// An invoker whose client answers every request with 200 without serving it.
     /// </summary>
     private static McpHttpInvoker CreateInvokerThatSendsNothing()
     {
+        var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var pipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance, InProcessRequestDiagnostics.Create(services));
         return new McpHttpInvoker(
             new HttpClient(new NoRequestHandler()),
             new FixedBaseUrl(),
             new HttpContextAccessor(),
             NullLogger<McpHttpInvoker>.Instance,
-            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()));
+            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()),
+            pipeline,
+            new InProcessApiHandlerCheck(() => true, () => new InProcessApiHandler(pipeline)));
     }
 
     private sealed class NoRequestHandler : HttpMessageHandler

@@ -38,7 +38,8 @@ public static class McpExtensions
     /// Registers MCP tool services, among them the invoker, which sends a tool's API request through the message handlers
     /// of its named <see cref="HttpClient"/> and serves it in process, through the request pipeline the host builds for the
     /// server, and every tool of the assembly: the generated ones and any hand-written
-    /// <see cref="McpServerToolTypeAttribute"/> class.
+    /// <see cref="McpServerToolTypeAttribute"/> class. The request never leaves the process: the client's primary handler
+    /// refuses every request, and the invoker cannot be registered again as a typed client.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
@@ -56,22 +57,21 @@ public static class McpExtensions
         services.TryAddSingleton<InProcessApiPipeline>();
         CaptureThePipelineTheHostBuilds(services);
         var invokerClient = services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) =>
-            {
-                var forwardedHeaders = serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
-                var certificateForwarding = serviceProvider.GetRequiredService<IOptions<CertificateForwardingOptions>>().Value;
+        {
+            var forwardedHeaders = serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
+            var certificateForwarding = serviceProvider.GetRequiredService<IOptions<CertificateForwardingOptions>>().Value;
 
-                return new McpHttpInvoker(
-                    httpClient,
-                    serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
-                    serviceProvider.GetRequiredService<IHttpContextAccessor>(),
-                    serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
-                    serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
-                    serviceProvider.GetRequiredService<InProcessApiPipeline>(),
-                    serviceProvider.GetRequiredService<InProcessApiHandlerCheck>(),
-                    forwardedHeaders.ForwardedProtoHeaderName,
-                    ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
-            })
-            .ConfigurePrimaryHttpMessageHandler(LeaveRedirectsToTheInvoker);
+            return new McpHttpInvoker(
+                httpClient,
+                serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
+                serviceProvider.GetRequiredService<IHttpContextAccessor>(),
+                serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
+                serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
+                serviceProvider.GetRequiredService<InProcessApiPipeline>(),
+                serviceProvider.GetRequiredService<InProcessApiHandlerCheck>(),
+                ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
+        });
+        services.TryAddSingleton<ITypedHttpClientFactory<McpHttpInvoker>, TypedInvokerClientRefusal>();
         ServeInProcessBelowEveryHandler(services, invokerClient.Name);
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
@@ -119,32 +119,13 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Stops the invoker's client from following redirects, so the invoker follows only those back to the address the
-    /// tool called. A primary handler the app sets for the client after <see cref="AddMcpTools"/> replaces this one, and
-    /// keeps its own choice.
-    /// </summary>
-    private static void LeaveRedirectsToTheInvoker(HttpMessageHandler handler, IServiceProvider services)
-    {
-        var socketsHandler = handler as SocketsHttpHandler;
-        if (socketsHandler is not null)
-        {
-            socketsHandler.AllowAutoRedirect = false;
-        }
-
-        var clientHandler = handler as HttpClientHandler;
-        if (clientHandler is not null)
-        {
-            clientHandler.AllowAutoRedirect = false;
-        }
-    }
-
-    /// <summary>
-    /// Has <see cref="InProcessApiHandler"/> serve the requests the invoker marks for in process, below every other handler
-    /// of its client. The client factory runs its first filter last, after the client's own configuration and every other
-    /// filter, so <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one
-    /// that adds the factory's logging handlers. A filter registered later already runs before it. App code that removes
-    /// filters after <see cref="AddMcpTools"/> can take this one away too, and an <see cref="IHttpClientFactory"/> the app
-    /// registers creates clients without it, which <see cref="InProcessApiHandlerCheck"/> finds.
+    /// Has <see cref="InProcessApiHandler"/> serve every request of the invoker's client, below every other handler of the
+    /// client, and <see cref="RefusingPrimaryHandler"/> take the place of its primary handler. The client factory runs its
+    /// first filter last, after the client's own configuration and every other filter, so
+    /// <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one that adds the
+    /// factory's logging handlers. A filter registered later already runs before it. App code that removes filters after
+    /// <see cref="AddMcpTools"/> can take this one away too, and an <see cref="IHttpClientFactory"/> the app registers
+    /// creates clients without it, which <see cref="InProcessApiHandlerCheck"/> finds.
     /// </summary>
     private static void ServeInProcessBelowEveryHandler(IServiceCollection services, string clientName)
     {
