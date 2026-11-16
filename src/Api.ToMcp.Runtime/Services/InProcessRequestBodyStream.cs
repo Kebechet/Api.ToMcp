@@ -4,11 +4,11 @@ using Microsoft.AspNetCore.Http.Features;
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
-/// The body of an in-process request, held to the limit the app sets, as with <c>[RequestSizeLimit]</c>, as Kestrel
-/// holds a body to it: reading a body over the limit throws the <see cref="BadHttpRequestException"/> with 413 that
-/// Kestrel throws, and the limit is fixed once reading began. Without a limit set, the body is read whole: it is already
-/// in memory, and no larger than the MCP request the server took it from. Synchronous reads are refused unless the request
-/// allows them, as Kestrel refuses them.
+/// The body of an in-process request, held to a limit as Kestrel holds a body to it: reading a body over the limit throws
+/// the <see cref="BadHttpRequestException"/> with 413 that Kestrel throws, and the limit is fixed once reading began. The
+/// limit starts at the server's, such as Kestrel's <c>MaxRequestBodySize</c>, and the app may set another for the request,
+/// as with <c>[RequestSizeLimit]</c>. Without one, as under <c>TestServer</c>, the body is read whole. Synchronous reads
+/// are refused unless the request allows them, as Kestrel refuses them.
 /// </summary>
 internal sealed class InProcessRequestBodyStream : Stream, IHttpMaxRequestBodySizeFeature
 {
@@ -17,10 +17,11 @@ internal sealed class InProcessRequestBodyStream : Stream, IHttpMaxRequestBodySi
     private long? _maxRequestBodySize;
     private bool _isReadStarted;
 
-    public InProcessRequestBodyStream(byte[] body, IHttpBodyControlFeature bodyControl)
+    public InProcessRequestBodyStream(byte[] body, IHttpBodyControlFeature bodyControl, long? maxRequestBodySize)
     {
         _body = new MemoryStream(body, writable: false);
         _bodyControl = bodyControl;
+        _maxRequestBodySize = maxRequestBodySize;
     }
 
     public bool IsReadOnly => _isReadStarted;

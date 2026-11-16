@@ -703,13 +703,13 @@ The request is addressed as the MCP request was:
 | Scheme, host and path base | The MCP request's, as your app saw them after its forwarded-headers middleware, so the app routes, filters and redirects the tool's request as it did the MCP request. The part of the path base that `Map` or `UsePathBase` took from the MCP request's path is put back in front of the path, so the request takes the same branch; one from `X-Forwarded-Prefix` or the IIS application stays its path base |
 | Connection | The MCP request's: the client's address and port, the server's, and the client certificate |
 | Method, path, query string and body | The tool's: a JSON body, or the `[FromForm]` arguments as a form; see [Where each argument is sent](#where-each-argument-is-sent) |
-| Headers | `Authorization`, copied from the MCP request, `X-MCP-Internal-Call: true`, and the `[FromHeader]` arguments, then the `DefaultRequestHeaders` of the invoker's `HttpClient` and what its message handlers set; see [What the tool's request carries](#what-the-tools-request-carries) |
+| Headers | `Authorization`, copied from the MCP request, `X-MCP-Internal-Call: true`, and the `[FromHeader]` arguments, then the `DefaultRequestHeaders` of the invoker's `HttpClient` and what its message handlers set; see [What the tool's request carries](#what-the-tools-request-carries). Behind IIS out of process, also the MCP request's `MS-ASPNETCORE-TOKEN`; see [Under IIS](#under-iis) |
 
-It gets its own `HttpContext`, `RequestServices` scope and `TraceIdentifier`, and starts in an execution context of its own, as a request the server receives does. It also gets what ASP.NET Core's hosting gives such a request, through hosting's own instruments: the log entries `Request starting` and `Request finished`, a server span of its own, a child of the tool call's `Activity`, and its place in the metrics `http.server.request.duration` and `http.server.active_requests`. Each marks it with `api_to_mcp.tool_request`, so dashboards and log searches count it with no change and can still tell it apart; see [Correlating Tool Calls with API Logs](#correlating-tool-calls-with-api-logs). What it does not get is what the server does around the pipeline: no Kestrel connection middleware or server-wide limit, TLS handshake or IIS module applies to it, and hosting's `EventSource` counters, such as `total-requests` in `dotnet-counters`, do not count it.
+It gets its own `HttpContext`, `RequestServices` scope and `TraceIdentifier`, and starts in an execution context of its own, as a request the server receives does. It also gets what ASP.NET Core's hosting gives such a request, through hosting's own instruments: the log entries `Request starting` and `Request finished`, a server span of its own, a child of the tool call's `Activity`, and its place in the metrics `http.server.request.duration` and `http.server.active_requests`. Each marks it with `api_to_mcp.tool_request`, so dashboards and log searches count it with no change and can still tell it apart; see [Correlating Tool Calls with API Logs](#correlating-tool-calls-with-api-logs). The server's checks of a connection, such as Kestrel's connection middleware, its connection limits and the TLS handshake, do not apply: the request runs on the MCP request's connection, which already passed them. Native IIS modules do not run for it, and the Windows user IIS authenticated does not reach it; see [Under IIS](#under-iis). Hosting's `EventSource` counters, such as `total-requests` in `dotnet-counters`, do not count it. The server's limits of a single request do apply, as [below](#the-servers-limits); a request they refuse gets no hosting log, span or metric, as Kestrel's refusal gets none.
 
 What Kestrel decides about a request it serves holds for the tool's request too:
 
-- An exception your API lets escape before the response starts is answered with a bare `500`, or with the status a `BadHttpRequestException` carries, such as the `413` of a body over an action's `[RequestSizeLimit]`.
+- An exception your API lets escape before the response starts is answered with a bare `500`, or with the status a `BadHttpRequestException` carries, such as the `413` of a body over an action's `[RequestSizeLimit]` or the server's `MaxRequestBodySize`.
 - What the app wrote to `Response.BodyWriter` is sent when it ends, flushed or not.
 - Reading or writing the body synchronously throws, unless the server's `AllowSynchronousIO` option or the request's `IHttpBodyControlFeature` allows it.
 - The response headers are read-only once the response has started.
@@ -768,6 +768,35 @@ app.UseRateLimiter();
 Do not leave the tool's requests without a limiter: a client that drops its MCP request frees its permit while the tool's request keeps running, so the client could run any number of them at once.
 
 When only your API's endpoints are limited, with `RequireRateLimiting` or `[EnableRateLimiting]`, the MCP request holds no permit, so the client's own partition needs no change: the tool's request counts against the client as its own request to the API does. If you want the tool's requests in a partition of their own anyway, key it by the tool and the client together, such as `ToolName` and the address, never by `ToolName` alone, which every client would share.
+
+### The server's limits
+
+The limits the server holds a single request to hold the tool's request too, as they hold the same request sent to the server. The server is the one the host runs, the `IServer` it starts, not one whose options are configured: a `TestServer` under `WebApplicationFactory` holds the request to no limit, though the web host configures Kestrel's options there as well.
+
+| Server | Limits that hold the tool's request |
+|---|---|
+| Kestrel | `KestrelServerOptions.Limits`: `MaxRequestLineSize` (8 KB), `MaxRequestHeadersTotalSize` (32 KB), `MaxRequestHeaderCount` (100) and `MaxRequestBodySize` (30,000,000 bytes) |
+| IIS in process | `IISServerOptions.MaxRequestBodySize` (30,000,000 bytes). IIS's request filtering in `web.config`, its `maxAllowedContentLength`, `maxUrl`, `maxQueryString` and header limits, and the limits HTTP.sys takes from the registry under IIS hold a request outside the app, so they do not apply |
+| HTTP.sys | `HttpSysOptions.MaxRequestBodySize` (30,000,000 bytes). The limits HTTP.sys takes from the registry, such as `MaxFieldLength` and `MaxRequestBytes`, do not apply |
+| `TestServer`, or a server of another kind | None |
+
+The tool's request is an HTTP/1.1 request, as `HttpContext.Request.Protocol` tells the app, and Kestrel's limits measure it as `HttpClient` writes one:
+
+- The request line is the method, the target and `HTTP/1.1`, separated by spaces and ended by a line break. The target is the path and the query string, percent-encoded as sent, such as `/api/users/a%40b?q=x%20y`, without a path base that a proxy gave the MCP request through a header such as `X-Forwarded-Prefix`.
+- Each header is one line of its name, `: ` and its values separated by `, `, ended by a line break. Every header counts, `Host`, `X-MCP-Internal-Call`, `Authorization`, the `DefaultRequestHeaders` of the invoker's `HttpClient`, the headers its message handlers set and the body's `Content-Type` and `Content-Length` among them; the empty line that ends them does not.
+
+A request at a limit passes. One that is a byte or a header over is answered before the app sees it, as Kestrel answers it, without a body: `414` for the request line and `431` for the headers. The tool returns `HTTP 414: URI Too Long` or `HTTP 431: Request Header Fields Too Large` as its error result, and the refusal is logged at `Debug`, the level Kestrel logs its own at, under the category `Api.ToMcp.Runtime.Services.InProcessApiPipeline`.
+
+The body is held to the server's `MaxRequestBodySize` unless an action's `[RequestSizeLimit]` or `[DisableRequestSizeLimit]` sets another limit for it. Reading a larger body throws a `BadHttpRequestException`, which is answered `413` unless the app handles it.
+
+### Under IIS
+
+Behind IIS out of process, the ASP.NET Core Module forwards every request to Kestrel with its pairing token in the header `MS-ASPNETCORE-TOKEN`, and `UseIISIntegration`, which the default host turns on there, answers `400` to a request without it. The tool's request carries the token of the MCP request, which counts toward Kestrel's header limits, as on the request the module forwards. A tool called outside an MCP request has no token to carry, so it gets `HTTP 400: Bad Request`.
+
+The Windows user IIS authenticated does not reach the tool's request, so an action that needs Windows authentication is not served through a tool:
+
+- Out of process, the module passes each request's user as a token handle in `MS-ASPNETCORE-WINAUTHTOKEN`, which `UseIISIntegration` closes once it has read it, so the tool's request comes without a user, and IIS's `Windows` scheme challenges it with `401`.
+- In process, IIS's `Windows` authentication handler reads the user from the request IIS gave the app and throws on the tool's request, so the tool gets `HTTP 500` wherever that handler runs: when an action challenges the request, and on every call once `AddAuthentication(IISServerDefaults.AuthenticationScheme)` makes it the default scheme, which `UseAuthentication` runs for each request.
 
 ## Base URL Resolution
 
@@ -1103,7 +1132,7 @@ To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerG
 
 `An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. In process, the cause is your API: it aborted the tool's request, or its response failed after it started; an exception it lets escape before then comes back as `HTTP 500: ...` instead. Or a message handler of the invoker's `HttpClient` threw, such as the `TimeoutRejectedException` or `BrokenCircuitException` of `AddStandardResilienceHandler`; see [Custom HTTP Invocation](#custom-http-invocation). Over HTTP (with `AreApiCallsInProcess` off), the usual cause is the call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
 
-`HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation.
+`HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation. `HTTP 414: URI Too Long` and `HTTP 431: Request Header Fields Too Large` are the exception: the server's limits refused the request before your API saw it; see [Troubleshooting](#troubleshooting).
 
 ## Troubleshooting
 
@@ -1244,6 +1273,11 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 
 **Tool calls return `429`, or `503`, from a rate limiter.**
 - In process, the tool's request carries the MCP request's connection, so a limiter partitioned by client address or connection counts it against the client that still holds the MCP request. `503` is the status the limiter refuses with unless `RejectionStatusCode` is set. Give the tool's requests a partition of their own for each client, by `HttpContext.IsMcpToolRequest()` and the client's address; see [Telling a tool's request apart](#telling-a-tools-request-apart).
+
+**Tool calls return `HTTP 414: URI Too Long` or `HTTP 431: Request Header Fields Too Large`.**
+- The tool's request is over a limit of the server, which refuses it as it refuses the same request sent to it, before your API sees it; see [The server's limits](#the-servers-limits). Kestrel answers `414` for a request line over `MaxRequestLineSize`, 8 KB by default, which long route values or query string arguments make, percent-encoded. It answers `431` for headers over `MaxRequestHeadersTotalSize`, 32 KB, or more than `MaxRequestHeaderCount`, 100: the `[FromHeader]` arguments and the `Authorization` header copied from the MCP request count, with `Host`, `X-MCP-Internal-Call`, the `DefaultRequestHeaders` of the invoker's `HttpClient` and the headers its message handlers set.
+- Raise the limit for the server, such as `builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestLineSize = 16 * 1024)`, or have the action read such a value from the body, which only `MaxRequestBodySize` limits.
+- `TestServer` has none of these limits, so a test under `WebApplicationFactory` passes a call that Kestrel refuses.
 
 ## How It Works
 

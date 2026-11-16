@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Net.Http.Headers;
 
@@ -15,9 +16,11 @@ namespace Api.ToMcp.Runtime.Services;
 /// </summary>
 /// <remarks>
 /// The request gets the logs, the span and the metrics hosting gives a request the server receives, through
-/// <see cref="InProcessRequestDiagnostics"/>, and its span is a child of the tool call's <see cref="Activity"/>. Nothing the
-/// server does before the pipeline applies to it: Kestrel's connection middleware and server-wide limits, TLS, or an IIS
-/// module.
+/// <see cref="InProcessRequestDiagnostics"/>, and its span is a child of the tool call's <see cref="Activity"/>. The
+/// server's limits of a request hold it, as <see cref="ServerRequestLimits"/> says; a request they refuse never reaches
+/// hosting, as with Kestrel, so it gets no log, span or metric. What the server does on the connection before the pipeline,
+/// such as Kestrel's connection middleware and the TLS handshake, does not apply, as the request runs on the MCP request's
+/// connection, which passed them. Nor does an IIS module.
 /// </remarks>
 internal sealed class InProcessApiPipeline
 {
@@ -26,10 +29,17 @@ internal sealed class InProcessApiPipeline
     /// </summary>
     internal const int MaxAutomaticRedirections = 50;
 
+    /// <summary>
+    /// The header in which the ASP.NET Core Module passes its pairing token to an app behind IIS out of process, which
+    /// ASP.NET Core names only privately.
+    /// </summary>
+    private const string IisPairingTokenHeader = "MS-ASPNETCORE-TOKEN";
+
     private readonly IHttpContextFactory _httpContextFactory;
     private readonly ILogger<InProcessApiPipeline> _logger;
     private readonly InProcessRequestDiagnostics _diagnostics;
     private RequestDelegate? _application;
+    private ServerRequestLimits _serverLimits = ServerRequestLimits.None;
 
     public InProcessApiPipeline(IHttpContextFactory httpContextFactory, ILogger<InProcessApiPipeline> logger, InProcessRequestDiagnostics diagnostics)
     {
@@ -43,8 +53,11 @@ internal sealed class InProcessApiPipeline
     /// </summary>
     public bool IsCaptured => _application is not null;
 
-    public void Capture(RequestDelegate application)
+    /// <param name="application">The pipeline the host built for the server.</param>
+    /// <param name="serverLimits">The limits of the server the pipeline was built for, which hold every request.</param>
+    public void Capture(RequestDelegate application, ServerRequestLimits serverLimits)
     {
+        _serverLimits = serverLimits;
         _application = application;
     }
 
@@ -177,7 +190,7 @@ internal sealed class InProcessApiPipeline
     }
 
     /// <summary>
-    /// Serves one request, without following a redirect.
+    /// Serves one request, without following a redirect, unless the server's limits refuse it before the app sees it.
     /// </summary>
     private async Task<HttpResponseMessage> ServeAsync(
         RequestDelegate application,
@@ -187,7 +200,15 @@ internal sealed class InProcessApiPipeline
         CancellationToken cancellationToken)
     {
         var startTimestamp = Stopwatch.GetTimestamp();
-        var exchange = await InProcessExchange.CreateAsync(request, caller, forwardedPathBase, cancellationToken);
+        var serverLimits = _serverLimits;
+        var exchange = await InProcessExchange.CreateAsync(request, caller, forwardedPathBase, serverLimits.MaxRequestBodySize, cancellationToken);
+        var refusal = serverLimits.GetRefusal(exchange.Request);
+        if (refusal is not null)
+        {
+            exchange.Dispose();
+            return AnswerRefusal(request, refusal);
+        }
+
         var callerActivity = Activity.Current;
 
         Task<Exception?> serving;
@@ -223,6 +244,29 @@ internal sealed class InProcessApiPipeline
             Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
 
         return exchange.CreateResponseMessage(request);
+    }
+
+    /// <summary>
+    /// Answers a request the server's limits refuse as Kestrel answers it: with the status and no body, logged at the level
+    /// Kestrel logs its own refusal at, under this category rather than Kestrel's.
+    /// </summary>
+    private HttpResponseMessage AnswerRefusal(HttpRequestMessage request, ServerRequestLimits.Refusal refusal)
+    {
+        _logger.LogDebug(
+            "Refused the tool's API request {Method} {Url} in process with {StatusCode}, as the server refuses a request over its limits: {Reason}",
+            request.Method.Method,
+            request.RequestUri,
+            refusal.StatusCode,
+            refusal.Reason);
+
+        // Kestrel writes ASP.NET Core's reason phrase, which for 414 is not the one HttpResponseMessage gives itself.
+        return new HttpResponseMessage((HttpStatusCode)refusal.StatusCode)
+        {
+            RequestMessage = request,
+            Version = HttpVersion.Version11,
+            ReasonPhrase = ReasonPhrases.GetReasonPhrase(refusal.StatusCode),
+            Content = new ByteArrayContent([])
+        };
     }
 
     /// <summary>
@@ -335,6 +379,8 @@ internal sealed class InProcessApiPipeline
 
         public FeatureCollection Features { get; }
 
+        public IHttpRequestFeature Request => Features.Get<IHttpRequestFeature>()!;
+
         public InProcessResponse Response { get; }
 
         public StreamResponseBodyFeature ResponseBody { get; }
@@ -345,6 +391,7 @@ internal sealed class InProcessApiPipeline
             HttpRequestMessage request,
             HttpContext? caller,
             PathString forwardedPathBase,
+            long? maxRequestBodySize,
             CancellationToken cancellationToken)
         {
             var uri = request.RequestUri ?? throw new ArgumentException("The request has no URI.", nameof(request));
@@ -367,7 +414,7 @@ internal sealed class InProcessApiPipeline
             {
                 AllowSynchronousIO = caller?.Features.Get<PipelineEntryFeature>()?.AllowSynchronousIO ?? false
             };
-            var requestBody = new InProcessRequestBodyStream(body, bodyControl);
+            var requestBody = new InProcessRequestBodyStream(body, bodyControl, maxRequestBodySize);
             var requestFeature = new HttpRequestFeature
             {
                 Protocol = HttpProtocol.Http11,
@@ -376,7 +423,7 @@ internal sealed class InProcessApiPipeline
                 PathBase = pathBase.Value ?? string.Empty,
                 Path = path.Value ?? string.Empty,
                 QueryString = uri.Query,
-                RawTarget = path.ToUriComponent() + uri.Query,
+                RawTarget = GetRawTarget(uri, isUnderForwardedPathBase ? pathBase : PathString.Empty),
                 Body = requestBody
             };
             requestFeature.Headers.Host = request.Headers.Host ?? uri.Authority;
@@ -393,6 +440,14 @@ internal sealed class InProcessApiPipeline
                 }
 
                 requestFeature.Headers.ContentLength = body.Length;
+            }
+
+            // Behind IIS out of process, the ASP.NET Core Module puts its pairing token on every request it forwards, and
+            // UseIISIntegration refuses a request without it. The tool's request came in with the MCP request, so it carries
+            // that token. Not the module's MS-ASPNETCORE-WINAUTHTOKEN: the middleware closes that handle once it has read it.
+            if (caller is not null && caller.Request.Headers.TryGetValue(IisPairingTokenHeader, out var pairingToken))
+            {
+                requestFeature.Headers[IisPairingTokenHeader] = pairingToken;
             }
 
             var response = new InProcessResponse();
@@ -422,6 +477,24 @@ internal sealed class InProcessApiPipeline
             }
 
             return new InProcessExchange(features, response, responseBody, lifetime);
+        }
+
+        /// <summary>
+        /// The request target a client sends for the URI, which the server reads as it arrives: the path and the query
+        /// percent-encoded as the URI holds them, as <see cref="HttpClient"/> sends them, without the segments of the path
+        /// base the request starts with.
+        /// </summary>
+        private static string GetRawTarget(Uri uri, PathString pathBase)
+        {
+            var path = uri.AbsolutePath;
+            var pathBaseSegments = pathBase.Value?.Count(x => x == RouteTokens.PathSeparator) ?? 0;
+            var pathStart = 0;
+            for (var i = 0; i < pathBaseSegments && pathStart >= 0; i++)
+            {
+                pathStart = path.IndexOf(RouteTokens.PathSeparator, pathStart + 1);
+            }
+
+            return (pathStart < 0 ? string.Empty : path[pathStart..]) + uri.Query;
         }
 
         public HttpResponseMessage CreateResponseMessage(HttpRequestMessage request)
