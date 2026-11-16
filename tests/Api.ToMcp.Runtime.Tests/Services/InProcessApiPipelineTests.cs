@@ -25,6 +25,12 @@ public class InProcessApiPipelineTests
     private const string SynchronousWrite = "write";
     private const string SynchronousFlush = "flush";
 
+    /// <summary>
+    /// How long a test waits for the app to start serving a request, so a request that never reaches the app fails the
+    /// test instead of hanging it.
+    /// </summary>
+    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public void IsCaptured_IsFalse_UntilTheAppsPipelineIsBuilt()
     {
@@ -655,7 +661,7 @@ public class InProcessApiPipelineTests
         using var cancellation = new CancellationTokenSource();
 
         var sending = pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, cancellation.Token);
-        await started.Task;
+        await started.Task.WaitAsync(StartTimeout);
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending);
@@ -684,7 +690,7 @@ public class InProcessApiPipelineTests
         using var cancellation = new CancellationTokenSource();
 
         var sending = pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller: null, cancellation.Token);
-        await started.Task;
+        await started.Task.WaitAsync(StartTimeout);
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending.WaitAsync(TimeSpan.FromSeconds(10)));

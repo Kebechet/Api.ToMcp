@@ -22,6 +22,12 @@ public class McpHttpInvokerInProcessTests
 {
     private const string ProviderBaseUrl = "http://localhost:5000";
 
+    /// <summary>
+    /// How long a test waits for the app to start serving a request, so a request that never reaches the app fails the
+    /// test instead of hanging it.
+    /// </summary>
+    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(10);
+
     private readonly HttpContextAccessor _accessor = new();
     private readonly RecordingHandler _httpHandler = new();
 
@@ -97,7 +103,7 @@ public class McpHttpInvokerInProcessTests
         try
         {
             var calling = invoker.GetAsync("/api/products/7", cancellation.Token);
-            await started.Task;
+            await started.Task.WaitAsync(StartTimeout);
             cancellation.Cancel();
 
             var exception = await Assert.ThrowsAsync<TaskCanceledException>(() => calling.WaitAsync(TimeSpan.FromSeconds(10)));
