@@ -157,8 +157,10 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Adds middleware to prevent infinite loops when MCP tools call back to the API: the MCP endpoint
-    /// <see cref="MapMcpEndpoint"/> maps refuses a request a tool sent, wherever it is mapped.
+    /// Adds middleware to prevent infinite loops when MCP tools call back to the API over HTTP: the MCP endpoint
+    /// <see cref="MapMcpEndpoint"/> maps then refuses a request a tool sent over HTTP, wherever it is mapped, and the
+    /// middleware refuses one to any path under <c>/mcp</c>, which covers an endpoint the SDK's <c>MapMcp</c> maps there.
+    /// A tool's in-process request needs no middleware: the endpoint <see cref="MapMcpEndpoint"/> maps refuses it anyway.
     /// </summary>
     public static IApplicationBuilder UseMcpLoopPrevention(this IApplicationBuilder app)
     {
@@ -166,8 +168,9 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Maps the MCP endpoint at the specified path. With <see cref="UseMcpLoopPrevention"/>, it refuses a request that
-    /// a tool sent. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
+    /// Maps the MCP endpoint at the specified path. It refuses a request a tool runs in process, which carries
+    /// <see cref="IMcpToolRequestFeature"/>, and with <see cref="UseMcpLoopPrevention"/> one a tool sends over HTTP
+    /// too. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
     /// scheme, requires a signed-in caller who meets the app's default and fallback policies, answers a caller who is not
     /// signed in with a <c>401</c> challenge that points to the protected resource metadata, and answers a tool call that
     /// scope validation refuses with a scope challenge.
