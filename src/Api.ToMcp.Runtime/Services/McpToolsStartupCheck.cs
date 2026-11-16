@@ -16,10 +16,11 @@ namespace Api.ToMcp.Runtime.Services;
 /// <summary>
 /// Builds every registered tool when the host starts and reports the assemblies whose XML documentation file was
 /// missing or unreadable while their schemas were built, a transport setting under which the tools cannot reach the MCP
-/// request, an invoker's <see cref="HttpClient"/> that lacks the handler serving a tool's request in process, and OAuth
-/// sign-in discovery that lists no authorization server or names no OAuth scope for a scope the tools require. The SDK
-/// otherwise builds the tools on the first MCP request, which would postpone both a tool that cannot be created and these
-/// warnings to that request. Hosted services start before the server listens, so the warnings land in the startup log.
+/// request, an invoker's <see cref="HttpClient"/> that lacks the handler serving a tool's request in process or comes from
+/// another client factory, and OAuth sign-in discovery that lists no authorization server or names no OAuth scope for a
+/// scope the tools require. The SDK otherwise builds the tools on the first MCP request, which would postpone both a tool
+/// that cannot be created and these warnings to that request. Hosted services start before the server listens, so the
+/// warnings land in the startup log.
 /// </summary>
 internal sealed class McpToolsStartupCheck : IHostedService
 {
@@ -88,7 +89,13 @@ internal sealed class McpToolsStartupCheck : IHostedService
                 _transportOptions.SessionMode);
         }
 
-        if (_scopeOptions.AreApiCallsInProcess && !_inProcessHandlerCheck.IsInTheClientsChain)
+        if (_scopeOptions.AreApiCallsInProcess && !_inProcessHandlerCheck.IsClientFromTheHandlerFactory)
+        {
+            _logger.LogWarning(
+                "The invoker's HttpClient, {ClientName}, comes from an IHttpClientFactory registered after AddMcpTools, not from the client factory to which AddMcpTools adds the handler that serves a tool's API request in process. The tools still serve their API requests in process, but without the client: its message handlers and DefaultRequestHeaders do not apply to them, and its Timeout does. To keep the client's handlers on them, register no IHttpClientFactory of your own; to stub the app's outgoing calls in a test, give the clients a primary handler with services.ConfigureHttpClientDefaults(http => http.ConfigurePrimaryHttpMessageHandler(...)) instead, which a tool's request never reaches.",
+                nameof(IMcpHttpInvoker));
+        }
+        else if (_scopeOptions.AreApiCallsInProcess && !_inProcessHandlerCheck.IsInTheClientsChain)
         {
             _logger.LogWarning(
                 "The invoker's HttpClient, {ClientName}, lacks the handler that serves a tool's API request in process, which AddMcpTools adds to it through an IHttpMessageHandlerBuilderFilter: code that ran after AddMcpTools took that filter away, as services.RemoveAll<IHttpMessageHandlerBuilderFilter>() or services.Replace(ServiceDescriptor.Singleton<IHttpMessageHandlerBuilderFilter, ...>()) does. The tools still serve their API requests in process, but without the client: its message handlers and DefaultRequestHeaders do not apply to them, and its Timeout does. To keep the client's handlers on them, register a filter of your own with services.TryAddEnumerable instead of Replace, and turn the client factory's logging off with services.ConfigureHttpClientDefaults(http => http.RemoveAllLoggers()) instead of RemoveAll.",

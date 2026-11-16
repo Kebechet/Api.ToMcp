@@ -298,8 +298,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     /// Sends the request through the invoker's client, marked to be served in process: it passes the client's handlers and
     /// gets its default headers and <see cref="HttpClient.Timeout"/>, and <see cref="InProcessApiHandler"/> serves it in
     /// place of the primary handler. The pipeline follows each redirect back into the app itself, so the response that
-    /// comes back is final. When the client lacks that handler, the marked request would reach the primary handler and
-    /// leave the process, so it is served without the client instead.
+    /// comes back is final. When the client lacks that handler, or comes from a client factory the app registered, the
+    /// marked request could reach the primary handler and leave the process, so it is served without the client instead.
     /// </summary>
     private Task<HttpResponseMessage> SendInProcessAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
     {

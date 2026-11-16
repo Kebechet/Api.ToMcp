@@ -274,7 +274,7 @@ public class McpHttpInvokerInProcessTests
             NullLogger<McpHttpInvoker>.Instance,
             Microsoft.Extensions.Options.Options.Create(scopeOptions ?? new McpScopeOptions()),
             pipeline,
-            new InProcessApiHandlerCheck(() => chain));
+            new InProcessApiHandlerCheck(() => true, () => chain));
     }
 
     private DefaultBaseUrlProvider CreateDefaultBaseUrlProvider(string boundAddress)

@@ -357,16 +357,60 @@ public class McpInvokerHttpClientTests
     {
         using var provider = BuildProvider(_ => { });
         var handlerFactory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+        var compared = 0;
         var created = 0;
-        var check = new InProcessApiHandlerCheck(() =>
-        {
-            Interlocked.Increment(ref created);
-            return handlerFactory.CreateHandler(ClientName);
-        });
+        var check = new InProcessApiHandlerCheck(
+            () =>
+            {
+                Interlocked.Increment(ref compared);
+                return true;
+            },
+            () =>
+            {
+                Interlocked.Increment(ref created);
+                return handlerFactory.CreateHandler(ClientName);
+            });
 
         Assert.True(check.IsInTheClientsChain);
         Assert.True(check.IsInTheClientsChain);
+        Assert.True(check.IsClientFromTheHandlerFactory);
+        Assert.Equal(1, compared);
         Assert.Equal(1, created);
+    }
+
+    [Fact]
+    public async Task TheToolsRequest_IsServedInProcessWithoutTheClient_WhenTheAppRegistersAnHttpClientFactoryOfItsOwn()
+    {
+        using var provider = BuildProvider(services =>
+        {
+            services.AddHttpClient(ClientName).AddHttpMessageHandler(() => new HeaderSettingHandler(ApiKeyHeader, "secret"));
+            services.AddSingleton<IHttpClientFactory>(new StubbingClientFactory(_primaryRequests));
+        });
+        BuildEchoPipeline(provider);
+
+        var result = await CallAsync(provider);
+
+        var seen = Echoed(result);
+        Assert.Equal(CallerToken, seen.GetProperty("authorization").GetString());
+        Assert.Equal("", seen.GetProperty("apiKey").GetString());
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public async Task TheStartupCheck_Warns_WhenTheAppRegistersAnHttpClientFactoryOfItsOwn_AndNamesTheFix()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services => services.AddSingleton<IHttpClientFactory>(new StubbingClientFactory(_primaryRequests)),
+            logs: logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+
+        var warning = Assert.Single(logs, x => x.Level == LogLevel.Warning && x.Message.Contains(ClientName));
+        Assert.Contains("IHttpClientFactory registered after AddMcpTools", warning.Message);
+        Assert.Contains("message handlers and DefaultRequestHeaders do not apply", warning.Message);
+        Assert.Contains("ConfigurePrimaryHttpMessageHandler", warning.Message);
     }
 
     [Fact]
@@ -644,6 +688,25 @@ public class McpInvokerHttpClientTests
         public Action<HttpMessageHandlerBuilder> Configure(Action<HttpMessageHandlerBuilder> next)
         {
             return next;
+        }
+    }
+
+    /// <summary>
+    /// A client factory an app or a test registers to stub outgoing calls: its clients send every request to a primary
+    /// handler that records it, past every handler the client factory would add.
+    /// </summary>
+    private sealed class StubbingClientFactory : IHttpClientFactory
+    {
+        private readonly List<string> _requests;
+
+        public StubbingClientFactory(List<string> requests)
+        {
+            _requests = requests;
+        }
+
+        public HttpClient CreateClient(string name)
+        {
+            return new HttpClient(new RecordingPrimaryHandler(_requests));
         }
     }
 

@@ -117,6 +117,19 @@ public sealed class DevelopmentHostTests
         Assert.Empty(requests);
     }
 
+    [Fact]
+    public async Task AnAppThatStubsItsHttpClientFactory_StartsInDevelopment_AndServesAToolCallInProcess_NotThroughTheStub()
+    {
+        await using var app = await StartAsync(hasAuthentication: false, configureServices: services =>
+            services.AddSingleton<IHttpClientFactory>(new RefusingClientFactory()));
+        await using var client = await ConnectAsync(app.Urls.Single(), authorization: null);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+    }
+
     private static async Task<WebApplication> StartAsync(bool hasAuthentication, Action<IServiceCollection> configureServices)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
@@ -163,6 +176,17 @@ public sealed class DevelopmentHostTests
             }
 
             return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A client factory a test registers to stub the app's outgoing calls, whose clients refuse every request.
+    /// </summary>
+    private sealed class RefusingClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name)
+        {
+            return new HttpClient(new RefusingHandler());
         }
     }
 

@@ -141,8 +141,8 @@ public static class McpExtensions
     /// of its client. The client factory runs its first filter last, after the client's own configuration and every other
     /// filter, so <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one
     /// that adds the factory's logging handlers. A filter registered later already runs before it. App code that removes
-    /// filters after <see cref="AddMcpTools"/> can take this one away too, which <see cref="InProcessApiHandlerCheck"/>
-    /// finds.
+    /// filters after <see cref="AddMcpTools"/> can take this one away too, and an <see cref="IHttpClientFactory"/> the app
+    /// registers creates clients without it, which <see cref="InProcessApiHandlerCheck"/> finds.
     /// </summary>
     private static void ServeInProcessBelowEveryHandler(IServiceCollection services, string clientName)
     {
@@ -151,6 +151,7 @@ public static class McpExtensions
         var firstFilter = services.FirstOrDefault(x => x.ServiceType == typeof(IHttpMessageHandlerBuilderFilter) && !x.IsKeyedService);
         services.Insert(firstFilter is null ? services.Count : services.IndexOf(firstFilter), filter);
         services.TryAddSingleton(serviceProvider => new InProcessApiHandlerCheck(
+            () => ReferenceEquals(serviceProvider.GetRequiredService<IHttpClientFactory>(), serviceProvider.GetRequiredService<IHttpMessageHandlerFactory>()),
             () => serviceProvider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(clientName)));
     }
 
