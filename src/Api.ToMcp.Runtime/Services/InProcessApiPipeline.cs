@@ -29,6 +29,12 @@ internal sealed class InProcessApiPipeline
     /// </summary>
     internal const int MaxAutomaticRedirections = 50;
 
+    /// <summary>
+    /// The header in which the ASP.NET Core Module passes its pairing token to an app behind IIS out of process, which
+    /// ASP.NET Core names only privately.
+    /// </summary>
+    private const string IisPairingTokenHeader = "MS-ASPNETCORE-TOKEN";
+
     private readonly IHttpContextFactory _httpContextFactory;
     private readonly ILogger<InProcessApiPipeline> _logger;
     private readonly InProcessRequestDiagnostics _diagnostics;
@@ -434,6 +440,14 @@ internal sealed class InProcessApiPipeline
                 }
 
                 requestFeature.Headers.ContentLength = body.Length;
+            }
+
+            // Behind IIS out of process, the ASP.NET Core Module puts its pairing token on every request it forwards, and
+            // UseIISIntegration refuses a request without it. The tool's request came in with the MCP request, so it carries
+            // that token. Not the module's MS-ASPNETCORE-WINAUTHTOKEN: the middleware closes that handle once it has read it.
+            if (caller is not null && caller.Request.Headers.TryGetValue(IisPairingTokenHeader, out var pairingToken))
+            {
+                requestFeature.Headers[IisPairingTokenHeader] = pairingToken;
             }
 
             var response = new InProcessResponse();
