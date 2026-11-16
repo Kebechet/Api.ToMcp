@@ -13,8 +13,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
-using BadHttpRequestException = Microsoft.AspNetCore.Http.BadHttpRequestException;
 using Xunit;
+using BadHttpRequestException = Microsoft.AspNetCore.Http.BadHttpRequestException;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
 

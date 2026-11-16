@@ -17,8 +17,6 @@ namespace Api.ToMcp.Runtime.Tests.Services;
 
 public class ServerRequestLimitsTests
 {
-    private const string Http11 = "HTTP/1.1";
-
     [Theory]
     [InlineData(0, null)]
     [InlineData(1, StatusCodes.Status414UriTooLong)]
@@ -229,7 +227,7 @@ public class ServerRequestLimitsTests
         {
             Method = method ?? HttpMethods.Get,
             RawTarget = rawTarget,
-            Protocol = Http11
+            Protocol = HttpProtocol.Http11
         };
     }
 
