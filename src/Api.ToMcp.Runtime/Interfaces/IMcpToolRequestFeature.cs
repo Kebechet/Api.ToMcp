@@ -13,7 +13,8 @@ public interface IMcpToolRequestFeature
 {
     /// <summary>
     /// The name of the tool whose call sent the request, as the MCP client called it, or <see langword="null"/> when the
-    /// invoker was called outside a tool call, as code of the app's own may call it.
+    /// invoker was called outside a tool call, as code of the app's own may call it, work a tool call started included
+    /// once that call has ended.
     /// </summary>
     string? ToolName { get; }
 }
