@@ -1,3 +1,4 @@
+using System.Net;
 using System.Threading.RateLimiting;
 using Api.ToMcp.Runtime;
 using Microsoft.AspNetCore.Builder;
@@ -22,10 +23,13 @@ public sealed class McpToolRequestFeatureTests
     private const string LoopPreventionHeader = "X-MCP-Internal-Call";
     private const string ProbeRoute = "/api/tool-request";
     private const string TogetherRoute = "/api/tool-request/together";
-    private const string ToolRequestPartition = "mcp tool requests";
+    private const string HeldRoute = "/api/tool-request/held";
+    private const string ToolRequestPartitionPrefix = "mcp-tool:";
     private const string UnmarkedProbe = """{"isToolRequest":false,"toolName":null}""";
 
     private readonly TaskCompletionSource _isEveryRequestIn = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _isHeldRequestIn = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _isHeldRequestReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _requestsIn;
 
     [Fact]
@@ -92,9 +96,9 @@ public sealed class McpToolRequestFeatureTests
     }
 
     [Fact]
-    public async Task APerAddressConcurrencyLimitOfOne_LetsEveryToolCallThrough_WhenToolRequestsHaveAPartitionOfTheirOwn()
+    public async Task APerAddressConcurrencyLimitOfOne_LetsEveryToolCallThrough_WhenToolRequestsHaveAPartitionOfTheirOwnForEachClient()
     {
-        await using var app = await StartAppAsync(rateLimiting: RateLimiting.PerAddressButNotToolRequests);
+        await using var app = await StartAppAsync(rateLimiting: RateLimiting.PerAddressWithToolRequestsApart);
         await using var client = await ConnectAsync(app);
 
         var first = await CallToolAsync(client, ToolRequestProbeTools.FirstName, ProbeRoute);
@@ -102,6 +106,27 @@ public sealed class McpToolRequestFeatureTests
 
         Assert.Equal($$"""{"isToolRequest":true,"toolName":"{{ToolRequestProbeTools.FirstName}}"}""", first);
         Assert.Equal($$"""{"isToolRequest":true,"toolName":"{{ToolRequestProbeTools.SecondName}}"}""", second);
+    }
+
+    [Fact]
+    public async Task APerAddressConcurrencyLimitOfOne_RefusesAClientsToolCall_WhileTheRequestOfItsDroppedToolCallRuns()
+    {
+        // Dropping the MCP request frees the client's permit, while the tool's request keeps running, as the request of an
+        // action that does not watch RequestAborted does.
+        await using var app = await StartAppAsync(rateLimiting: RateLimiting.PerAddressWithToolRequestsApart);
+        await using var client = await ConnectAsync(app);
+        using (var drop = new CancellationTokenSource())
+        {
+            var droppedCall = CallToolAsync(client, ToolRequestProbeTools.FirstName, HeldRoute, drop.Token);
+            await _isHeldRequestIn.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            drop.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => droppedCall);
+        }
+
+        var result = await CallToolOnceTheClientsPermitIsFreeAsync(client, ToolRequestProbeTools.SecondName, ProbeRoute);
+        _isHeldRequestReleased.SetResult();
+
+        Assert.StartsWith("HTTP 429: Too Many Requests", result);
     }
 
     private async Task<WebApplication> StartAppAsync(bool areApiCallsInProcess = true, RateLimiting rateLimiting = RateLimiting.None)
@@ -122,11 +147,14 @@ public sealed class McpToolRequestFeatureTests
             {
                 options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
                 options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-                    rateLimiting == RateLimiting.PerAddressButNotToolRequests && context.IsMcpToolRequest()
-                        ? RateLimitPartition.GetNoLimiter(ToolRequestPartition)
-                        : RateLimitPartition.GetConcurrencyLimiter(
-                            context.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
-                            _ => new ConcurrencyLimiterOptions { PermitLimit = 1, QueueLimit = 0 }));
+                {
+                    var address = context.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+                    var partitionKey = rateLimiting == RateLimiting.PerAddressWithToolRequestsApart && context.IsMcpToolRequest()
+                        ? ToolRequestPartitionPrefix + address
+                        : address;
+
+                    return RateLimitPartition.GetConcurrencyLimiter(partitionKey, _ => new ConcurrencyLimiterOptions { PermitLimit = 1, QueueLimit = 0 });
+                });
             });
         }
 
@@ -145,6 +173,12 @@ public sealed class McpToolRequestFeatureTests
             }
 
             await _isEveryRequestIn.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            return Describe(context);
+        });
+        app.MapGet(HeldRoute, async (HttpContext context) =>
+        {
+            _isHeldRequestIn.SetResult();
+            await _isHeldRequestReleased.Task.WaitAsync(TimeSpan.FromSeconds(10));
             return Describe(context);
         });
         app.MapMcpEndpoint("mcp", allowAnonymous: true);
@@ -167,11 +201,31 @@ public sealed class McpToolRequestFeatureTests
         return await McpClient.CreateAsync(transport);
     }
 
-    private static async Task<string> CallToolAsync(McpClient client, string toolName, string route)
+    private static async Task<string> CallToolAsync(McpClient client, string toolName, string route, CancellationToken cancellationToken = default)
     {
-        var result = await client.CallToolAsync(toolName, new Dictionary<string, object?> { ["route"] = route });
+        var result = await client.CallToolAsync(toolName, new Dictionary<string, object?> { ["route"] = route }, cancellationToken: cancellationToken);
 
         return ((TextContentBlock)result.Content[0]).Text;
+    }
+
+    /// <summary>
+    /// Calls the tool once the limiter lets the client's MCP request through. The server ends the MCP request of a dropped
+    /// call a moment after the client drops it, and until then the client's next MCP request has no permit.
+    /// </summary>
+    private static async Task<string> CallToolOnceTheClientsPermitIsFreeAsync(McpClient client, string toolName, string route)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            try
+            {
+                return await CallToolAsync(client, toolName, route);
+            }
+            catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.TooManyRequests && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20));
+            }
+        }
     }
 
     private sealed class RefusingHandler : HttpMessageHandler
@@ -186,7 +240,7 @@ public sealed class McpToolRequestFeatureTests
     {
         None,
         PerAddress,
-        PerAddressButNotToolRequests
+        PerAddressWithToolRequestsApart
     }
 
     private sealed record ToolRequestProbe(bool IsToolRequest, string? ToolName);

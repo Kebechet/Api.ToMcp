@@ -718,7 +718,7 @@ A redirect is followed as `HttpClient` follows one, up to 50 times: a `303` turn
 
 The tool sends the request through the invoker's `HttpClient`, and its message handlers run around the request as they do around one sent over HTTP (see [Custom HTTP Invocation](#custom-http-invocation)). The client applies its `Timeout`, 100 seconds unless you configure it, and fails a call that outlasts it as it fails any other. Canceling the call ends it at once, even when your action does not watch `HttpContext.RequestAborted`, as long as the client's message handlers pass the cancellation token on; the request is aborted, and finishes and is cleaned up in the background. A handler that sends the request on without the token keeps the call waiting for your action, past the `Timeout` too, as it does over HTTP.
 
-The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Give the tool's requests a partition of their own, or none, as [Telling a tool's request apart](#telling-a-tools-request-apart) shows. Over HTTP, the request came from the server itself.
+The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Give the tool's requests a partition of their own for each client, as [Telling a tool's request apart](#telling-a-tools-request-apart) shows. Over HTTP, the request came from the server itself.
 
 To send the request over HTTP instead, to the address from [Base URL Resolution](#base-url-resolution), turn the option off:
 
@@ -741,9 +741,9 @@ if (context.IsMcpToolRequest())
 }
 ```
 
-`ToolName` is the name of the tool whose call sent the request, as the MCP client called it. It is `null` only when code of your own calls the invoker outside a tool call. A tool's request over HTTP, with `AreApiCallsInProcess` off, is one the server receives, and carries no feature; there only the header marks it. The MCP endpoint refuses a request that carries the feature; see [What the tool's request carries](#what-the-tools-request-carries).
+`ToolName` is the name of the tool whose call sent the request, as the MCP client called it. It is `null` only when code of your own calls the invoker outside a tool call, which includes work a tool call started, such as a task or a timer, once that call has ended. A tool's request over HTTP, with `AreApiCallsInProcess` off, is one the server receives, and carries no feature; there only the header marks it. The MCP endpoint refuses a request that carries the feature; see [What the tool's request carries](#what-the-tools-request-carries).
 
-A rate limiter that covers the MCP endpoint, such as a global one, has limited the MCP request already, so give the tool's requests no limiter of their own:
+A rate limiter that covers the MCP endpoint, such as a global one, counts the MCP request against the client already, so give the tool's requests a partition of their own for each client, keyed by the mark and the client's address:
 
 ```csharp
 using System.Threading.RateLimiting;
@@ -753,18 +753,21 @@ builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-        context.IsMcpToolRequest()
-            ? RateLimitPartition.GetNoLimiter("mcp-tool-requests")
-            : RateLimitPartition.GetConcurrencyLimiter(
-                context.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
-                _ => new ConcurrencyLimiterOptions { PermitLimit = 1 }));
+    {
+        var address = context.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+        var partitionKey = context.IsMcpToolRequest() ? "mcp-tool:" + address : address;
+
+        return RateLimitPartition.GetConcurrencyLimiter(partitionKey, _ => new ConcurrencyLimiterOptions { PermitLimit = 1 });
+    });
 });
 
 var app = builder.Build();
 app.UseRateLimiter();
 ```
 
-When only your API's endpoints are limited, with `RequireRateLimiting` or `[EnableRateLimiting]`, the MCP request was not, so give the tool's requests a partition of their own instead, such as one per tool keyed by `ToolName`.
+Do not leave the tool's requests without a limiter: a client that drops its MCP request frees its permit while the tool's request keeps running, so the client could run any number of them at once.
+
+When only your API's endpoints are limited, with `RequireRateLimiting` or `[EnableRateLimiting]`, the MCP request holds no permit, so the client's own partition needs no change: the tool's request counts against the client as its own request to the API does. If you want the tool's requests in a partition of their own anyway, key it by the tool and the client together, such as `ToolName` and the address, never by `ToolName` alone, which every client would share.
 
 ## Base URL Resolution
 
@@ -1226,7 +1229,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - When scope validation is enabled, the request must be authenticated and the mapped scope must cover the tool's required scope (`Read`/`Write`/`Delete`).
 
 **Tool calls return `429`, or `503`, from a rate limiter.**
-- In process, the tool's request carries the MCP request's connection, so a limiter partitioned by client address or connection counts it against the client that still holds the MCP request. `503` is the status the limiter refuses with unless `RejectionStatusCode` is set. Give the tool's requests a partition of their own, or none, by `HttpContext.IsMcpToolRequest()`; see [Telling a tool's request apart](#telling-a-tools-request-apart).
+- In process, the tool's request carries the MCP request's connection, so a limiter partitioned by client address or connection counts it against the client that still holds the MCP request. `503` is the status the limiter refuses with unless `RejectionStatusCode` is set. Give the tool's requests a partition of their own for each client, by `HttpContext.IsMcpToolRequest()` and the client's address; see [Telling a tool's request apart](#telling-a-tools-request-apart).
 
 ## How It Works
 
