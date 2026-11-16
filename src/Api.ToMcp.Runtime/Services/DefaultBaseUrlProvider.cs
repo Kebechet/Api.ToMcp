@@ -8,8 +8,8 @@ namespace Api.ToMcp.Runtime.Services;
 /// The address that names a tool's request to the app when the request has no MCP request to take its address from:
 /// <c>McpTools:BaseUrl</c> as given when it is set, else an address the server is bound to. The request runs in process,
 /// so the address is never called. No header of an MCP request decides it: <c>Host</c> and <c>X-Forwarded-Host</c> are
-/// the client's to set, so following them, when tools still called over HTTP, sent the tool's request to any server the
-/// app can reach (https://github.com/Kebechet/Api.ToMcp/issues/48).
+/// the client's to set, so following them, when tools still sent their requests to an address, sent the tool's request
+/// to any server the app can reach (https://github.com/Kebechet/Api.ToMcp/issues/48).
 /// </summary>
 public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
 {
@@ -28,6 +28,10 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
     private string? _cachedBaseUrl;
     private readonly object _lock = new();
 
+    /// <summary>
+    /// A provider that reads <c>McpTools:BaseUrl</c> from <paramref name="configuration"/>, and otherwise the addresses
+    /// <paramref name="server"/> is bound to once it has started.
+    /// </summary>
     public DefaultBaseUrlProvider(IServer server, IConfiguration configuration)
     {
         _server = server;

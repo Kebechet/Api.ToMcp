@@ -140,10 +140,11 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Adds middleware to prevent infinite loops when MCP tools call back to the API over HTTP: the MCP endpoint
-    /// <see cref="MapMcpEndpoint"/> maps then refuses a request a tool sent over HTTP, wherever it is mapped, and the
-    /// middleware refuses one to any path under <c>/mcp</c>, which covers an endpoint the SDK's <c>MapMcp</c> maps there.
-    /// A tool's in-process request needs no middleware: the endpoint <see cref="MapMcpEndpoint"/> maps refuses it anyway.
+    /// Adds middleware that refuses a request carrying the <c>X-MCP-Internal-Call</c> header, which every tool's request
+    /// carries, to any path under <c>/mcp</c>, which covers an endpoint the SDK's <c>MapMcp</c> maps there and that does
+    /// not look for <see cref="IMcpToolRequestFeature"/>. With it, the endpoint <see cref="MapMcpEndpoint"/> maps also
+    /// refuses a request that carries the header, whoever sent it. A tool's request needs no middleware to be refused by
+    /// that endpoint: it carries <see cref="IMcpToolRequestFeature"/>.
     /// </summary>
     public static IApplicationBuilder UseMcpLoopPrevention(this IApplicationBuilder app)
     {
@@ -151,9 +152,9 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Maps the MCP endpoint at the specified path. It refuses a request a tool runs in process, which carries
-    /// <see cref="IMcpToolRequestFeature"/>, and with <see cref="UseMcpLoopPrevention"/> one a tool sends over HTTP
-    /// too. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
+    /// Maps the MCP endpoint at the specified path. It refuses a tool's request, which carries
+    /// <see cref="IMcpToolRequestFeature"/>, and with <see cref="UseMcpLoopPrevention"/> a request that carries the
+    /// <c>X-MCP-Internal-Call</c> header too. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
     /// scheme, requires a signed-in caller who meets the app's default and fallback policies, answers a caller who is not
     /// signed in with a <c>401</c> challenge that points to the protected resource metadata, and answers a tool call that
     /// scope validation refuses with a scope challenge.

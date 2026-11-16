@@ -3,13 +3,13 @@ using Microsoft.AspNetCore.Http;
 namespace Api.ToMcp.Runtime.Middleware;
 
 /// <summary>
-/// Turns on loop prevention for a tool's request over HTTP: the MCP endpoint <c>MapMcpEndpoint</c> maps then refuses a
-/// request that carries the header the invoker adds to a tool's own call to the API. The endpoint does the refusing, not
-/// this middleware, so it is refused wherever the endpoint is mapped, route parameters included, and whether routing
-/// runs before or after this middleware. This middleware still refuses such a request to any path under <c>/mcp</c>, as
-/// it did before endpoints refused them, so an endpoint the SDK's <c>MapMcp</c> maps there directly keeps the
-/// protection; any other route serves such a request as usual. A tool's in-process request needs none of this: it
-/// carries <see cref="IMcpToolRequestFeature"/>, by which the endpoint refuses it with or without this middleware.
+/// Turns on loop prevention by the header the invoker adds to every tool's request: the MCP endpoint
+/// <c>MapMcpEndpoint</c> maps then refuses a request that carries it, wherever the endpoint is mapped, route parameters
+/// included, and whether routing runs before or after this middleware. This middleware itself refuses such a request to
+/// any path under <c>/mcp</c>, as it did before endpoints refused them, so an endpoint the SDK's <c>MapMcp</c> maps there
+/// directly, which does not look for <see cref="IMcpToolRequestFeature"/>, refuses a tool's request too; any other route
+/// serves such a request as usual. The endpoint <c>MapMcpEndpoint</c> maps refuses a tool's request without this
+/// middleware: it carries <see cref="IMcpToolRequestFeature"/>.
 /// </summary>
 public sealed class McpLoopPreventionMiddleware
 {
@@ -49,9 +49,8 @@ public sealed class McpLoopPreventionMiddleware
     }
 
     /// <summary>
-    /// <paramref name="endpoint"/>, refusing a tool's request: one a tool runs in process, which carries
-    /// <see cref="IMcpToolRequestFeature"/>, and one that this middleware has seen and that carries the header a tool's
-    /// request over HTTP carries.
+    /// <paramref name="endpoint"/>, refusing a tool's request, which carries <see cref="IMcpToolRequestFeature"/>, and a
+    /// request that this middleware has seen and that carries the header every tool's request carries.
     /// </summary>
     internal static RequestDelegate RefuseInternalCalls(RequestDelegate endpoint)
     {
