@@ -52,6 +52,7 @@ public static class McpExtensions
         services.AddHttpContextAccessor();
         services.AddSingleton<ISelfBaseUrlProvider, DefaultBaseUrlProvider>();
         services.TryAddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
+        services.TryAddSingleton(InProcessRequestDiagnostics.Create);
         services.TryAddSingleton<InProcessApiPipeline>();
         CaptureThePipelineTheHostBuilds(services);
         var invokerClient = services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) =>

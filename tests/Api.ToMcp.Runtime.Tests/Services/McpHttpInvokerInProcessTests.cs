@@ -235,7 +235,7 @@ public class McpHttpInvokerInProcessTests
     {
         _accessor.HttpContext = CreateCaller();
         var services = new ServiceCollection().AddLogging().BuildServiceProvider();
-        var unbuiltPipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance);
+        var unbuiltPipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance, InProcessRequestDiagnostics.Create(services));
         var invoker = CreateInvoker(unbuiltPipeline);
 
         await invoker.GetAsync("/api/products/7");
@@ -326,7 +326,7 @@ public class McpHttpInvokerInProcessTests
     private static InProcessApiPipeline BuildPipeline(Action<IApplicationBuilder> configure)
     {
         var services = new ServiceCollection().AddLogging().BuildServiceProvider();
-        var pipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), services.GetRequiredService<ILogger<InProcessApiPipeline>>());
+        var pipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), services.GetRequiredService<ILogger<InProcessApiPipeline>>(), InProcessRequestDiagnostics.Create(services));
         var builder = new PipelineCapturingApplicationBuilderFactory(new ApplicationBuilderFactory(services), pipeline)
             .CreateBuilder(new FeatureCollection());
         configure(builder);
