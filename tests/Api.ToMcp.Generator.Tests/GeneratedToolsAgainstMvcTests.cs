@@ -14,7 +14,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime;
-using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -27,8 +26,6 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Xunit;
@@ -37,8 +34,8 @@ namespace Api.ToMcp.Generator.Tests;
 
 /// <summary>
 /// Runs generated tools against real MVC. The test controllers and the tools the generator emits for them are compiled
-/// into one assembly, MVC serves the controllers on a loopback port, and each tool sends its request there; every action
-/// echoes what MVC bound. A binding rule the generator gets wrong fails here even when the emitted code looks right.
+/// into one assembly, MVC serves the controllers on a loopback port, and each tool sends its request there, or runs it in
+/// process through the invoker the app registers; every action echoes what MVC bound. A binding rule the generator gets wrong fails here even when the emitted code looks right.
 /// </summary>
 public sealed class GeneratedToolsAgainstMvcTests : IClassFixture<GeneratedToolsAgainstMvcTests.MvcHost>
 {
@@ -337,6 +334,11 @@ namespace TestApi
     [Route(""plain"")]
     public class PlainEchoController : ControllerBase
     {
+        // Without [ApiController] MVC runs the action without the header the tool never sends, and records the error.
+        [HttpGet(""trace"")]
+        public object GetTrace([FromHeader(Name = ""traceparent""), System.ComponentModel.DataAnnotations.Required] string trace, string? note) =>
+            new { trace, note, isValid = ModelState.IsValid };
+
         [HttpPost(""search"")]
         public object PostSearch(ProductFilter filter) => filter;
 
@@ -1005,6 +1007,7 @@ namespace TestApi
     [InlineData("EchoController_PostDefaultBodyTool", @"{}", @"{""status"":99}")]
     [InlineData("EchoController_GetNanTool", @"{}", @"{""isNaN"":true,""inf"":true,""negInf"":true,""query"":""""}")]
     [InlineData("EchoController_GetNanTool", @"{""value"":1.5}", @"{""isNaN"":false,""inf"":true,""negInf"":true,""query"":""?value=1.5""}")]
+    [InlineData("PlainEchoController_GetTraceTool", @"{""note"":""n1""}", @"{""trace"":null,""note"":""n1"",""isValid"":false}")]
     [InlineData("PlainEchoController_PostSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_GetSearchTool", @"{""filter"":{""city"":""Brno""}}", @"{""city"":""Brno""}")]
     [InlineData("PlainEchoController_PutShipmentTool", @"{""shipment"":{""id"":9,""note"":""fragile""}}", @"{""id"":9,""note"":""fragile""}")]
@@ -1460,18 +1463,15 @@ namespace TestApi
         /// </summary>
         public static readonly CultureInfo PersianCulture = CultureInfo.GetCultureInfo("fa-IR");
 
-        private readonly RecordingHandler _serverCultureRecorder = new();
-        private readonly RecordingHandler _germanRecorder = new();
+        private readonly ResponseRecord _serverCultureRecord = new();
+        private readonly ResponseRecord _germanRecord = new();
         private Assembly _assembly = null!;
         private WebApplication _app = null!;
         private string _address = null!;
         private HttpClient _client = null!;
         private RecordingInvoker _invoker = null!;
-        private HttpClient _serverCultureClient = null!;
         private CultureInfo? _serverCulture;
         private WebApplication _germanApp = null!;
-        private string _germanAddress = null!;
-        private HttpClient _germanClient = null!;
 
         public async Task InitializeAsync()
         {
@@ -1481,6 +1481,7 @@ namespace TestApi
             builder.Logging.ClearProviders();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Services.AddControllers().AddApplicationPart(_assembly);
+            AddTools(builder.Services, _serverCultureRecord);
             _app = builder.Build();
             _app.Use(RunInTheServerCulture);
             _app.MapControllers();
@@ -1489,12 +1490,12 @@ namespace TestApi
             _address = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
             _client = new HttpClient { BaseAddress = new Uri(_address) };
             _invoker = new RecordingInvoker(_client);
-            _serverCultureClient = new HttpClient(_serverCultureRecorder);
 
             var germanBuilder = WebApplication.CreateBuilder();
             germanBuilder.Logging.ClearProviders();
             germanBuilder.WebHost.UseUrls("http://127.0.0.1:0");
             germanBuilder.Services.AddControllers().AddApplicationPart(_assembly);
+            AddTools(germanBuilder.Services, _germanRecord);
             _germanApp = germanBuilder.Build();
             _germanApp.UseRequestLocalization(new RequestLocalizationOptions
             {
@@ -1504,31 +1505,36 @@ namespace TestApi
             });
             _germanApp.MapControllers();
             await _germanApp.StartAsync();
-
-            _germanAddress = _germanApp.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-            _germanClient = new HttpClient(_germanRecorder);
         }
 
         public async Task DisposeAsync()
         {
             _client.Dispose();
-            _serverCultureClient.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
-            _germanClient.Dispose();
             await _germanApp.StopAsync();
             await _germanApp.DisposeAsync();
         }
 
         /// <summary>
-        /// Calls a generated tool through <see cref="McpHttpInvoker"/> against the app whose request localization defaults
-        /// to <see cref="GermanCulture"/>, from an MCP request that it gave the culture, which the tool call runs under.
+        /// The tools with the invoker <c>AddMcpTools</c> registers, which serves their requests in process, and a handler of
+        /// its client that keeps what the app answered.
+        /// </summary>
+        private void AddTools(IServiceCollection services, ResponseRecord record)
+        {
+            services.AddMcpTools(_assembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            services.AddHttpClient(nameof(IMcpHttpInvoker)).AddHttpMessageHandler(() => new RecordingHandler(record));
+        }
+
+        /// <summary>
+        /// Calls a generated tool through <see cref="McpHttpInvoker"/> in the app whose request localization defaults to
+        /// <see cref="GermanCulture"/>, from an MCP request that it gave the culture, which the tool call runs under.
         /// </summary>
         public async Task<(int StatusCode, string Body)> InvokeToolAsync(string toolClassName, string arguments, CultureInfo culture)
         {
             await CallToolAsync(toolClassName, arguments, culture);
 
-            return _germanRecorder.LastResponse;
+            return _germanRecord.LastResponse;
         }
 
         /// <summary>
@@ -1540,22 +1546,21 @@ namespace TestApi
             var mcpRequest = new DefaultHttpContext();
             mcpRequest.Features.Set<IRequestCultureFeature>(new RequestCultureFeature(new RequestCulture(culture), provider: null));
 
-            return CallToolThroughTheInvokerAsync(toolClassName, arguments, culture, _germanAddress, _germanClient, mcpRequest);
+            return CallToolThroughTheInvokerAsync(toolClassName, arguments, culture, _germanApp, mcpRequest);
         }
 
         /// <summary>
-        /// Calls a generated tool through <see cref="McpHttpInvoker"/> against the first app, which runs no request
-        /// localization, but every request in the server's culture, as a server does in its own: the MCP request and the
-        /// tool call too.
+        /// Calls a generated tool through <see cref="McpHttpInvoker"/> in the first app, which runs no request localization,
+        /// but every request in the server's culture, as a server does in its own: the MCP request and the tool call too.
         /// </summary>
         public async Task<(int StatusCode, string Body, CallToolResult Result)> CallToolWithoutLocalizationAsync(string toolClassName, string arguments, CultureInfo serverCulture)
         {
             _serverCulture = serverCulture;
             try
             {
-                var result = await CallToolThroughTheInvokerAsync(toolClassName, arguments, serverCulture, _address, _serverCultureClient, new DefaultHttpContext());
+                var result = await CallToolThroughTheInvokerAsync(toolClassName, arguments, serverCulture, _app, new DefaultHttpContext());
 
-                return (_serverCultureRecorder.LastResponse.StatusCode, _serverCultureRecorder.LastResponse.Body, result);
+                return (_serverCultureRecord.LastResponse.StatusCode, _serverCultureRecord.LastResponse.Body, result);
             }
             finally
             {
@@ -1563,20 +1568,19 @@ namespace TestApi
             }
         }
 
+        /// <summary>
+        /// Calls a generated tool through the app's invoker during <paramref name="mcpRequest"/>, which has no host, so the
+        /// tool's request is named at the address the app is bound to.
+        /// </summary>
         private async Task<CallToolResult> CallToolThroughTheInvokerAsync(
             string toolClassName,
             string arguments,
             CultureInfo culture,
-            string address,
-            HttpClient client,
+            WebApplication app,
             HttpContext mcpRequest)
         {
-            var invoker = new McpHttpInvoker(
-                client,
-                new FixedBaseUrl(address),
-                new FixedHttpContextAccessor(mcpRequest),
-                NullLogger<McpHttpInvoker>.Instance,
-                Options.Create(new McpScopeOptions()));
+            app.Services.GetRequiredService<IHttpContextAccessor>().HttpContext = mcpRequest;
+            var invoker = app.Services.GetRequiredService<IMcpHttpInvoker>();
             var previousCulture = CultureInfo.CurrentCulture;
             CultureInfo.CurrentCulture = culture;
             try
@@ -1674,9 +1678,9 @@ namespace TestApi
             return ((int)response.StatusCode, await response.Content.ReadAsStringAsync());
         }
 
-        public int GermanRequestCount => _germanRecorder.RequestCount;
+        public int GermanRequestCount => _germanRecord.RequestCount;
 
-        public (int StatusCode, string Body) GermanLastResponse => _germanRecorder.LastResponse;
+        public (int StatusCode, string Body) GermanLastResponse => _germanRecord.LastResponse;
 
         public (int StatusCode, string Body) LastResponse => _invoker.LastResponse;
 
@@ -1743,38 +1747,28 @@ namespace TestApi
     }
 
     /// <summary>
-    /// Sends what <see cref="McpHttpInvoker"/> sends, and keeps the count and the last answer.
+    /// How many requests <see cref="McpHttpInvoker"/> sent through its client, and the last answer.
     /// </summary>
-    private sealed class RecordingHandler() : DelegatingHandler(new HttpClientHandler())
+    private sealed class ResponseRecord
     {
-        public int RequestCount { get; private set; }
+        public int RequestCount { get; set; }
 
-        public (int StatusCode, string Body) LastResponse { get; private set; }
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            RequestCount++;
-            var response = await base.SendAsync(request, cancellationToken);
-            LastResponse = ((int)response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
-
-            return response;
-        }
-    }
-
-    private sealed class FixedBaseUrl(string address) : ISelfBaseUrlProvider
-    {
-        public string GetBaseUrl() => address.TrimEnd('/');
+        public (int StatusCode, string Body) LastResponse { get; set; }
     }
 
     /// <summary>
-    /// The MCP request a tool call runs in.
+    /// A handler of the invoker's client, which sees each request before the app serves it in process and its answer
+    /// after, and keeps them in a record that outlives the handler, as the client factory builds its chain anew.
     /// </summary>
-    private sealed class FixedHttpContextAccessor(HttpContext context) : IHttpContextAccessor
+    private sealed class RecordingHandler(ResponseRecord record) : DelegatingHandler
     {
-        public HttpContext? HttpContext
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            get => context;
-            set => throw new NotSupportedException();
+            record.RequestCount++;
+            var response = await base.SendAsync(request, cancellationToken);
+            record.LastResponse = ((int)response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+            return response;
         }
     }
 

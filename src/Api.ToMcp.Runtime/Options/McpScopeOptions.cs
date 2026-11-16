@@ -32,19 +32,6 @@ public class McpScopeOptions
     public bool ArePropertyDescriptionsFromXmlDocs { get; set; } = true;
 
     /// <summary>
-    /// Whether a generated tool serves its API request inside this process, through the request pipeline the host built
-    /// for the server, so it passes every middleware a request the server receives passes, with no socket and no address
-    /// to call. When <see langword="false"/>, or when the host built no pipeline, the request goes over HTTP to the
-    /// address <see cref="ISelfBaseUrlProvider"/> gives. Either way, it passes the message handlers of the invoker's named
-    /// <see cref="HttpClient"/>, <c>IMcpHttpInvoker</c>, and gets its default headers and timeout, unless code that ran
-    /// after <c>AddMcpTools</c> took away the filter that adds the client's in-process handler, or registered an
-    /// <see cref="IHttpClientFactory"/> of its own: the request is then served in process without the client, under its
-    /// timeout alone, and the startup log warns. Defaults to
-    /// <see langword="true"/>.
-    /// </summary>
-    public bool AreApiCallsInProcess { get; set; } = true;
-
-    /// <summary>
     /// Turns on OAuth sign-in discovery for the MCP endpoint, as MCP clients that sign a user in expect it: the OAuth
     /// Protected Resource Metadata (RFC 9728) served at <c>/.well-known/oauth-protected-resource/&lt;MCP path&gt;</c>, and
     /// a <c>401</c> challenge whose <c>WWW-Authenticate</c> header points to it. List the issuer of your tokens in

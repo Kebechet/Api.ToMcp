@@ -10,6 +10,7 @@ using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.CodeAnalysis;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -179,8 +180,6 @@ public partial class McpToolGeneratorTests
     [Theory]
     [InlineData("HttpGet", "[FromHeader(Name = \"Authorization\")] string auth")]
     [InlineData("HttpGet", "[FromHeader] string authorization, [FromHeader(Name = \"X-MCP-Internal-Call\")] string internalCall, [FromHeader] string host")]
-    [InlineData("HttpGet", "[FromHeader(Name = \"traceparent\")] string trace")]
-    [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-Proto\")] string scheme")]
     [InlineData("HttpPost", "[FromHeader(Name = \"Content-Type\")] string contentType, [FromForm] string name")]
     [InlineData("HttpPut", "[FromHeader(Name = \"content-length\")] string length, [FromBody] ProductFilter filter")]
     [InlineData("HttpGet", "[FromHeader(Name = \"Cookie\")] string? cookie")]
@@ -201,6 +200,8 @@ public partial class McpToolGeneratorTests
     [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-For\"), Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int? hops", "hops", "X-Forwarded-For")]
     [InlineData("HttpGet", "[FromHeader(Name = \"Content-Type\")] string contentType", "contentType", "Content-Type")]
     [InlineData("HttpGet", "[FromHeader(Name = \"X-HTTP-Method-Override\"), System.ComponentModel.DataAnnotations.Required] string? method", "method", "X-HTTP-Method-Override")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"traceparent\")] string trace", "trace", "traceparent")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-Proto\")] string scheme", "scheme", "X-Forwarded-Proto")]
     public void Generator_GivesNoTool_ToAnActionRequiringAHeaderAToolNeverSetsAndItsRequestDoesNotCarry(string httpAttribute, string parameter, string parameterName, string headerName)
     {
         var source = SimpleTypeSource($"[{httpAttribute}(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
@@ -214,6 +215,21 @@ public partial class McpToolGeneratorTests
             warning.GetMessage());
         Assert.Equal("Find", GetLocatedText(warning.Location, source));
         Assert.DoesNotContain(SimpleTypeToolClassName, generated);
+    }
+
+    [Theory]
+    [InlineData("[FromHeader(Name = \"traceparent\")] string trace")]
+    [InlineData("[FromHeader(Name = \"X-Forwarded-Proto\"), System.ComponentModel.DataAnnotations.Required] string? scheme")]
+    [InlineData("[FromHeader(Name = \"Cookie\"), Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] string session")]
+    public void Generator_GivesATool_ToAnActionOfAControllerWithoutApiController_RequiringAHeaderAToolNeverSets(string parameter)
+    {
+        // Without [ApiController] MVC refuses no call for a missing value: it runs the action with the parameter null and the
+        // error in ModelState.
+        var tool = GenerateCompilingSimpleTypeTool(
+            $"[HttpGet(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);",
+            PlainControllerDeclaration);
+
+        Assert.DoesNotContain("TryAddHeaderValue", tool);
     }
 
     [Fact]
@@ -475,16 +491,21 @@ namespace TestApi
     }
 
     /// <summary>
-    /// An invoker the app constructs itself, whose client answers every request with 200 without sending it.
+    /// An invoker whose client answers every request with 200 without serving it, and which knows no header the app trusts
+    /// from its proxy, so only its own list refuses a header.
     /// </summary>
     private static McpHttpInvoker CreateInvokerThatSendsNothing()
     {
+        var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var pipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance, InProcessRequestDiagnostics.Create(services));
         return new McpHttpInvoker(
             new HttpClient(new NoRequestHandler()),
             new FixedBaseUrl(),
             new HttpContextAccessor(),
             NullLogger<McpHttpInvoker>.Instance,
-            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()));
+            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()),
+            pipeline,
+            new InProcessApiHandlerCheck(() => true, () => new InProcessApiHandler(pipeline)));
     }
 
     private sealed class NoRequestHandler : HttpMessageHandler

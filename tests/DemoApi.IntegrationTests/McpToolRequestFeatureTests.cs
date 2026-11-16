@@ -57,18 +57,6 @@ public sealed class McpToolRequestFeatureTests
     }
 
     [Fact]
-    public async Task AToolsRequest_OverHttp_IsNotMarked()
-    {
-        // The server receives it from the network, as any client's request.
-        await using var app = await StartAppAsync(areApiCallsInProcess: false);
-        await using var client = await ConnectAsync(app);
-
-        var result = await CallToolAsync(client, ToolRequestProbeTools.FirstName, ProbeRoute);
-
-        Assert.Equal(UnmarkedProbe, result);
-    }
-
-    [Fact]
     public async Task ConcurrentCallsOfDifferentTools_EachMarkTheirRequest_WithTheirOwnToolsName()
     {
         // The API answers neither request before both have come in, so the two calls run at once.
@@ -129,17 +117,13 @@ public sealed class McpToolRequestFeatureTests
         Assert.StartsWith("HTTP 429: Too Many Requests", result);
     }
 
-    private async Task<WebApplication> StartAppAsync(bool areApiCallsInProcess = true, RateLimiting rateLimiting = RateLimiting.None)
+    private async Task<WebApplication> StartAppAsync(RateLimiting rateLimiting = RateLimiting.None)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
-        builder.Services.AddMcpTools(typeof(ToolRequestProbeTools).Assembly, options => options.AreApiCallsInProcess = areApiCallsInProcess);
-        if (areApiCallsInProcess)
-        {
-            // A tool's request over HTTP would come from the same address, so the client refuses it.
-            builder.Services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
-        }
+        builder.Services.AddMcpTools(typeof(ToolRequestProbeTools).Assembly);
+        builder.Services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
 
         if (rateLimiting != RateLimiting.None)
         {

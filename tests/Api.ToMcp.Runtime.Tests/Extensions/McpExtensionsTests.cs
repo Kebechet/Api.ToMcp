@@ -315,10 +315,10 @@ public class McpExtensionsTests
     }
 
     [Fact]
-    public void AddMcpTools_RegistersABaseUrlProvider_ThatSeesTheRequest()
+    public void AddMcpTools_RegistersABaseUrlProvider_ThatNamesTheServersAddress_WhateverTheMcpRequestIs()
     {
-        // An https request may not go to an http binding off loopback, which the provider can tell only from the request;
-        // the request's host it never follows.
+        // The address names a request that has no MCP request to take an address from, and is never called, so an http://
+        // binding off loopback serves an https:// MCP request too.
         var addresses = new ServerAddressesFeature();
         addresses.Addresses.Add("http://10.0.0.5:8080");
         var features = new FeatureCollection();
@@ -340,7 +340,7 @@ public class McpExtensionsTests
 
         var baseUrlProvider = provider.GetRequiredService<ISelfBaseUrlProvider>();
 
-        Assert.Throws<InvalidOperationException>(() => baseUrlProvider.GetBaseUrl());
+        Assert.Equal("http://10.0.0.5:8080", baseUrlProvider.GetBaseUrl());
     }
 
     [Fact]
@@ -378,26 +378,50 @@ public class McpExtensionsTests
     }
 
     [Fact]
-    public async Task AnInvokerRegisteredAgainAsATypedClient_CallsOverHttp_ThroughTheHandlerItIsGiven()
+    public async Task AnInvokerRegisteredAgainAsATypedClient_FailsSayingToRemoveThatRegistration()
     {
-        // Tests written before tools ran their requests in process re-register the typed client to hand it a TestServer
-        // handler; such an invoker keeps calling through that handler.
+        // Tests written for 2.x re-register the typed client to hand it a TestServer handler, which the invoker's missing
+        // public constructor would answer with a bare activation error.
         var requests = new List<string>();
         using var provider = BuildProvider(
             services =>
             {
                 RegisterHostServices(services);
                 services.AddMcpTools(ToolAssembly);
-                services.AddSingleton<ISelfBaseUrlProvider>(new FixedBaseUrlProvider("http://localhost"));
                 services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()
                     .ConfigurePrimaryHttpMessageHandler(() => new RecordingHandler(requests));
             },
             logs: null);
 
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CallThroughThePipelineTheHostBuildsAsync(provider));
+
+        Assert.Equal(
+            "McpHttpInvoker is registered as a typed client, as services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>() does, which replaces the invoker " +
+            "AddMcpTools registers. Only AddMcpTools creates McpHttpInvoker, and it runs every tool's API request in process, so remove that call: a test " +
+            "under WebApplicationFactory needs no TestServer handler for the tools. To configure the invoker's HttpClient, configure it by its name, as in " +
+            "services.AddHttpClient(nameof(IMcpHttpInvoker)).AddHttpMessageHandler(...).",
+            exception.Message);
+        Assert.Empty(requests);
+    }
+
+    [Fact]
+    public async Task AnInvokerRegisteredAsATypedClientBeforeAddMcpTools_GivesWayToTheOneAddMcpToolsRegisters()
+    {
+        var requests = new List<string>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                RegisterHostServices(services);
+                services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()
+                    .ConfigurePrimaryHttpMessageHandler(() => new RecordingHandler(requests));
+                services.AddMcpTools(ToolAssembly);
+            },
+            logs: null);
+
         var result = await CallThroughThePipelineTheHostBuildsAsync(provider);
 
-        Assert.Equal("over http", ((TextContentBlock)result.Content[0]).Text);
-        Assert.Equal(["http://localhost/api/status"], requests);
+        Assert.Equal("served in process", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Empty(requests);
     }
 
     [Fact]
@@ -408,6 +432,65 @@ public class McpExtensionsTests
         services.AddMcpTools(ToolAssembly);
 
         Assert.Contains(services, x => x.ServiceType == typeof(IHostedService) && x.ImplementationType == typeof(McpToolsStartupCheck));
+    }
+
+    [Fact]
+    public async Task StartupCheck_ReportsAnError_WhenTheHostStartedWithoutBuildingThePipeline()
+    {
+        // No web host, or an IApplicationBuilderFactory registered after AddMcpTools: every tool call would fail.
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(services => services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false), logs);
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+        await startupCheck.StartedAsync(CancellationToken.None);
+
+        var error = Assert.Single(logs, x => x.Level == LogLevel.Error);
+        Assert.Equal(
+            "The host started without building the app's request pipeline through the IApplicationBuilderFactory that AddMcpTools registers, so every tool " +
+            "call fails: a tool runs its API request in process, through that pipeline. Run the tools in an ASP.NET Core web host, such as a WebApplication, " +
+            "and register no IApplicationBuilderFactory of your own after AddMcpTools.",
+            error.Message);
+    }
+
+    [Fact]
+    public async Task StartupCheck_ReportsAHostWithoutAWebServer_OnceTheHostHasStarted()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { EnvironmentName = Environments.Production });
+        builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(new ListLoggerProvider(logs));
+        builder.Services.AddSingleton<IParityService, ParityService>();
+        builder.Services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+        using var host = builder.Build();
+
+        await host.StartAsync();
+        await host.StopAsync();
+
+        lock (logs)
+        {
+            Assert.Contains(logs, x => x.Level == LogLevel.Error && x.Message.StartsWith("The host started without building the app's request pipeline", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task StartupCheck_ReportsNothing_WhenTheHostBuiltThePipeline()
+    {
+        var logs = new List<(LogLevel Level, string Message)>();
+        using var provider = BuildProvider(
+            services =>
+            {
+                RegisterHostServices(services);
+                services.AddMcpTools(ToolAssembly, options => options.ArePropertyDescriptionsFromXmlDocs = false);
+            },
+            logs);
+        provider.GetRequiredService<IApplicationBuilderFactory>().CreateBuilder(new FeatureCollection()).Build();
+        var startupCheck = ActivatorUtilities.CreateInstance<McpToolsStartupCheck>(provider);
+
+        await startupCheck.StartAsync(CancellationToken.None);
+        await startupCheck.StartedAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs, x => x.Level >= LogLevel.Warning);
     }
 
     [Fact]
@@ -725,7 +808,7 @@ public class McpExtensionsTests
     }
 
     /// <summary>
-    /// What the web host registers with TryAdd, and a server with no address, so a request sent over HTTP fails.
+    /// What the web host registers with TryAdd, and a server bound to no address.
     /// </summary>
     private static void RegisterHostServices(IServiceCollection services)
     {
@@ -768,21 +851,6 @@ public class McpExtensionsTests
         {
             _requests.Add(request.RequestUri!.ToString());
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("over http") });
-        }
-    }
-
-    private sealed class FixedBaseUrlProvider : ISelfBaseUrlProvider
-    {
-        private readonly string _baseUrl;
-
-        public FixedBaseUrlProvider(string baseUrl)
-        {
-            _baseUrl = baseUrl;
-        }
-
-        public string GetBaseUrl()
-        {
-            return _baseUrl;
         }
     }
 

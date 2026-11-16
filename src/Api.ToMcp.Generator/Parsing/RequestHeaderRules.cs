@@ -20,7 +20,8 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The headers a tool never sends from an argument: the caller's credentials, which the invoker forwards or never
-        /// sends; the host, the loop prevention mark and the trace context, which the request carries of its own; the
+        /// sends; the host and the loop prevention mark, which the request carries of its own; the trace context, which is
+        /// the tool call's; the
         /// headers that frame or describe the body the tool writes, which <c>HttpClient</c> keeps among the content's; the
         /// hop-by-hop headers of the connection; and those a middleware reads to change the whole request, its method
         /// (<c>UseHttpMethodOverride</c>) or its client and scheme (<c>UseForwardedHeaders</c> and the like).
@@ -93,19 +94,14 @@ namespace Api.ToMcp.Generator.Parsing
 
         /// <summary>
         /// The headers a tool never sends from an argument that its request may carry of its own: the
-        /// <c>Authorization</c> it forwards from the MCP request, the host, the loop prevention mark, and, over HTTP, the
-        /// trace context and the <c>X-Forwarded-Proto</c> the invoker sends to a loopback address for an HTTPS request.
+        /// <c>Authorization</c> it forwards from the MCP request, the host and the loop prevention mark. The request runs in
+        /// process, so no <c>HttpClient</c> below the invoker's handlers adds the trace context to it.
         /// </summary>
         private static readonly HashSet<string> CarriedByTheRequest = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             HttpHeaderNames.Authorization,
             HttpHeaderNames.Host,
-            HttpHeaderNames.LoopPrevention,
-            HttpHeaderNames.TraceParent,
-            HttpHeaderNames.TraceState,
-            HttpHeaderNames.Baggage,
-            HttpHeaderNames.CorrelationContext,
-            HttpHeaderNames.ForwardedProto
+            HttpHeaderNames.LoopPrevention
         };
 
         /// <summary>

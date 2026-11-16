@@ -205,7 +205,7 @@ public static class McpRequestValueFormatter
 
     /// <summary>
     /// Adds a request header, its value written as a query value is, without the spaces and tabs around it, which Kestrel
-    /// drops, so a value arrives the same in process and over HTTP. A null value adds nothing, and a collection one value
+    /// drops, so the action gets the value it would get from a request sent to Kestrel. A null value adds nothing, and a collection one value
     /// per item, which MVC reads back as the items of an array once it splits the header at its commas: an item that
     /// holds a comma goes in quotes, which MVC removes. False, and nothing added, when a value holds a character an HTTP
     /// header cannot carry, anything but visible ASCII characters, spaces and tabs, or when an item is one MVC would read

@@ -4,16 +4,12 @@ using Api.ToMcp.Runtime.Options;
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Builder;
-using Microsoft.AspNetCore.Hosting.Server;
-using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
-using Moq;
 using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
@@ -129,19 +125,6 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
-    public async Task GetAsync_ForwardsNoScheme_InProcess_WhereTheRequestKeepsTheMcpRequestsOwn()
-    {
-        _accessor.HttpContext = CreateCaller();
-        var invoker = CreateInvoker(BuildEchoPipeline(), baseUrlProvider: CreateDefaultBaseUrlProvider("http://+:8080"));
-
-        var result = await invoker.GetAsync("/api/products/7");
-
-        var seen = Echoed(result);
-        Assert.Equal("https", seen.GetProperty("scheme").GetString());
-        Assert.Equal("", seen.GetProperty("forwardedProto").GetString());
-    }
-
-    [Fact]
     public async Task PostAsync_SendsTheJsonBody_InProcess()
     {
         _accessor.HttpContext = CreateCaller();
@@ -220,43 +203,33 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
-    public async Task GetAsync_SendsTheRequestOverHttp_WhenInProcessCallsAreOff()
+    public async Task GetAsync_FailsSayingWhy_WhenTheHostBuiltNoPipeline_AndSendsNothing()
     {
-        _accessor.HttpContext = CreateCaller();
-        var invoker = CreateInvoker(BuildEchoPipeline(), new McpScopeOptions { AreApiCallsInProcess = false });
-
-        await invoker.GetAsync("/api/products/7");
-
-        Assert.Equal([$"{ProviderBaseUrl}/api/products/7"], _httpHandler.Requests);
-    }
-
-    [Fact]
-    public async Task GetAsync_SendsTheRequestOverHttp_WhenTheHostBuiltNoPipeline()
-    {
+        // The host has not started, or is no ASP.NET Core web host; the request used to go over HTTP then.
         _accessor.HttpContext = CreateCaller();
         var services = new ServiceCollection().AddLogging().BuildServiceProvider();
         var unbuiltPipeline = new InProcessApiPipeline(new DefaultHttpContextFactory(services), NullLogger<InProcessApiPipeline>.Instance, InProcessRequestDiagnostics.Create(services));
         var invoker = CreateInvoker(unbuiltPipeline);
 
-        await invoker.GetAsync("/api/products/7");
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => invoker.GetAsync("/api/products/7"));
 
-        Assert.Equal([$"{ProviderBaseUrl}/api/products/7"], _httpHandler.Requests);
+        Assert.Equal(
+            "The tool's API request GET https://api.example.com/v1/api/products/7 cannot run: a tool runs its API request in process, through the app's request " +
+            "pipeline, and the host has not built it. An ASP.NET Core web host builds it when it starts, so call a tool only once the app has started, with " +
+            "app.Run(), app.StartAsync() or WebApplicationFactory, and register no IApplicationBuilderFactory of your own after AddMcpTools.",
+            exception.Message);
+        Assert.Empty(_httpHandler.Requests);
     }
 
     /// <summary>
-    /// The invoker with a client built as <c>AddMcpTools</c> builds it: <see cref="InProcessApiHandler"/> right above the
-    /// primary handler, which records every request it gets.
+    /// The invoker with a client built as <c>AddMcpTools</c> builds it: <see cref="InProcessApiHandler"/> right above a
+    /// primary handler, here one that records every request it gets.
     /// </summary>
     /// <remarks>
     /// Without <paramref name="hasInProcessHandler"/>, the client has the primary handler alone, as when the app took away
     /// the filter that adds <see cref="InProcessApiHandler"/>.
     /// </remarks>
-    private McpHttpInvoker CreateInvoker(
-        InProcessApiPipeline pipeline,
-        McpScopeOptions? scopeOptions = null,
-        TimeSpan? timeout = null,
-        ISelfBaseUrlProvider? baseUrlProvider = null,
-        bool hasInProcessHandler = true)
+    private McpHttpInvoker CreateInvoker(InProcessApiPipeline pipeline, TimeSpan? timeout = null, bool hasInProcessHandler = true)
     {
         HttpMessageHandler chain = hasInProcessHandler
             ? new InProcessApiHandler(pipeline) { InnerHandler = _httpHandler }
@@ -269,24 +242,12 @@ public class McpHttpInvokerInProcessTests
 
         return new McpHttpInvoker(
             httpClient,
-            baseUrlProvider ?? new FixedBaseUrlProvider(ProviderBaseUrl),
+            new FixedBaseUrlProvider(ProviderBaseUrl),
             _accessor,
             NullLogger<McpHttpInvoker>.Instance,
-            Microsoft.Extensions.Options.Options.Create(scopeOptions ?? new McpScopeOptions()),
+            Microsoft.Extensions.Options.Options.Create(new McpScopeOptions()),
             pipeline,
             new InProcessApiHandlerCheck(() => true, () => chain));
-    }
-
-    private DefaultBaseUrlProvider CreateDefaultBaseUrlProvider(string boundAddress)
-    {
-        var addressesFeature = new ServerAddressesFeature();
-        addressesFeature.Addresses.Add(boundAddress);
-        var features = new FeatureCollection();
-        features.Set<IServerAddressesFeature>(addressesFeature);
-        var server = new Mock<IServer>();
-        server.Setup(x => x.Features).Returns(features);
-
-        return new DefaultBaseUrlProvider(server.Object, new ConfigurationBuilder().Build(), _accessor);
     }
 
     private static DefaultHttpContext CreateCaller()
@@ -315,7 +276,6 @@ public class McpHttpInvokerInProcessTests
                 ["query"] = context.Request.QueryString.Value,
                 ["authorization"] = context.Request.Headers.Authorization.ToString(),
                 ["internalCall"] = context.Request.Headers["X-MCP-Internal-Call"].ToString(),
-                ["forwardedProto"] = context.Request.Headers["X-Forwarded-Proto"].ToString(),
                 ["contentType"] = context.Request.ContentType,
                 ["tenants"] = context.Request.Headers["X-Tenant"].ToArray(),
                 ["body"] = body

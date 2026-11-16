@@ -1,15 +1,15 @@
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
-/// The address the tools call the API at: <c>McpTools:BaseUrl</c> as given when it is set, else an address the server
-/// is bound to. No header of the MCP request decides it: <c>Host</c> and <c>X-Forwarded-Host</c> are the client's to set,
-/// so following them sent the tool's request to any server the app can reach
-/// (https://github.com/Kebechet/Api.ToMcp/issues/48).
+/// The address that names a tool's request to the app when the request has no MCP request to take its address from:
+/// <c>McpTools:BaseUrl</c> as given when it is set, else an address the server is bound to. The request runs in process,
+/// so the address is never called. No header of an MCP request decides it: <c>Host</c> and <c>X-Forwarded-Host</c> are
+/// the client's to set, so following them, when tools still sent their requests to an address, sent the tool's request
+/// to any server the app can reach (https://github.com/Kebechet/Api.ToMcp/issues/48).
 /// </summary>
 public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
 {
@@ -18,19 +18,19 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
 
     /// <summary>
     /// What Kestrel puts after the scheme of a unix socket's or a named pipe's address, as in <c>http://unix:/run/app.sock</c>
-    /// and <c>http://pipe:/name</c>. An HTTP client would take <c>unix</c> or <c>pipe</c> for a TCP host.
+    /// and <c>http://pipe:/name</c>. A URL would take <c>unix</c> or <c>pipe</c> for its host and the socket's path for the
+    /// start of its own.
     /// </summary>
     private static readonly string[] NonTcpHostPrefixes = ["unix:", "pipe:"];
 
     private readonly IServer _server;
     private readonly IConfiguration _configuration;
-    private readonly IHttpContextAccessor? _httpContextAccessor;
-    private ResolvedBaseUrl? _cachedBaseUrl;
+    private string? _cachedBaseUrl;
     private readonly object _lock = new();
 
     /// <summary>
-    /// A provider that cannot see the request, so it also calls an <c>http://</c> binding off loopback for an MCP request
-    /// that came in over <c>https://</c>.
+    /// A provider that reads <c>McpTools:BaseUrl</c> from <paramref name="configuration"/>, and otherwise the addresses
+    /// <paramref name="server"/> is bound to once it has started.
     /// </summary>
     public DefaultBaseUrlProvider(IServer server, IConfiguration configuration)
     {
@@ -38,32 +38,10 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
         _configuration = configuration;
     }
 
-    public DefaultBaseUrlProvider(IServer server, IConfiguration configuration, IHttpContextAccessor httpContextAccessor)
-        : this(server, configuration)
-    {
-        _httpContextAccessor = httpContextAccessor;
-    }
-
     /// <exception cref="InvalidOperationException">
-    /// The server is bound to no TCP address; or the MCP request came in over <c>https://</c> and the only address is an
-    /// <c>http://</c> binding off loopback, which would carry the caller's token in clear text off the machine, from an
-    /// address the app's forwarded headers do not trust by default. Both say to set <c>McpTools:BaseUrl</c>.
+    /// <c>McpTools:BaseUrl</c> is not set and the server is bound to no TCP address. The message says to set it.
     /// </exception>
     public string GetBaseUrl()
-    {
-        var baseUrl = GetConfiguredOrBoundUrl();
-        if (baseUrl.IsHttpBindingOffLoopback && _httpContextAccessor?.HttpContext?.Request.IsHttps == true)
-        {
-            throw new InvalidOperationException(
-                $"The MCP request came in over HTTPS, and the only address the server is bound to is '{baseUrl.Url}', an http:// address off loopback. " +
-                "A tool's request there would carry the caller's Authorization in clear text, and the app would not trust it to stand for an HTTPS request. " +
-                $"Configure '{BaseUrlConfigurationKey}' in appsettings.json with an address the app serves without a redirect, or bind the server to localhost or a wildcard address as well.");
-        }
-
-        return baseUrl.Url;
-    }
-
-    private ResolvedBaseUrl GetConfiguredOrBoundUrl()
     {
         if (_cachedBaseUrl is not null)
             return _cachedBaseUrl;
@@ -78,42 +56,28 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
         }
     }
 
-    private ResolvedBaseUrl ResolveConfiguredOrBoundUrl()
+    private string ResolveConfiguredOrBoundUrl()
     {
-        // First, check configuration
         var configuredUrl = _configuration[BaseUrlConfigurationKey];
         if (!string.IsNullOrEmpty(configuredUrl))
         {
-            return new ResolvedBaseUrl(configuredUrl.TrimEnd(RouteTokens.PathSeparator), IsHttpBindingOffLoopback: false);
+            return configuredUrl.TrimEnd(RouteTokens.PathSeparator);
         }
 
         var addresses = _server.Features.Get<IServerAddressesFeature>()?.Addresses.ToList() ?? [];
         var tcpAddresses = addresses.Where(x => !IsUnixSocketOrNamedPipe(x)).Select(NormalizeBindingAddress).ToList();
 
-        // Prefer HTTPS addresses from IServerAddressesFeature for direct localhost self-calls.
-        var httpsAddress = tcpAddresses.FirstOrDefault(a => a.StartsWith(HttpsAddressPrefix, StringComparison.OrdinalIgnoreCase));
-        if (httpsAddress is not null)
+        // An https:// address keeps the request from a redirect by UseHttpsRedirection.
+        var address = tcpAddresses.FirstOrDefault(a => a.StartsWith(HttpsAddressPrefix, StringComparison.OrdinalIgnoreCase)) ?? tcpAddresses.FirstOrDefault();
+        if (address is not null)
         {
-            return new ResolvedBaseUrl(httpsAddress, IsHttpBindingOffLoopback: false);
-        }
-
-        // Use HTTP address from server if available (works when UseHttpsRedirection is not in the pipeline). One on
-        // loopback, where a wildcard binding is called, is what the app's forwarded headers trust by default.
-        var loopbackAddress = tcpAddresses.FirstOrDefault(IsLoopback);
-        if (loopbackAddress is not null)
-        {
-            return new ResolvedBaseUrl(loopbackAddress, IsHttpBindingOffLoopback: false);
-        }
-
-        if (tcpAddresses.Count > 0)
-        {
-            return new ResolvedBaseUrl(tcpAddresses[0], IsHttpBindingOffLoopback: true);
+            return address;
         }
 
         if (addresses.Count > 0)
         {
             throw new InvalidOperationException(
-                $"Unable to determine base URL. The server is bound only to a unix socket or a named pipe ({string.Join(", ", addresses)}), which a tool cannot call over HTTP. " +
+                $"Unable to determine base URL. The server is bound only to a unix socket or a named pipe ({string.Join(", ", addresses)}), whose address names no host for a tool's request. " +
                 $"Configure '{BaseUrlConfigurationKey}' in appsettings.json.");
         }
 
@@ -129,14 +93,9 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
         return NonTcpHostPrefixes.Any(x => afterScheme.StartsWith(x, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static bool IsLoopback(string address)
-    {
-        return Uri.TryCreate(address, UriKind.Absolute, out var uri) && uri.IsLoopback;
-    }
-
     /// <summary>
     /// Normalizes wildcard binding addresses (e.g., http://+:80, http://0.0.0.0:80, http://[::]:80)
-    /// into localhost addresses that are valid for HTTP client self-calls.
+    /// into localhost addresses that are valid URLs.
     /// Uri constructor cannot be used here because hosts like "+" and "*" are not valid URIs.
     /// </summary>
     internal static string NormalizeBindingAddress(string address)
@@ -186,10 +145,4 @@ public sealed class DefaultBaseUrlProvider : ISelfBaseUrlProvider
 
         return trimmed;
     }
-
-    /// <summary>
-    /// The configured or bound address, and whether it is an <c>http://</c> binding off loopback, which a tool's request for
-    /// an MCP request over <c>https://</c> must not be sent to.
-    /// </summary>
-    private sealed record ResolvedBaseUrl(string Url, bool IsHttpBindingOffLoopback);
 }

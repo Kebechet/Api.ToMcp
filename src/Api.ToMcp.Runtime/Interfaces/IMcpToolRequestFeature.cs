@@ -1,12 +1,9 @@
-using Api.ToMcp.Runtime.Options;
-
 namespace Api.ToMcp.Runtime;
 
 /// <summary>
-/// Marks a request that a tool runs through the app's request pipeline in process, as it does with
-/// <see cref="McpScopeOptions.AreApiCallsInProcess"/> on. The invoker sets it on the request's own features, so no
-/// client can send it, unlike the <c>X-MCP-Internal-Call</c> header. A tool's request over HTTP is one the server
-/// receives, and does not carry it. Read it with <see cref="McpToolRequestExtensions.IsMcpToolRequest"/>, or with
+/// Marks a request that a tool runs through the app's request pipeline in process, as every tool's request runs. The
+/// invoker sets it on the request's own features, so no client can send it, unlike the <c>X-MCP-Internal-Call</c>
+/// header. Read it with <see cref="McpToolRequestExtensions.IsMcpToolRequest"/>, or with
 /// <c>HttpContext.Features.Get&lt;IMcpToolRequestFeature&gt;()</c> for the tool's name.
 /// </summary>
 public interface IMcpToolRequestFeature

@@ -716,21 +716,15 @@ What Kestrel decides about a request it serves holds for the tool's request too:
 
 A redirect is followed as `HttpClient` follows one, up to 50 times: a `303` turns the request into a `GET` without a body, as a `300`, `301` or `302` does a `POST`, and a `307` or `308` keeps the method and the body. It is followed only when it leads back into the app: to the scheme, host and port of the tool's request, under any path base a proxy or the server gave the MCP request. The next request then keeps `Authorization`, which `HttpClient` drops on every redirect. Any other redirect comes back as it is, as an error result such as `HTTP 302: Found`, and nothing is sent to its `Location`.
 
-The tool sends the request through the invoker's `HttpClient`, and its message handlers run around the request as they do around one sent over HTTP (see [Custom HTTP Invocation](#custom-http-invocation)). The client applies its `Timeout`, 100 seconds unless you configure it, and fails a call that outlasts it as it fails any other. Canceling the call ends it at once, even when your action does not watch `HttpContext.RequestAborted`, as long as the client's message handlers pass the cancellation token on; the request is aborted, and finishes and is cleaned up in the background. A handler that sends the request on without the token keeps the call waiting for your action, past the `Timeout` too, as it does over HTTP.
+The tool sends the request through the invoker's `HttpClient`, and its message handlers run around the request as they do around one they send to a server (see [Custom HTTP Invocation](#custom-http-invocation)). The client applies its `Timeout`, 100 seconds unless you configure it, and fails a call that outlasts it as it fails any other. Canceling the call ends it at once, even when your action does not watch `HttpContext.RequestAborted`, as long as the client's message handlers pass the cancellation token on; the request is aborted, and finishes and is cleaned up in the background. A handler that sends the request on without the token keeps the call waiting for your action, past the `Timeout` too, as it would keep waiting for a server.
 
-The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Give the tool's requests a partition of their own for each client, as [Telling a tool's request apart](#telling-a-tools-request-apart) shows. Over HTTP, the request came from the server itself.
+The request carries the MCP request's connection, so a rate limiter partitioned by client address or connection counts it against the same client, which still holds the MCP request. With a per-address concurrency limit of 1, every tool call gets `429`, and a per-address window counts each tool call twice. Give the tool's requests a partition of their own for each client, as [Telling a tool's request apart](#telling-a-tools-request-apart) shows.
 
-To send the request over HTTP instead, to the address from [Base URL Resolution](#base-url-resolution), turn the option off:
-
-```csharp
-builder.Services.AddMcpTools(Assembly.GetExecutingAssembly(), options => options.AreApiCallsInProcess = false);
-```
-
-The tools also call over HTTP through an `McpHttpInvoker` you create with its constructor, and in an app whose host never builds a request pipeline, which an ASP.NET Core host always does when it starts.
+The request never leaves the process. `AddMcpTools` gives the invoker's client a primary handler that refuses every request, so no handler of the client sends it anywhere, whatever host the MCP request names, which is the client's to set (https://github.com/Kebechet/Api.ToMcp/issues/48). When the client cannot serve the request in process, because code that ran after `AddMcpTools` took away the filter that adds the handler serving it, or registered an `IHttpClientFactory` of its own, the tool serves the request in process without the client, and the log has a warning once the host has started; see [Custom HTTP Invocation](#custom-http-invocation). The host builds the pipeline when it starts: a tool called before then, or in a host that is no ASP.NET Core web host, fails with an `InvalidOperationException` that says so, and a host that started without building the pipeline logs an error once it has started; see [Troubleshooting](#troubleshooting). Before 3.0, a tool could send its request to your API's address instead; see [Migrating from 2.x](#migrating-from-2x).
 
 ### Telling a tool's request apart
 
-In process, the tool's request carries `IMcpToolRequestFeature`, which the invoker sets on the request's own features. No client can send it, unlike the `X-MCP-Internal-Call` header, so your code can rely on it, in a rate limiter's partition, a middleware or a logger:
+The tool's request carries `IMcpToolRequestFeature`, which the invoker sets on the request's own features. No client can send it, unlike the `X-MCP-Internal-Call` header, so your code can rely on it, in a rate limiter's partition, a middleware or a logger:
 
 ```csharp
 using Api.ToMcp.Runtime;
@@ -741,7 +735,7 @@ if (context.IsMcpToolRequest())
 }
 ```
 
-`ToolName` is the name of the tool whose call sent the request, as the MCP client called it. It is `null` only when code of your own calls the invoker outside a tool call, which includes work a tool call started, such as a task or a timer, once that call has ended. A tool's request over HTTP, with `AreApiCallsInProcess` off, is one the server receives, and carries no feature; there only the header marks it. The MCP endpoint refuses a request that carries the feature; see [What the tool's request carries](#what-the-tools-request-carries).
+`ToolName` is the name of the tool whose call sent the request, as the MCP client called it. It is `null` only when code of your own calls the invoker outside a tool call, which includes work a tool call started, such as a task or a timer, once that call has ended. The MCP endpoint refuses a request that carries the feature; see [What the tool's request carries](#what-the-tools-request-carries).
 
 A rate limiter that covers the MCP endpoint, such as a global one, counts the MCP request against the client already, so give the tool's requests a partition of their own for each client, keyed by the mark and the client's address:
 
@@ -800,44 +794,21 @@ The Windows user IIS authenticated does not reach the tool's request, so an acti
 
 ## Base URL Resolution
 
-A tool calls your API at a base URL when it calls over HTTP, which it does only with `AreApiCallsInProcess` off; see [How Tools Call Your API](#how-tools-call-your-api). In process, the base URL only addresses a request the tool runs outside an MCP request (see [When the link breaks](#when-the-link-breaks)), which does not leave the process either. The base URL comes from `ISelfBaseUrlProvider`. The default implementation (`DefaultBaseUrlProvider`, registered automatically by `AddMcpTools`) resolves the URL in this order:
+A tool's request takes the scheme, host and path base of its MCP request (see [How Tools Call Your API](#how-tools-call-your-api)). When it has no MCP request to take them from, it takes them from a base URL: when code of your own calls the tool or the invoker outside an MCP request, such as in a background service; when a stateful session runs its tool calls without their requests (see [When the link breaks](#when-the-link-breaks)); and when the MCP request has no `Host`. The base URL only names the request to your app, which sees its scheme and host as the request's. Nothing is sent there: the request runs in process like any other.
 
-1. The `McpTools:BaseUrl` configuration value, if set (e.g. in `appsettings.json`), used as given: an `http://` address stays `http://`.
-2. The first `https://` address the server is bound to.
-3. The first `http://` address on loopback, with wildcard hosts (`+`, `*`, `0.0.0.0`, `[::]`) normalized to `localhost`: a container bound to `http://+:8080` is called at `http://localhost:8080`.
-4. The first other address, such as a specific IP address or a host name. Under IIS in process and HTTP.sys, the server's addresses are the site's bindings, which may name a host.
+The base URL comes from `ISelfBaseUrlProvider`. The default implementation, `DefaultBaseUrlProvider`, which `AddMcpTools` registers, takes:
 
-A unix socket's or a named pipe's address, such as `http://unix:/run/app.sock` or `http://pipe:/name`, is skipped, as an HTTP client cannot call it.
+1. The `McpTools:BaseUrl` configuration value, if set (e.g. in `appsettings.json`), as given. A path in it, such as `/v1` in `https://api.example.com/v1`, goes in front of the tool's route, for `UsePathBase` or `Map` to take.
+2. Otherwise the first `https://` address the server is bound to, and without one the first `http://` address, with a wildcard host (`+`, `*`, `0.0.0.0`, `[::]`) named `localhost`: a container bound to `http://+:8080` names the request `http://localhost:8080/...`. A unix socket's or a named pipe's address, such as `http://unix:/run/app.sock` or `http://pipe:/name`, names no host, and is skipped.
 
-No header of the MCP request decides the address. `Host`, and `X-Forwarded-Host` where the app reads it, are the client's to set, so a client could otherwise send the tool's request, with its `Authorization` header, to any server the app can reach (https://github.com/Kebechet/Api.ToMcp/issues/48).
+It resolves the address once. With neither, as under `TestServer`, which is bound to no address, `GetBaseUrl()` throws an `InvalidOperationException` that says to set `McpTools:BaseUrl`, and the tool call fails.
 
-Behind a reverse proxy that terminates TLS, the server listens only on HTTP, and the MCP request counts as HTTPS because the app trusts the proxy's `X-Forwarded-Proto`. `UseHttpsRedirection` would then send the tool's request to the `http://` binding on to an HTTPS port nothing listens on locally. So when the tool calls an `http://` address on loopback and the MCP request came in over `https://`, the tool's request carries `X-Forwarded-Proto: https`, whichever `ISelfBaseUrlProvider` gave the address, and the app serves it as HTTPS too. A request to a loopback address comes from loopback, which `ForwardedHeadersOptions` trusts by default. The header takes the name `ForwardedHeadersOptions.ForwardedProtoHeaderName` gives it, as the app configures the options in its services.
-
-An MCP request over `https://` whose only address is an `http://` binding off loopback, a specific IP address or a host name, fails with an `InvalidOperationException` that says to set `McpTools:BaseUrl`. A call there would carry the caller's token in clear text off the machine, and the app would not trust its `X-Forwarded-Proto` by default. An MCP request over `http://` still calls it, as before.
-
-These setups need more:
-
-- **Known proxies of your own.** When you replaced `KnownProxies` and `KnownNetworks` (`KnownIPNetworks` from .NET 10) with your proxy's addresses, add `IPAddress.Loopback` and `IPAddress.IPv6Loopback` to `KnownProxies`. Otherwise the app takes the tool's request for HTTP and redirects it. Clearing both lists, which trusts every address, needs nothing.
-- **A restricted `AllowedHosts`.** The tool's request names the bound address in its `Host`, such as `localhost:8080`, so add its host, `localhost`, or host filtering answers `400`.
-- **`RequireHeaderSymmetry`.** With `ForwardedHeaders.XForwardedFor` and `RequireHeaderSymmetry = true`, the app ignores the tool's `X-Forwarded-Proto`, which comes without an `X-Forwarded-For`, and redirects the request.
-- **Forwarded-headers options passed to `UseForwardedHeaders(options)`** rather than configured in the services: the invoker cannot see a `ForwardedProtoHeaderName` you renamed there, and sends `X-Forwarded-Proto`.
-- **A server bound only to `http://` addresses off loopback**, or **only to a unix socket or a named pipe**: see above.
-- **IIS out of process.** The app there refuses a request that did not come through IIS, which pairs each one with a token, so the bound address answers `400`.
-
-In each of them you can set `McpTools:BaseUrl` instead.
-
-The tool's request names the bound address, so an absolute URL the API builds from the request, with `Url.Link`, `LinkGenerator` or for pagination, names it too, such as `https://localhost:8080/api/orders?page=2`, which no client can reach. Set `McpTools:BaseUrl` to the public address, or call in process, where the tool's request keeps the MCP request's host.
-
-The configured or bound address is cached after the first resolution; whether a call carries `X-Forwarded-Proto`, or is refused, is decided for each call. If none of the above yields an address, `GetBaseUrl()` throws with guidance to set `McpTools:BaseUrl`.
-
-The invoker calls whatever address `ISelfBaseUrlProvider` returns, so the address of a provider of your own is used as given too, with `X-Forwarded-Proto` when it is an `http://` address on loopback. An `http://` address in an app that redirects HTTP to HTTPS is redirected like any other request, so pin an address the app serves without a redirect.
-
-**Pinning the base URL** (recommended behind a reverse proxy or in containers):
+Set `McpTools:BaseUrl` when the bound address is not how your app should see the request: an `http://` address that `UseHttpsRedirection` redirects, which comes back as an error result such as `HTTP 307: Temporary Redirect`; a host that a restricted `AllowedHosts` answers with `400`; or an absolute URL your API builds from the request, with `Url.Link`, `LinkGenerator` or for pagination, which should name your public address:
 
 ```json
 {
   "McpTools": {
-    "BaseUrl": "https://localhost:5001"
+    "BaseUrl": "https://api.example.com"
   }
 }
 ```
@@ -852,13 +823,13 @@ builder.Services.AddSingleton<ISelfBaseUrlProvider, MyBaseUrlProvider>();
 ```csharp
 public sealed class MyBaseUrlProvider : ISelfBaseUrlProvider
 {
-    public string GetBaseUrl() => "https://api.internal.example.com";
+    public string GetBaseUrl() => "https://api.example.com";
 }
 ```
 
 ## Custom HTTP Invocation
 
-Every generated tool depends on `IMcpHttpInvoker`, the contract that actually performs the API call. The default implementation (`McpHttpInvoker`) runs the request in process (see [How Tools Call Your API](#how-tools-call-your-api)), or over HTTP at the URL from `ISelfBaseUrlProvider`, forwards the incoming `Authorization` header, adds the `X-MCP-Internal-Call` loop-prevention header, and runs scope validation via `BeforeInvokeAsync`.
+Every generated tool depends on `IMcpHttpInvoker`, the contract that actually performs the API call. The default implementation (`McpHttpInvoker`), which only `AddMcpTools` creates, runs the request in process (see [How Tools Call Your API](#how-tools-call-your-api)), forwards the incoming `Authorization` header, adds the `X-MCP-Internal-Call` loop-prevention header, and runs scope validation via `BeforeInvokeAsync`.
 
 ```csharp
 public interface IMcpHttpInvoker
@@ -875,7 +846,7 @@ public interface IMcpHttpInvoker
 }
 ```
 
-You rarely need to implement this yourself, but you can substitute it — for example to stub calls in tests — by registering your own implementation after `AddMcpTools`.
+You rarely need to implement this yourself, but you can substitute it — for example to stub calls in tests — by registering your own implementation after `AddMcpTools`. One that calls another server is shown in [Migrating from 2.x](#migrating-from-2x).
 
 The tool of an action with `[FromHeader]` or `[FromForm]` parameters sends request headers or a form, which these methods cannot carry. It builds an `McpHttpRequest` and sends it through `IMcpHttpRequestInvoker`, which extends `IMcpHttpInvoker` and which the default invoker implements:
 
@@ -889,15 +860,13 @@ public interface IMcpHttpRequestInvoker : IMcpHttpInvoker
 
 An invoker of your own that implements only `IMcpHttpInvoker`, such as a decorator, keeps working: such a tool calls its method for the HTTP method when the call carries no header and no form, as when an optional header is left out, and otherwise returns an error result that names `IMcpHttpRequestInvoker`. The app logs a warning from `Api.ToMcp.Runtime.Services.McpRequestInvokerCheck` at the first call of such a tool through each such invoker. Implement `IMcpHttpRequestInvoker` as well to serve those calls. Its `McpHttpRequest` holds the headers, the JSON body or the form, in `FormCulture` the culture the form's numbers and dates are written in, and in `HeaderArguments` the argument each header comes from, for an error result to name; the default invoker answers a header the app trusts from its proxy with such an error result, as [Headers a tool never sets](#headers-a-tool-never-sets) says, and names the culture of a form as [Limitations](#limitations) says.
 
-The invoker's `HttpClient` is the named client `IMcpHttpInvoker`. Configure it by that name, before or after `AddMcpTools`, as in `services.AddHttpClient(nameof(IMcpHttpInvoker)).AddHttpMessageHandler(...)`. The invoker sends every call through it, in process too, so its `Timeout`, its `DefaultRequestHeaders` and its message handlers apply to every call: a handler added with `AddHttpMessageHandler` to set an API key, `AddStandardResilienceHandler` with its retries, timeouts and circuit breaker, a logger added with `AddLogger`, the handlers `ConfigureHttpClientDefaults` gives every client, as .NET Aspire's service defaults give `AddStandardResilienceHandler`, the handlers another package adds to every client through an `IHttpMessageHandlerBuilderFilter`, such as Sentry's, which by default reports each request that gets a `5xx` response as an error event of its own, and the client factory's own logging, which logs a request served in process as `Sending HTTP request GET https://...`, as any other. A default header does not replace a header the request carries: `Authorization` from the MCP request, `X-MCP-Internal-Call` and the `[FromHeader]` arguments keep their values, and a default `Authorization` reaches your action when the MCP request had none.
+The invoker's `HttpClient` is the named client `IMcpHttpInvoker`. Configure it by that name, before or after `AddMcpTools`, as in `services.AddHttpClient(nameof(IMcpHttpInvoker)).AddHttpMessageHandler(...)`. The invoker sends every call through it, so its `Timeout`, its `DefaultRequestHeaders` and its message handlers apply to every call: a handler added with `AddHttpMessageHandler` to set an API key, `AddStandardResilienceHandler` with its retries, timeouts and circuit breaker, a logger added with `AddLogger`, the handlers `ConfigureHttpClientDefaults` gives every client, as .NET Aspire's service defaults give `AddStandardResilienceHandler`, the handlers another package adds to every client through an `IHttpMessageHandlerBuilderFilter`, such as Sentry's, which by default reports each request that gets a `5xx` response as an error event of its own, and the client factory's own logging, which logs a request served in process as `Sending HTTP request GET https://...`, as any other. A default header does not replace a header the request carries: `Authorization` from the MCP request, `X-MCP-Internal-Call` and the `[FromHeader]` arguments keep their values, and a default `Authorization` reaches your action when the MCP request had none.
 
-`AddMcpTools` adds the handler that serves the request in process below every other handler of the client, the factory's logging handlers and those of `AddLogger` included, right above the primary handler. Your handlers run outside it, in their order: each sees the request before it is served and its response after. One that retries runs the request through your app again, whatever its method: `AddStandardResilienceHandler` does so after a `5xx`, `408` or `429` response, up to 3 times. It also cancels each attempt after 10 seconds and tries it again, and fails the whole call after 30 seconds with Polly's `TimeoutRejectedException`, within the client's default `Timeout` of 100 seconds. Its circuit breaker opens once at least 10% of at least 100 attempts within 30 seconds got such a response or failed, and then for 5 seconds every tool call through this client fails with Polly's `BrokenCircuitException`, also those your API would answer: the tool throws it, so the MCP client gets `An error occurred invoking '<tool>'.` instead of your API's answer. To keep the resilience handlers that `ConfigureHttpClientDefaults` gives every client, such as .NET Aspire's `AddStandardResilienceHandler`, off the tool's request, remove them from this client with `services.AddHttpClient(nameof(IMcpHttpInvoker)).RemoveAllResilienceHandlers()`, available from Microsoft.Extensions.Http.Resilience 9.2.0 and marked experimental, so suppress `EXTEXP0001` where you call it. A redirect back into the app is followed inside the pipeline, below your handlers, as `SocketsHttpHandler` follows one below them when it follows redirects itself, so a handler sees the request once and gets the last response. In process, the primary handler never runs: what you set with `ConfigurePrimaryHttpMessageHandler`, such as a `TestServer` handler, applies only to a call over HTTP, and does not decide whether a call runs in process. The handler that serves the request comes from an `IHttpMessageHandlerBuilderFilter` that `AddMcpTools` registers ahead of the others, and code that runs after `AddMcpTools` can take it away: `services.RemoveAll<IHttpMessageHandlerBuilderFilter>()`, or `services.Replace(...)` with a filter of your own, which removes the first filter registered. An `IHttpClientFactory` of your own registered after `AddMcpTools`, as a test may register one to stub outgoing calls, creates the invoker's client itself, and its handlers cannot be checked, so the client counts as one without that handler, even when your factory hands the call on to the default one. A tool then still serves its request in process, never through the primary handler, but without the client: its message handlers and `DefaultRequestHeaders` do not apply, its `Timeout` does, and the startup log has a warning from `Api.ToMcp.Runtime.Services.McpToolsStartupCheck` that names the cause. To keep the handlers, register a filter of your own with `services.TryAddEnumerable(...)` instead of `Replace`, turn the factory's logging off with `services.ConfigureHttpClientDefaults(http => http.RemoveAllLoggers())` instead of `RemoveAll`, and stub outgoing calls with `services.ConfigureHttpClientDefaults(http => http.ConfigurePrimaryHttpMessageHandler(...))` instead of a client factory of your own. Calling `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()` instead registers the invoker again, as one created with its constructor, which always calls over HTTP and knows only the default names of the headers the app trusts from its proxy.
-
-Over HTTP, the invoker follows a redirect as it does in process: as `HttpClient` follows one, up to 50 times, but only back to the scheme, host and port it called, keeping `Authorization`. Any other redirect comes back as it is, as an error result such as `HTTP 302: Found`, and nothing is sent to its `Location`, so an action that redirects to a URL from its input cannot send the tool's request to another server. For that, `AddMcpTools` turns off `AllowAutoRedirect` on the client's primary handler. A primary handler you set for the client after `AddMcpTools` replaces that one and keeps its own setting: with `AllowAutoRedirect` on, `HttpClient` follows every redirect, to any host, before the invoker sees it.
+`AddMcpTools` adds the handler that serves the request in process below every other handler of the client, the factory's logging handlers and those of `AddLogger` included, right above the primary handler. Your handlers run outside it, in their order: each sees the request before it is served and its response after. One that retries runs the request through your app again, whatever its method: `AddStandardResilienceHandler` does so after a `5xx`, `408` or `429` response, up to 3 times. It also cancels each attempt after 10 seconds and tries it again, and fails the whole call after 30 seconds with Polly's `TimeoutRejectedException`, within the client's default `Timeout` of 100 seconds. Its circuit breaker opens once at least 10% of at least 100 attempts within 30 seconds got such a response or failed, and then for 5 seconds every tool call through this client fails with Polly's `BrokenCircuitException`, also those your API would answer: the tool throws it, so the MCP client gets `An error occurred invoking '<tool>'.` instead of your API's answer. To keep the resilience handlers that `ConfigureHttpClientDefaults` gives every client, such as .NET Aspire's `AddStandardResilienceHandler`, off the tool's request, remove them from this client with `services.AddHttpClient(nameof(IMcpHttpInvoker)).RemoveAllResilienceHandlers()`, available from Microsoft.Extensions.Http.Resilience 9.2.0 and marked experimental, so suppress `EXTEXP0001` where you call it. A redirect back into the app is followed inside the pipeline, below your handlers, as `SocketsHttpHandler` follows one below them when it follows redirects itself, so a handler sees the request once and gets the last response. The primary handler never runs: `AddMcpTools` puts one in its place that refuses every request, so a primary handler you set with `ConfigurePrimaryHttpMessageHandler`, such as a `TestServer` handler, or one `ConfigureHttpClientDefaults` sets for every client, never gets a request. The client serves only the requests the invoker marks as its own, and refuses any other with an `InvalidOperationException`: a request your own code sends through it, or one of an invoker of your own registered as a typed client with `services.AddHttpClient<IMcpHttpInvoker, MyInvoker>()`, which takes this client's name. Give such a client a name of its own, as in `services.AddHttpClient<IMcpHttpInvoker, MyInvoker>("MyInvoker")`. The handler that serves the request comes from an `IHttpMessageHandlerBuilderFilter` that `AddMcpTools` registers ahead of the others, and code that runs after `AddMcpTools` can take it away: `services.RemoveAll<IHttpMessageHandlerBuilderFilter>()`, or `services.Replace(...)` with a filter of your own, which removes the first filter registered. An `IHttpClientFactory` of your own registered after `AddMcpTools`, as a test may register one to stub outgoing calls, creates the invoker's client itself, and its handlers cannot be checked, so the client counts as one without that handler, even when your factory hands the call on to the default one. A tool then still serves its request in process, never through the primary handler, but without the client: its message handlers and `DefaultRequestHeaders` do not apply, its `Timeout` does, and once the host has started the log has a warning from `Api.ToMcp.Runtime.Services.McpToolsStartupCheck` that names the cause. The check builds the client's handlers then, rather than before the server starts, so a primary handler that needs the started server, as `TestServer.CreateHandler()` does, can be created. To keep the handlers, register a filter of your own with `services.TryAddEnumerable(...)` instead of `Replace`, turn the factory's logging off with `services.ConfigureHttpClientDefaults(http => http.RemoveAllLoggers())` instead of `RemoveAll`, and stub outgoing calls with `services.ConfigureHttpClientDefaults(http => http.ConfigurePrimaryHttpMessageHandler(...))` instead of a client factory of your own. `AddMcpTools` alone creates the invoker: `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()`, which registers it again as a typed client, makes every tool call fail with an `InvalidOperationException` that says to remove that call.
 
 ### Error handling
 
-The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. An exception your API lets escape before its response starts comes back as Kestrel would answer it, with a bare `500` or the status of a `BadHttpRequestException`, and the app logs the exception. A redirect that does not lead back to the address the tool called comes back as it is, such as `HTTP 302: Found`. A call that gets no status still surfaces as an exception, which the MCP server likewise reports as `isError: true`: in process, a request your API aborts, one whose response fails after it started, or one that outlasts the client's `Timeout`; over HTTP, a network error or timeout.
+The invoker methods return a `CallToolResult`. When the invoked API returns a non-success (non-2xx) status, that result has **`isError: true`** with the status code and body as its content — so the AI client knows the call failed (and can react — e.g. re-authenticate on a `401`) rather than treating an error payload as a valid result. This is done by conditioning on the status, not by throwing, since an HTTP status is an expected outcome. An exception your API lets escape before its response starts comes back as Kestrel would answer it, with a bare `500` or the status of a `BadHttpRequestException`, and the app logs the exception. A redirect that does not lead back to the address the tool called comes back as it is, such as `HTTP 302: Found`. A call that gets no status still surfaces as an exception, which the MCP server likewise reports as `isError: true`: a request your API aborts, one whose response fails after it started, one that outlasts the client's `Timeout`, and one the host has built no pipeline for.
 
 ## Correlating Tool Calls with API Logs
 
@@ -908,19 +877,16 @@ A tool call reaches your API as two requests: the MCP client's `POST /mcp`, and 
 | Header | Where it comes from |
 |---|---|
 | `Authorization` | Copied from the MCP request, when it parses as an authentication header |
-| `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` a tool's request over HTTP that targets the MCP endpoint, or any path under `/mcp`, is refused; see below |
-| `X-Forwarded-Proto: https` | Over HTTP only: added by the invoker when it calls an `http://` address on loopback for an MCP request that came in over HTTPS, so the app serves it as HTTPS too, under the name `ForwardedHeadersOptions.ForwardedProtoHeaderName` gives; see [Base URL Resolution](#base-url-resolution) |
+| `X-MCP-Internal-Call: true` | Added by the invoker, so that with `UseMcpLoopPrevention` a tool's request to any path under `/mcp` is refused; see below |
 | The action's `[FromHeader]` headers | The tool's arguments; see [Where each argument is sent](#where-each-argument-is-sent) |
 | `Accept-Language` | With a form, when the MCP request ran `UseRequestLocalization`: the culture it picked for the MCP request, which the tool writes the form's numbers and dates in, so that the app reads the form in it; see [Limitations](#limitations). Such a tool's request also runs in the MCP request's UI language, while a tool's request without a form runs in the app's default |
-| The client's `DefaultRequestHeaders`, and the headers its message handlers set | The invoker's `HttpClient`, in process too. A default header never replaces one the request already carries; see [Custom HTTP Invocation](#custom-http-invocation) |
+| The client's `DefaultRequestHeaders`, and the headers its message handlers set | The invoker's `HttpClient`. A default header never replaces one the request already carries; see [Custom HTTP Invocation](#custom-http-invocation) |
 
 No other header is copied: not `X-Correlation-ID`, `X-Request-ID`, cookies, the client's own `Accept-Language`, `User-Agent`, `X-Forwarded-For` or `X-Forwarded-Host`. The request still carries the MCP request's connection, so `HttpContext.Connection.RemoteIpAddress` is the client's address; see [How Tools Call Your API](#how-tools-call-your-api). The forwarding headers that `UseForwardedHeaders` reads under their default names, and the method override headers `UseHttpMethodOverride` reads, are among the [headers a tool never sets](#headers-a-tool-never-sets), and a call that would send a header under a name the app gives `ForwardedHeadersOptions` or `CertificateForwardingOptions` in its services gets an error result, so no tool argument changes the client's address, the scheme, the host or the method that way. Names the app passes straight to that middleware, and the form field `UseHttpMethodOverride` can read, stay out of sight; see that section. If your API logs a correlation ID taken from a header of its own, the tool's request has none unless a message handler of the invoker's client sets it; use the trace ID, or have the client send the ID as W3C `baggage` and read it with `Activity.Current?.GetBaggageItem(...)`, which returns it in both requests.
 
-Over HTTP (with `AreApiCallsInProcess` off), .NET's `HttpClient` also sends the current `Activity` as a `traceparent` header, with `tracestate` and `baggage` (`Correlation-Context` on .NET 8 and 9) when the MCP request has them, and ASP.NET Core continues that trace for the request. The request comes from the server itself, or from a proxy when `McpTools:BaseUrl` leads through one, not from the client.
-
 `X-MCP-Internal-Call` is loop prevention, not a security boundary: any client can send it, and the API serves such a request as usual (with `UseMcpLoopPrevention`, only the MCP endpoint and paths under `/mcp` refuse it), so never let it skip authentication or authorization. To tell a tool's request apart from a direct API call, for example in a middleware that adds it to the log scope, use `HttpContext.IsMcpToolRequest()`, which no client can fake; see [Telling a tool's request apart](#telling-a-tools-request-apart).
 
-Loop prevention keeps a tool from starting an MCP request inside a tool call. The endpoint `MapMcpEndpoint` maps refuses a tool's in-process request, with `400` and `MCP endpoints cannot be called internally to prevent loops.`, with or without `UseMcpLoopPrevention`, at whatever pattern it is given, route parameters included, and wherever `UseRouting` sits in the pipeline. `UseMcpLoopPrevention` is needed for the requests only the header marks: with it, that endpoint also refuses a request that carries `X-MCP-Internal-Call`, as a tool's request over HTTP does, and the middleware itself refuses such a request on any path under `/mcp`, as it always has, which covers an endpoint mapped there with the SDK's `MapMcp` directly.
+Loop prevention keeps a tool from starting an MCP request inside a tool call. The endpoint `MapMcpEndpoint` maps refuses a tool's request, with `400` and `MCP endpoints cannot be called internally to prevent loops.`, with or without `UseMcpLoopPrevention`, at whatever pattern it is given, route parameters included, and wherever `UseRouting` sits in the pipeline. `UseMcpLoopPrevention` refuses a request that carries `X-MCP-Internal-Call`, as every tool's request does, on any path under `/mcp`, as it always has, which covers an endpoint mapped there with the SDK's `MapMcp` directly, which does not look for the feature. With it, the endpoint `MapMcpEndpoint` maps also refuses a request that carries the header, whoever sent it.
 
 ### Logs
 
@@ -978,7 +944,7 @@ To find the tool's request of a tool call:
 
 Code that wants the trace ID itself, to put it in its own messages or responses, reads `Activity.Current?.TraceId` from `System.Diagnostics`; it is the same in the MCP request and the tool's.
 
-Match on `TraceId`, not on `SpanId` or `ParentId`. In process, the tool's request logs a `SpanId` of its own, and as its `ParentId` the `SpanId` of the tool call: the MCP request's, as above, or its `tools/call` span's when the MCP SDK's `ActivitySource` is listened to (see [OpenTelemetry](#opentelemetry)). Over HTTP, .NET's `HttpClient` starts an `Activity` of its own for the outgoing request, even without a tracing listener, so the request's `ParentId` is that activity, not the `SpanId` of the MCP request.
+Match on `TraceId`, not on `SpanId` or `ParentId`. The tool's request logs a `SpanId` of its own, and as its `ParentId` the `SpanId` of the tool call: the MCP request's, as above, or its `tools/call` span's when the MCP SDK's `ActivitySource` is listened to (see [OpenTelemetry](#opentelemetry)).
 
 `POST /mcp` finishes with `200` even when the tool failed, because the failure is `isError: true` inside the JSON-RPC result. Look for `IsError = True` and the invoker's `MCP HTTP call failed with status ...` warning instead. When the API answers with a ProblemDetails body, as `[ApiController]` does for `NotFound()` or `Problem()`, its `traceId` is `00-<trace ID>-<span ID>-<flags>`, and it reaches the MCP client in the error text: a user who reports a failed call can hand you the trace ID.
 
@@ -1007,7 +973,7 @@ POST mcp/                              server   the MCP request
       └─ (spans your API starts)
 ```
 
-The tool's request gets the server span a request the server receives gets: hosting's `Microsoft.AspNetCore.Hosting.HttpRequestIn`, from the `ActivitySource` and the `DiagnosticListener` hosting uses, so `AddAspNetCoreInstrumentation()` records it, names it after its route, and sets its tags and status as for any request, its `Filter` and `EnrichWithHttpRequest` included. Its parent is the tool call's span: `tools/call`, or `POST mcp/` without the MCP SDK's source. It carries the tag `api_to_mcp.tool_request = true`, which a sampler can read, as the span is created with it. Code in the request reaches the span as in any request, with `HttpContext.Features.Get<IHttpActivityFeature>()`, and a span your controller, or a library it calls, starts, such as a database query or an outgoing `HttpClient` request, is a child of it. Over HTTP (with `AreApiCallsInProcess` off), the tree has one more span: `GET`, a client span of the invoker's `HttpClient`, between `tools/call` and the request's span, which then carries no `api_to_mcp.tool_request`.
+The tool's request gets the server span a request the server receives gets: hosting's `Microsoft.AspNetCore.Hosting.HttpRequestIn`, from the `ActivitySource` and the `DiagnosticListener` hosting uses, so `AddAspNetCoreInstrumentation()` records it, names it after its route, and sets its tags and status as for any request, its `Filter` and `EnrichWithHttpRequest` included. Its parent is the tool call's span: `tools/call`, or `POST mcp/` without the MCP SDK's source. It carries the tag `api_to_mcp.tool_request = true`, which a sampler can read, as the span is created with it. Code in the request reaches the span as in any request, with `HttpContext.Features.Get<IHttpActivityFeature>()`, and a span your controller, or a library it calls, starts, such as a database query or an outgoing `HttpClient` request, is a child of it.
 
 The tool's request is measured as a request the server receives, with hosting's own instruments of the meter `Microsoft.AspNetCore.Hosting`, which `AddAspNetCoreInstrumentation()` in `WithMetrics` listens to: `http.server.request.duration`, with its route, status and `error.type`, and `http.server.active_requests`. Its duration carries `api_to_mcp.tool_request = true` beside the tags your middleware adds through `IHttpMetricsTagsFeature`, so a dashboard can leave the tools' requests out or show them alone. `http.server.active_requests` carries only the method and the scheme, as for every request. On .NET 9 and later, `DisableHttpMetrics()`, `[DisableHttpMetrics]` and `IHttpMetricsTagsFeature.MetricsDisabled` leave its duration out, as they do any request's. Hosting's `EventSource` counters (`requests-per-second`, `total-requests`, `current-requests` and `failed-requests` of the `Microsoft.AspNetCore.Hosting` event source) do not count it, as ASP.NET Core keeps that source internal.
 
@@ -1018,8 +984,6 @@ A call the client cancels aborts its request, which is logged, measured and ends
 ### When the link breaks
 
 With `HttpServerTransportOptions.PerSessionExecutionContext = true` and a stateful session (`SessionMode = HttpServerSessionMode.Stateful`, `StatefulForInitializeClients` for clients that send `initialize`, or the older `Stateless = false`), every tool call runs in the context of the session's `initialize` request. The MCP SDK marks the option obsolete, and the default stateless mode ignores it. The tool's request then joins the trace of that `initialize` request, and the invoker's log entries carry its `RequestId`. That request's `HttpContext` is gone by then, so the tool's request is addressed at the [base URL](#base-url-resolution), carries no connection of the client and no `Authorization` header, and with scope validation on every call is refused with `Scope validation needs the HTTP request of the tool call, and the call runs outside one, ...`. The host logs a startup warning when the option is set this way. Leave the option at its default, `false`.
-
-Over HTTP, turning off .NET's activity propagation, with the `System.Net.Http.EnableActivityPropagation` switch set to `false` or `DOTNET_SYSTEM_NET_HTTP_ENABLEACTIVITYPROPAGATION=0`, stops `HttpClient` from sending `traceparent` and `baggage`, so the tool's request starts a trace of its own.
 
 ## Limitations
 
@@ -1116,7 +1080,7 @@ With [OAuth sign-in discovery](#oauth-sign-in-claudeai-chatgpt-mcp-inspector) on
 - The Inspector lists what the running app registered. After changing `generator.json` or an attribute, rebuild, restart the app and connect again.
 - The `generator.json` the package creates on the first build is `SelectedOnly` with an empty `include`, so it exposes only `[McpExpose]` actions until you list others or switch to `AllExceptExcluded`. The build that creates it warns with `MCP100`, and `MCP006` follows while no tool is generated.
 - A `generator.json` that is not valid JSON (a trailing comma is enough) means the defaults, `SelectedOnly` with nothing included, so again only `[McpExpose]` actions. A `mode` other than those two is read as `SelectedOnly`, with the file's `include` list. Both give build warning `MCP001`, pointing at what could not be read; see [Troubleshooting](#troubleshooting).
-- An action at `/mcp` or under it, in any letter case, such as `mcp/status`, is never exposed, not even with `[McpExpose]` (loop prevention). The generator compares whole segments from the start of the route, so `api/mcp`, `api/mcpservers` and `api/settings/mcp-status` get their tools: the MCP endpoint that `MapMcpEndpoint` maps refuses a tool's request wherever it is mapped, one over HTTP only with `UseMcpLoopPrevention` (see [What the tool's request carries](#what-the-tools-request-carries)).
+- An action at `/mcp` or under it, in any letter case, such as `mcp/status`, is never exposed, not even with `[McpExpose]` (loop prevention). The generator compares whole segments from the start of the route, so `api/mcp`, `api/mcpservers` and `api/settings/mcp-status` get their tools: the MCP endpoint that `MapMcpEndpoint` maps refuses a tool's request wherever it is mapped (see [What the tool's request carries](#what-the-tools-request-carries)).
 - An action that is not `public` is skipped without a diagnostic, as is one MVC serves only for HTTP methods a tool does not send (`[HttpHead]`, `[HttpOptions]`, `[AcceptVerbs("HEAD")]`), for every method (a `[Route]` alone), or through conventional routing. Attributes derived from MVC's routing attributes, or implementing their interfaces, count like MVC's own; see [Controllers and Actions](#controllers-and-actions).
 - An action declared on a base controller is a tool of each concrete controller that inherits it, named after that controller (`Products_GetAll`, not `Crud_GetAll`); an abstract base class gets none. Classes and methods MVC does not serve get no tool, among them `[NonController]` classes, `[NonAction]` methods, overrides of `ToString`, `Equals` or `GetHashCode`, and the `IDisposable.Dispose` implementation. See [Controllers and Actions](#controllers-and-actions).
 - Tools that share a name are listed as one, as the MCP SDK keeps only one of them. The build warns with `MCP007`; see [Troubleshooting](#troubleshooting).
@@ -1130,7 +1094,7 @@ To read the generated code, set `<EmitCompilerGeneratedFiles>true</EmitCompilerG
 
 ### A call fails
 
-`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. In process, the cause is your API: it aborted the tool's request, or its response failed after it started; an exception it lets escape before then comes back as `HTTP 500: ...` instead. Or a message handler of the invoker's `HttpClient` threw, such as the `TimeoutRejectedException` or `BrokenCircuitException` of `AddStandardResilienceHandler`; see [Custom HTTP Invocation](#custom-http-invocation). Over HTTP (with `AreApiCallsInProcess` off), the usual cause is the call to your own API at the base URL from [Base URL Resolution](#base-url-resolution): when nothing answers there, the log shows an `HttpRequestException` such as `No connection could be made because the target machine actively refused it. (localhost:5999)`. Check the address it called, `McpTools:BaseUrl` when set and otherwise an address the app listens on, and see [Troubleshooting](#troubleshooting) for reverse proxies and redirects.
+`An error occurred invoking '<tool>'.` means the generated tool threw, and the exception is in the app's log. Usually the cause is your API: it aborted the tool's request, or its response failed after it started; an exception it lets escape before then comes back as `HTTP 500: ...` instead. Or a message handler of the invoker's `HttpClient` threw, such as the `TimeoutRejectedException` or `BrokenCircuitException` of `AddStandardResilienceHandler`; see [Custom HTTP Invocation](#custom-http-invocation). An `InvalidOperationException` names a cause in the setup, such as a host that has not built the app's request pipeline; see [Troubleshooting](#troubleshooting).
 
 `HTTP <status>: ...` means the call reached your API and it answered with that status, so look at the API itself: its logs, auth and validation. `HTTP 414: URI Too Long` and `HTTP 431: Request Header Fields Too Large` are the exception: the server's limits refused the request before your API saw it; see [Troubleshooting](#troubleshooting).
 
@@ -1243,16 +1207,25 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - On a case-sensitive file system, the config is at a path that differs from `ApiToMcpConfigPath` only in the letter case of its folder or file name, such as `mcp/generator.json` for the default `Mcp/generator.json`. The build gives the generator that file, and the warning points at it. The build writes no starter config, and replaces an `AdditionalFiles` item that names the missing configured path. It generates the same tools as on Windows or macOS.
 - Set `ApiToMcpConfigPath` to that file, or rename it to match, and the warning goes away.
 
+**`InvalidOperationException: The tool's API request ... cannot run: a tool runs its API request in process, through the app's request pipeline, and the host has not built it`.**
+- The host builds the app's request pipeline when it starts, and a tool runs its API request through it. The tool was called before the app started, or in a host that is no ASP.NET Core web host, or an `IApplicationBuilderFactory` registered after `AddMcpTools` took the place of the one that hands the pipeline to the tools. Call tools once the app has started, with `app.Run()`, `app.StartAsync()` or `WebApplicationFactory`, and register no `IApplicationBuilderFactory` of your own after `AddMcpTools`.
+- A host that starts without building the pipeline logs the error `The host started without building the app's request pipeline ...` from `Api.ToMcp.Runtime.Services.McpToolsStartupCheck` once it has started.
+
+**`InvalidOperationException: McpHttpInvoker is registered as a typed client`.**
+- The app, often a test, calls `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>()` after `AddMcpTools`, as tests for 2.x did to hand the invoker a `TestServer` handler. Remove the call; see [Migrating from 2.x](#migrating-from-2x).
+
+**`InvalidOperationException: The request ... was sent through the HttpClient named IMcpHttpInvoker by code other than the invoker AddMcpTools registers`.**
+- That client serves only the invoker's requests, in process. Your code sent another request through it, most often through an invoker of your own registered as a typed client with `services.AddHttpClient<IMcpHttpInvoker, MyInvoker>()`, whose client takes the name `IMcpHttpInvoker`. In 2.x its requests went to its client's address; served in process, this app would run them, so they are refused. Give the client a name of its own, as in `services.AddHttpClient<IMcpHttpInvoker, MyInvoker>("MyInvoker")`; see [Custom HTTP Invocation](#custom-http-invocation).
+
+**Warning `The invoker's HttpClient, IMcpHttpInvoker, comes from an IHttpClientFactory registered after AddMcpTools ...` or `... lacks the handler that serves a tool's API request in process ...`.**
+- Logged once the host has started. The tools still serve their API requests in process, never through a primary handler, but without the invoker's client, so its message handlers and `DefaultRequestHeaders` do not apply to them. The warning names the code that caused it and the fix; see [Custom HTTP Invocation](#custom-http-invocation).
+
+**`InvalidOperationException: The tool's API request ... reached the primary handler of the invoker's HttpClient`.**
+- The handler that serves the tool's request in process was missing from the invoker's client, though the check once the host started found it there: the client's handlers changed since, as when a handler builder filter of yours, put ahead of the others, removes it from some builds only. The request is refused rather than sent over the network. Leave the handlers of the client named `IMcpHttpInvoker` as `AddMcpTools` gives them.
+
 **`InvalidOperationException: Unable to determine base URL`.**
-- The tool called over HTTP, with `AreApiCallsInProcess` off, or ran its request outside an MCP request (see [When the link breaks](#when-the-link-breaks)), and found no address. Set `McpTools:BaseUrl` in configuration, or ensure the server has finished starting before the first tool call. See [Base URL Resolution](#base-url-resolution).
-- The variant `The server is bound only to a unix socket or a named pipe` means the server has no TCP address to call. Set `McpTools:BaseUrl`.
-
-**`InvalidOperationException: The MCP request came in over HTTPS, and the only address the server is bound to is '...', an http:// address off loopback`.**
-- Over HTTP, the tool would have sent the caller's token in clear text off the machine, to a specific IP address or a host name, from where the app would not trust its `X-Forwarded-Proto`. Set `McpTools:BaseUrl` to an address the app serves without a redirect, or bind the server to `localhost` or a wildcard address as well. See [Base URL Resolution](#base-url-resolution).
-
-**Self-calls fail or redirect to HTTPS behind a reverse proxy.**
-- In process, which is the default, the tool's request takes the MCP request's scheme and host, so the app neither redirects it nor sends it anywhere; see [How Tools Call Your API](#how-tools-call-your-api). A tool argument changes neither: the forwarding headers are among the [headers a tool never sets](#headers-a-tool-never-sets), and a call that would send one under a name the app configured in its services gets an error result. That section also names the cases neither the generator nor the invoker can see.
-- With `AreApiCallsInProcess` off and without `McpTools:BaseUrl`, a server that listens only on HTTP has its tools call that `http://` address, never the host the MCP request names. When the address is on loopback and the MCP request came in over HTTPS, the tool's request carries `X-Forwarded-Proto: https`, so the app does not redirect it; see [Base URL Resolution](#base-url-resolution). It is still redirected when the app's `KnownProxies` and `KnownNetworks` leave out loopback, or it requires header symmetry, and answered `400` when `AllowedHosts` leaves out the bound address, or behind IIS out of process. The most reliable fix is to pin `McpTools:BaseUrl` to an address the app serves without a redirect. It is used as given, `http://` included.
+- A tool's request had no MCP request to take its address from, as outside an MCP request (see [When the link breaks](#when-the-link-breaks)), and the server is bound to no address to name it at, as the `TestServer` of `WebApplicationFactory` is bound to none. Set `McpTools:BaseUrl` in configuration. See [Base URL Resolution](#base-url-resolution).
+- The variant `The server is bound only to a unix socket or a named pipe` means the server has no TCP address to name the request at. Set `McpTools:BaseUrl`.
 
 **`MissingMethodException` on `AddMcpTools` at startup** (e.g. `Method not found: '...McpServerServiceCollectionExtensions.AddMcpServer(...)'`).
 - Your app references a different version of `ModelContextProtocol.*` than the one this package targets (`2.2.0`). Remove your explicit reference so the correct version flows transitively, or pin it to the exact same version. See [Requirements](#requirements).
@@ -1268,11 +1241,11 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 - A stateful session then runs every tool call without the HTTP request that carried it, so the tools forward no `Authorization` header and scope validation refuses every call. Set `PerSessionExecutionContext` to `false`, its default; see [When the link breaks](#when-the-link-breaks).
 
 **Tool calls return `401`/`403`.**
-- Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim. In process, the API call also carries the MCP request's client certificate; cookies are never forwarded.
+- Auth forwarding only works when the MCP request itself carries an `Authorization` header — it is forwarded to the API call verbatim. The API call also carries the MCP request's client certificate; cookies are never forwarded.
 - When scope validation is enabled, the request must be authenticated and the mapped scope must cover the tool's required scope (`Read`/`Write`/`Delete`).
 
 **Tool calls return `429`, or `503`, from a rate limiter.**
-- In process, the tool's request carries the MCP request's connection, so a limiter partitioned by client address or connection counts it against the client that still holds the MCP request. `503` is the status the limiter refuses with unless `RejectionStatusCode` is set. Give the tool's requests a partition of their own for each client, by `HttpContext.IsMcpToolRequest()` and the client's address; see [Telling a tool's request apart](#telling-a-tools-request-apart).
+- The tool's request carries the MCP request's connection, so a limiter partitioned by client address or connection counts it against the client that still holds the MCP request. `503` is the status the limiter refuses with unless `RejectionStatusCode` is set. Give the tool's requests a partition of their own for each client, by `HttpContext.IsMcpToolRequest()` and the client's address; see [Telling a tool's request apart](#telling-a-tools-request-apart).
 
 **Tool calls return `HTTP 414: URI Too Long` or `HTTP 431: Request Header Fields Too Large`.**
 - The tool's request is over a limit of the server, which refuses it as it refuses the same request sent to it, before your API sees it; see [The server's limits](#the-servers-limits). Kestrel answers `414` for a request line over `MaxRequestLineSize`, 8 KB by default, which long route values or query string arguments make, percent-encoded. It answers `431` for headers over `MaxRequestHeadersTotalSize`, 32 KB, or more than `MaxRequestHeaderCount`, 100: the `[FromHeader]` arguments and the `Authorization` header copied from the MCP request count, with `Host`, `X-MCP-Internal-Call`, the `DefaultRequestHeaders` of the invoker's `HttpClient` and the headers its message handlers set.
@@ -1285,7 +1258,7 @@ Suppress one with `<NoWarn>$(NoWarn);MCP100</NoWarn>`. To keep one a warning whi
 2. **Code Generation**: For each selected endpoint, a tool class is generated with `[McpServerToolType]` attribute
 3. **Startup**: `AddMcpTools` registers every `[McpServerToolType]` class of the assembly (generated and hand-written) and builds the tools and their argument schemas when the host starts, so a tool that cannot be created fails at startup rather than at the first request
 4. **Runtime**: When an MCP client calls a tool, the tool runs your API's request through your app's own middleware pipeline, inside the process; see [How Tools Call Your API](#how-tools-call-your-api)
-5. **Loop Prevention**: The MCP endpoint refuses a tool's own request, marked by `IMcpToolRequestFeature` in process and by the `X-MCP-Internal-Call` header over HTTP, so it is not called recursively
+5. **Loop Prevention**: The MCP endpoint refuses a tool's own request, marked by `IMcpToolRequestFeature`, and with `UseMcpLoopPrevention` by the `X-MCP-Internal-Call` header on any path under `/mcp`, so it is not called recursively
 
 ### Where each argument is sent
 
@@ -1297,7 +1270,7 @@ A tool takes the action's parameters as its arguments and sends each one where M
 
   ⚠️ **The AI chooses every `[FromHeader]` value**, and the tool's request never passes the reverse proxy in front of the app, which strips a client's copy of the headers it sets. So never read a header that the app trusts for identity or authorization, such as one a front end that signs the user in sets, with `[FromHeader]` in an action exposed to MCP: the AI could act as another user. The generator leaves the [headers a tool never sets](#headers-a-tool-never-sets) out of the tool, but no list holds every proxy's headers.
 
-  MVC reads a header only into a type it reads from one string or an array of such, and the value is written as a query value is, without the spaces and tabs around it, which Kestrel drops, so the action gets the same value in process and over HTTP. An array sends one value per item, which MVC reads back by splitting the header at its commas: an item that holds a comma goes in quotes, which MVC removes. A value with a character an HTTP header cannot carry, anything but visible ASCII characters, spaces and tabs, returns an error result without calling the API: `The argument 'tenant' is sent as the request header 'X-Tenant', which can hold only visible ASCII characters, spaces and tabs.` So does an array item that MVC would read back otherwise: an empty one, which it drops, or one with a `"`, which it removes or splits at. `[FromHeader]` on an object gives the action no tool and build warning [`MCP009`](#troubleshooting).
+  MVC reads a header only into a type it reads from one string or an array of such, and the value is written as a query value is, without the spaces and tabs around it, which Kestrel drops, so the action gets the value it would get from a request sent to Kestrel. An array sends one value per item, which MVC reads back by splitting the header at its commas: an item that holds a comma goes in quotes, which MVC removes. A value with a character an HTTP header cannot carry, anything but visible ASCII characters, spaces and tabs, returns an error result without calling the API: `The argument 'tenant' is sent as the request header 'X-Tenant', which can hold only visible ASCII characters, spaces and tabs.` So does an array item that MVC would read back otherwise: an empty one, which it drops, or one with a `"`, which it removes or splits at. `[FromHeader]` on an object gives the action no tool and build warning [`MCP009`](#troubleshooting).
 - `[FromForm]` is sent as a form, `application/x-www-form-urlencoded`, on every HTTP method, under the key MVC's form binding reads: the name MVC binds the parameter under, `f` for `[FromForm(Name = "f")]` or `[Bind(Prefix = "f")]`, else its own, with an object's properties under it as a prefix (`review.Rating=5`), a collection's items under it repeated, as in the query string. An object's property that MVC reads from somewhere else, such as a `[FromQuery]` or `[FromHeader]` one, is not sent. A `[FromRoute]` property fills the route as of a `[FromQuery]` object: then the object goes out without its prefix, the other properties under their own names. Unlike the query string, MVC reads a form with the culture of the request, so a number or a date goes out in the culture the tool call runs under, `1234,25` under `de-DE`, and with `UseRequestLocalization` the request names that culture in `Accept-Language`; see [Limitations](#limitations). An action that reads a JSON body as well gets no tool and `MCP009`, as one request cannot carry both, and so does one whose `[Consumes]` takes no `application/x-www-form-urlencoded` or whose `[ValidateAntiForgeryToken]`, `[AutoValidateAntiforgeryToken]` or `[RequireAntiforgeryToken]` checks a token a tool's request does not carry.
 - A parameter that is a form file, `IFormFile`, `IFormFileCollection`, `IFormCollection` or a collection of `IFormFile`, or whose type holds one in a property, gives the action no tool and `MCP009`, which names the parameter and the property: a tool sends no file. A type MVC reads from the JSON body, `[FromBody]` or inferred, is sent without its files, as MVC never reads one into it.
 - A parameter without a binding attribute goes where MVC infers it from. Named in the route template, it fills the route. Otherwise a **simple** type goes to the query string on every HTTP method.
@@ -1337,11 +1310,12 @@ A `[FromHeader]` parameter that names one of these headers, in any letter case, 
 | Headers | Why |
 |---|---|
 | `Authorization`, `Proxy-Authorization`, `Cookie` | They carry the caller's credentials: the invoker forwards the MCP request's `Authorization`, and never sends the others. |
-| `Host`, `X-MCP-Internal-Call`, `traceparent`, `tracestate`, `baggage`, `Correlation-Context` | The tool's request carries them of its own: the host it is addressed at, the [loop prevention](#what-the-tools-request-carries) mark, and over HTTP the trace context `HttpClient` sends. |
+| `Host`, `X-MCP-Internal-Call` | The tool's request carries them of its own: the host it is addressed at and the [loop prevention](#what-the-tools-request-carries) mark. |
+| `traceparent`, `tracestate`, `baggage`, `Correlation-Context` | The trace context: the tool's request belongs to the trace of the tool call, which the AI does not choose. |
 | `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Content-Encoding`, `Content-Language`, `Content-Location`, `Content-MD5`, `Content-Range`, `Content-Disposition`, `Allow`, `Expires`, `Last-Modified` | They frame or describe the body the tool writes, and `HttpClient` keeps them with the body's own headers. The request carries `Content-Type` and `Content-Length` when it has a body. |
 | `Connection`, `Upgrade`, `TE`, `Keep-Alive`, `Trailer`, `Proxy-Connection` | They belong to the connection, which the invoker and the server manage. |
 | `X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override` | `UseHttpMethodOverride` turns a POST into the method one names, which would run another action than the tool's, past its scope check and the MCP selection. |
-| `Forwarded`, `X-Forwarded-*`, `X-Original-*`, `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Client-IP`, `X-Cluster-Client-IP` | `UseForwardedHeaders` and the like take the client's address, the scheme and the host from them, which would let the AI pick the client an IP allow list or a rate limit sees. Over HTTP the invoker sends `X-Forwarded-Proto` itself, as [What the tool's request carries](#what-the-tools-request-carries) says. |
+| `Forwarded`, `X-Forwarded-*`, `X-Original-*`, `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Client-IP`, `X-Cluster-Client-IP` | `UseForwardedHeaders` and the like take the client's address, the scheme and the host from them, which would let the AI pick the client an IP allow list or a rate limit sees. |
 | `X-MS-CLIENT-PRINCIPAL*`, `X-MS-TOKEN-*`, `X-ARR-ClientCert`, `X-Client-Cert`, `X-SSL-CERT`, `X-Auth-Request-*`, `Remote-*`, `X-Remote-*`, `X-Goog-Authenticated-User-*`, `X-Goog-IAP-*`, `X-Amzn-Oidc-*`, `X-Amzn-Mtls-*`, `Cf-Access-*`, `X-Pomerium-*`, `X-SSL-Client-*`, `ssl-client-*` | A front end that signs the user in, or terminates TLS, sets them for the app and strips a client's copy: App Service Authentication, `AddCertificateForwarding` with its default header and the ones Microsoft's docs name for a custom proxy and for nginx, oauth2-proxy, Authelia and other forward-auth proxies, Kubernetes front-proxy authentication, Google IAP, the AWS Application Load Balancer, Cloudflare Access, Pomerium, and the client certificate, subject and verification of nginx and the NGINX ingress. A value the AI chose would act as another user. |
 
 The app may give the forwarding and client certificate headers names of its own. The runtime's invoker reads the names configured in the app's services for `ForwardedHeadersOptions`, each `*HeaderName` including the `Original*` ones, and for `CertificateForwardingOptions.CertificateHeader`, through `Configure<ForwardedHeadersOptions>` or `AddCertificateForwarding`. A call that gives such an argument a value gets an error result before any request, which names the argument: `The argument 'ip' is sent as the request header 'X-Azure-ClientIP', which the app trusts from its proxy: ...`. The generator cannot see these names, so such an argument stays in the tool's input schema.
@@ -1353,7 +1327,7 @@ The app may give the forwarding and client certificate headers names of its own.
 - Options passed straight to the middleware, as in `app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedForHeaderName = "X-Azure-ClientIP" })`, rather than configured in the services. Configure them with `builder.Services.Configure<ForwardedHeadersOptions>(...)` and call `app.UseForwardedHeaders()` instead, and the invoker refuses them.
 - The form field of `app.UseHttpMethodOverride(new HttpMethodOverrideOptions { FormFieldName = "_method" })`, which turns a POST with a form into the method the field names. A `[FromForm]` argument under that name lets the AI run another action than the tool's, past its scope check and the MCP selection, as the method override headers would.
 
-A required parameter of such a header, without a default and not nullable, or with `[BindRequired]` or `[Required]`, that the tool's request never carries gives the action no tool and build warning [`MCP009`](#troubleshooting), as MVC would refuse every call; a Minimal API endpoint gets `MCP010`. The request may carry `Authorization`, `Host`, `X-MCP-Internal-Call`, and over HTTP the trace context and `X-Forwarded-Proto`, and with a body `Content-Type` and `Content-Length`. A header name that is no HTTP token, such as one with a space, gets `MCP009` as well. To keep such an action from MCP without the warning, mark it `[McpIgnore]`.
+A required parameter of such a header, without a default and not nullable, or with `[BindRequired]` or `[Required]`, that the tool's request never carries gives an action of an `[ApiController]` no tool and build warning [`MCP009`](#troubleshooting), as MVC answers every call without it with `400`; a Minimal API endpoint gets `MCP010`. Without `[ApiController]`, MVC runs the action with the parameter null and the error in `ModelState`, so the action keeps its tool. The generator cannot see `ApiBehaviorOptions.SuppressModelStateInvalidFilter`, under which an `[ApiController]` runs it too. The request may carry `Authorization`, `Host` and `X-MCP-Internal-Call`, and with a body `Content-Type` and `Content-Length`. A header name that is no HTTP token, such as one with a space, gets `MCP009` as well. To keep such an action from MCP without the warning, mark it `[McpIgnore]`.
 
 The generator gives no build message for each header argument: one at every `If-Match` or `Idempotency-Key` would teach people to ignore it, and only the app knows which headers it trusts.
 
@@ -1402,6 +1376,127 @@ public static class ProductsController_GetByIdTool
 On success `McpStructuredOutput.FromResult` returns the parsed body, which the SDK sends as structured content; on an error it returns the invoker's `CallToolResult` unchanged. A route value that would change the URL's path, empty where the route needs one, `.` or `..`, returns an error result before the API is called, as [Required and optional arguments](#required-and-optional-arguments) describes. `[McpGeneratedTool]` is for `AddMcpTools`, which builds the output schema from it. `[McpRequiredScope]` names the scope the tool passes to `BeforeInvokeAsync`, which [OAuth sign-in discovery](#oauth-sign-in-claudeai-chatgpt-mcp-inspector) reads before the tool runs; every generated tool has it. A tool without an output schema returns the invoker's `CallToolResult` directly, as `Task<CallToolResult>`.
 
 The tool's arguments keep the names of the action's parameters, as MCP passes them by name. The tool's own parameters and variables, `invoker`, `cancellationToken`, `route`, `queryParts`, `bodyJson`, `headers`, `formParts`, `request` and `route<name>` for each route value, give way to them: one that an action parameter already has gets a number, such as `route2`, and a type the tool refers to, `System`, `JsonSerializer` or `McpScope`, is written as `global::...` when a parameter has its name.
+
+## Migrating from 2.x
+
+3.0 removes the HTTP path: a tool's API request always runs in process, through your app's own request pipeline, and nothing in the package sends it over the network. `McpScopeOptions.AreApiCallsInProcess`, the public constructor of `McpHttpInvoker` and the `X-Forwarded-Proto` header the invoker sent to a loopback address are gone, so remove `options.AreApiCallsInProcess = ...` from `AddMcpTools`. For each reason to call over HTTP in 2.x, this is what to do now:
+
+- **Message handlers, default headers and timeout of the invoker's `HttpClient`.** Nothing: they apply in process. A handler added with `AddHttpMessageHandler`, `AddStandardResilienceHandler` and `AddLogger`, the `DefaultRequestHeaders` and the `Timeout` of the client `IMcpHttpInvoker` run around every tool's request. See [Custom HTTP Invocation](#custom-http-invocation).
+- **A rate limiter partitioned by client address or connection.** The tool's request carries the MCP request's connection, so such a limiter counts it against the client that holds the MCP request. Tell it apart with `HttpContext.IsMcpToolRequest()` and give it a partition of its own for each client; see [Telling a tool's request apart](#telling-a-tools-request-apart).
+- **An IP allow list that let the tool's request in because it came from loopback.** Over HTTP the tool's request came from the server itself; now it carries the MCP client's address. A list that holds the MCP endpoint and your API alike needs nothing, as the client passed it on the MCP request. A list that admitted the tool's request only for its loopback address now refuses it: admit a request for which `HttpContext.IsMcpToolRequest()` is true instead, which no client can fake, and which, as loopback did, lets in every client of the MCP endpoint.
+- **Hosting's request logs, span and metrics.** They cover the tool's request in process, marked with `api_to_mcp.tool_request = true`, so dashboards and alerts count each tool's API request; filter `http.server.request.duration`, the logs and the spans on that tag to leave them out. Two counts differ from 2.x: `http.server.active_requests` carries no such tag, as it carries only the method and the scheme, so it counts a tool's request with no way to leave it out; and hosting's `EventSource` counters, such as `total-requests` and `requests-per-second` in `dotnet-counters`, no longer count it. Count requests with `http.server.request.duration` instead. See [Correlating Tool Calls with API Logs](#correlating-tool-calls-with-api-logs).
+- **The server's request limits.** Kestrel's `MaxRequestLineSize`, `MaxRequestHeadersTotalSize` and `MaxRequestHeaderCount`, and the server's `MaxRequestBodySize`, hold the tool's request in process; see [The server's limits](#the-servers-limits). What held a request outside the app no longer holds the tool's: under IIS, its request filtering in `web.config`, such as `maxAllowedContentLength`, `maxUrl` and `maxQueryString`, and the limits HTTP.sys takes from the registry, there and under HTTP.sys, such as `MaxFieldLength` and `MaxRequestBytes`. Give the body a limit of the app's own with `IISServerOptions.MaxRequestBodySize`, `HttpSysOptions.MaxRequestBodySize` or `[RequestSizeLimit]`, and check a URL or a header limit you rely on in a middleware of your own.
+- **The Windows user under IIS.** A tool's request over HTTP had no Windows user either, unless the invoker's client sent the app pool's credentials, as an `HttpClientHandler` with `UseDefaultCredentials` does. In process the tool's request never has one, so an action that requires Windows authentication answers `401` or `500`; see [Under IIS](#under-iis). Keep such an action from MCP with `[McpIgnore]`, or authorize it by the token the MCP request's `Authorization` carries.
+- **Your API at another host or port of the same app**, which tools reached through `McpTools:BaseUrl`, as when its endpoints answer only there with `RequireHost`. The tool's request now takes the MCP request's host and connection, and `McpTools:BaseUrl` names only a request that has no MCP request; see [Base URL Resolution](#base-url-resolution). For `RequireHost`, name the request at the API's host with a message handler of the invoker's client, below; the app sees the `Host` it sets. A branch on `HttpContext.Connection.LocalPort` sees the MCP request's port: let a request for which `HttpContext.IsMcpToolRequest()` is true into the API's branch too, or serve the MCP endpoint at the API's port.
+
+  ```csharp
+  builder.Services.AddHttpClient(nameof(IMcpHttpInvoker)).AddHttpMessageHandler(() => new ApiHostHandler());
+
+  public sealed class ApiHostHandler : DelegatingHandler
+  {
+      protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+      {
+          request.Headers.Host = "api.example.com:5000";
+          return base.SendAsync(request, cancellationToken);
+      }
+  }
+  ```
+
+- **Tools that called another server through `McpTools:BaseUrl`.** `McpTools:BaseUrl` now only names a request that has no MCP request to take its address from, and nothing is sent there; see [Base URL Resolution](#base-url-resolution). Register an invoker of your own that sends the request to that server, after `AddMcpTools`:
+
+  ```csharp
+  builder.Services.AddMcpTools(Assembly.GetExecutingAssembly());
+  builder.Services.AddHttpClient<RemoteApiInvoker>(client => client.BaseAddress = new Uri("https://api.internal.example.com/"));
+  builder.Services.AddTransient<IMcpHttpInvoker>(services => services.GetRequiredService<RemoteApiInvoker>());
+  ```
+
+  ```csharp
+  using System.Net.Mime;
+  using System.Text;
+  using Api.ToMcp.Abstractions.Scopes;
+  using Api.ToMcp.Runtime;
+  using Microsoft.Net.Http.Headers;
+  using ModelContextProtocol.Protocol;
+
+  public sealed class RemoteApiInvoker : IMcpHttpRequestInvoker
+  {
+      private readonly HttpClient _httpClient;
+      private readonly IHttpContextAccessor _httpContextAccessor;
+
+      public RemoteApiInvoker(HttpClient httpClient, IHttpContextAccessor httpContextAccessor)
+      {
+          _httpClient = httpClient;
+          _httpContextAccessor = httpContextAccessor;
+      }
+
+      public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) =>
+          SendAsync(new McpHttpRequest(HttpMethod.Get, route), ct);
+
+      public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) =>
+          SendAsync(new McpHttpRequest(HttpMethod.Post, route) { JsonBody = jsonBody }, ct);
+
+      public Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default) =>
+          SendAsync(new McpHttpRequest(HttpMethod.Put, route) { JsonBody = jsonBody }, ct);
+
+      public Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default) =>
+          SendAsync(new McpHttpRequest(HttpMethod.Patch, route) { JsonBody = jsonBody }, ct);
+
+      public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default) =>
+          SendAsync(new McpHttpRequest(HttpMethod.Delete, route), ct);
+
+      public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
+
+      public async Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
+      {
+          using var message = new HttpRequestMessage(request.Method, request.Route.TrimStart('/'));
+          var authorization = _httpContextAccessor.HttpContext?.Request.Headers.Authorization.ToString();
+          if (!string.IsNullOrEmpty(authorization))
+          {
+              message.Headers.TryAddWithoutValidation(HeaderNames.Authorization, authorization);
+          }
+
+          foreach (var (name, value) in request.Headers)
+          {
+              message.Headers.TryAddWithoutValidation(name, value);
+          }
+
+          if (request.JsonBody is not null)
+          {
+              message.Content = new StringContent(request.JsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
+          }
+          else if (request.FormBody is not null)
+          {
+              message.Content = new StringContent(request.FormBody, Encoding.UTF8, MediaTypeNames.Application.FormUrlEncoded);
+          }
+
+          using var response = await _httpClient.SendAsync(message, ct);
+          var body = await response.Content.ReadAsStringAsync(ct);
+
+          return new CallToolResult
+          {
+              IsError = !response.IsSuccessStatusCode,
+              Content = { new TextContentBlock { Text = response.IsSuccessStatusCode ? body : $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase} - {body}" } }
+          };
+      }
+  }
+  ```
+
+  The base address ends with `/`, so a path in it stays in front of the route. The invoker forwards the caller's `Authorization`, as the default one does, but runs no scope validation, which the default invoker runs in `BeforeInvokeAsync` when `ClaimToScopeMapper` is set, and sends every header of `McpHttpRequest` as it is, where the default invoker refuses one the app trusts from its proxy. Give its `HttpClient` a name of its own, as the typed client `RemoteApiInvoker` has: the client named `IMcpHttpInvoker` serves only the default invoker's requests, in process, and refuses any other, so `services.AddHttpClient<IMcpHttpInvoker, RemoteApiInvoker>()`, which gives its client that name, would fail every call.
+- **An invoker of your own registered as a typed client**, with `services.AddHttpClient<IMcpHttpInvoker, MyInvoker>()`. Its client takes the name `IMcpHttpInvoker`, which `AddMcpTools` gives the default invoker's client: every request it sends through it now fails with an `InvalidOperationException`, rather than reaching the address it named, as in 2.x, or being run by your app. Give the client a name of its own: `services.AddHttpClient<IMcpHttpInvoker, MyInvoker>("MyInvoker")`.
+- **Tests that gave the invoker a `TestServer` handler**, with `services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>().ConfigurePrimaryHttpMessageHandler(...)`. Remove the registration: under `WebApplicationFactory` the tools run in process, through the test server's pipeline. Left in, it makes every tool call fail with an `InvalidOperationException` that says to remove it. A primary handler set with `services.AddHttpClient(nameof(IMcpHttpInvoker)).ConfigurePrimaryHttpMessageHandler(...)` never gets a request any more, and can go too.
+- **Code that created `McpHttpInvoker` with its constructor.** Resolve `IMcpHttpInvoker` from the app's services instead. Called outside an MCP request, as from a test, it names the request at the [base URL](#base-url-resolution), which under `WebApplicationFactory` needs `McpTools:BaseUrl`, as the test server is bound to no address. A decorator that wrapped an invoker it created must not resolve `IMcpHttpInvoker` in its own registration: that resolves the decorator itself, again and again, until the stack overflows. Register it over the registration `AddMcpTools` made:
+
+  ```csharp
+  builder.Services.AddMcpTools(Assembly.GetExecutingAssembly());
+  var invokerRegistration = builder.Services.Last(x => x.ServiceType == typeof(IMcpHttpInvoker));
+  builder.Services.AddTransient<IMcpHttpInvoker>(services =>
+      new AuditingInvoker((IMcpHttpRequestInvoker)invokerRegistration.ImplementationFactory!(services)));
+  ```
+
+  `AuditingInvoker` is your decorator; implement `IMcpHttpRequestInvoker` and hand its `SendAsync` on too, or the tools that send headers or a form return an error result, as [Custom HTTP Invocation](#custom-http-invocation) says.
+- **An app behind a TLS-terminating proxy**, which needed `McpTools:BaseUrl` or loopback among its `KnownProxies`: nothing. The tool's request takes the MCP request's scheme and host, and is not redirected.
+
+Two smaller changes come with it. `DefaultBaseUrlProvider` has one constructor, without the `IHttpContextAccessor`, and no longer fails for an `http://` binding off loopback under an HTTPS MCP request, as it names a request rather than calls it; nor does it prefer a binding on loopback. And an action of an `[ApiController]` that requires a `traceparent`, `tracestate`, `baggage`, `Correlation-Context` or `X-Forwarded-Proto` header now gets no tool and build warning [`MCP009`](#troubleshooting), and a Minimal API endpoint that requires one `MCP010`, as the tool's request never carries one; make the parameter optional. An action without `[ApiController]` keeps its tool, as MVC runs it with the parameter null; see [Headers a tool never sets](#headers-a-tool-never-sets).
 
 ## Requirements
 

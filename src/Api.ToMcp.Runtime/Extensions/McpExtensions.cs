@@ -38,7 +38,8 @@ public static class McpExtensions
     /// Registers MCP tool services, among them the invoker, which sends a tool's API request through the message handlers
     /// of its named <see cref="HttpClient"/> and serves it in process, through the request pipeline the host builds for the
     /// server, and every tool of the assembly: the generated ones and any hand-written
-    /// <see cref="McpServerToolTypeAttribute"/> class.
+    /// <see cref="McpServerToolTypeAttribute"/> class. The request never leaves the process: the client's primary handler
+    /// refuses every request, and the invoker cannot be registered again as a typed client.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
@@ -56,22 +57,21 @@ public static class McpExtensions
         services.TryAddSingleton<InProcessApiPipeline>();
         CaptureThePipelineTheHostBuilds(services);
         var invokerClient = services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) =>
-            {
-                var forwardedHeaders = serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
-                var certificateForwarding = serviceProvider.GetRequiredService<IOptions<CertificateForwardingOptions>>().Value;
+        {
+            var forwardedHeaders = serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
+            var certificateForwarding = serviceProvider.GetRequiredService<IOptions<CertificateForwardingOptions>>().Value;
 
-                return new McpHttpInvoker(
-                    httpClient,
-                    serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
-                    serviceProvider.GetRequiredService<IHttpContextAccessor>(),
-                    serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
-                    serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
-                    serviceProvider.GetRequiredService<InProcessApiPipeline>(),
-                    serviceProvider.GetRequiredService<InProcessApiHandlerCheck>(),
-                    forwardedHeaders.ForwardedProtoHeaderName,
-                    ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
-            })
-            .ConfigurePrimaryHttpMessageHandler(LeaveRedirectsToTheInvoker);
+            return new McpHttpInvoker(
+                httpClient,
+                serviceProvider.GetRequiredService<ISelfBaseUrlProvider>(),
+                serviceProvider.GetRequiredService<IHttpContextAccessor>(),
+                serviceProvider.GetRequiredService<ILogger<McpHttpInvoker>>(),
+                serviceProvider.GetRequiredService<IOptions<McpScopeOptions>>(),
+                serviceProvider.GetRequiredService<InProcessApiPipeline>(),
+                serviceProvider.GetRequiredService<InProcessApiHandlerCheck>(),
+                ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
+        });
+        services.TryAddSingleton<ITypedHttpClientFactory<McpHttpInvoker>, TypedInvokerClientRefusal>();
         ServeInProcessBelowEveryHandler(services, invokerClient.Name);
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
@@ -119,32 +119,14 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Stops the invoker's client from following redirects, so the invoker follows only those back to the address the
-    /// tool called. A primary handler the app sets for the client after <see cref="AddMcpTools"/> replaces this one, and
-    /// keeps its own choice.
-    /// </summary>
-    private static void LeaveRedirectsToTheInvoker(HttpMessageHandler handler, IServiceProvider services)
-    {
-        var socketsHandler = handler as SocketsHttpHandler;
-        if (socketsHandler is not null)
-        {
-            socketsHandler.AllowAutoRedirect = false;
-        }
-
-        var clientHandler = handler as HttpClientHandler;
-        if (clientHandler is not null)
-        {
-            clientHandler.AllowAutoRedirect = false;
-        }
-    }
-
-    /// <summary>
-    /// Has <see cref="InProcessApiHandler"/> serve the requests the invoker marks for in process, below every other handler
-    /// of its client. The client factory runs its first filter last, after the client's own configuration and every other
-    /// filter, so <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one
-    /// that adds the factory's logging handlers. A filter registered later already runs before it. App code that removes
-    /// filters after <see cref="AddMcpTools"/> can take this one away too, and an <see cref="IHttpClientFactory"/> the app
-    /// registers creates clients without it, which <see cref="InProcessApiHandlerCheck"/> finds.
+    /// Has <see cref="InProcessApiHandler"/> serve the invoker's requests in process, below every other handler of its
+    /// client, and refuse any other request of the client, and <see cref="RefusingPrimaryHandler"/> take the place of the
+    /// client's primary handler. The client factory runs its
+    /// first filter last, after the client's own configuration and every other filter, so
+    /// <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one that adds the
+    /// factory's logging handlers. A filter registered later already runs before it. App code that removes filters after
+    /// <see cref="AddMcpTools"/> can take this one away too, and an <see cref="IHttpClientFactory"/> the app registers
+    /// creates clients without it, which <see cref="InProcessApiHandlerCheck"/> finds.
     /// </summary>
     private static void ServeInProcessBelowEveryHandler(IServiceCollection services, string clientName)
     {
@@ -158,10 +140,11 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Adds middleware to prevent infinite loops when MCP tools call back to the API over HTTP: the MCP endpoint
-    /// <see cref="MapMcpEndpoint"/> maps then refuses a request a tool sent over HTTP, wherever it is mapped, and the
-    /// middleware refuses one to any path under <c>/mcp</c>, which covers an endpoint the SDK's <c>MapMcp</c> maps there.
-    /// A tool's in-process request needs no middleware: the endpoint <see cref="MapMcpEndpoint"/> maps refuses it anyway.
+    /// Adds middleware that refuses a request carrying the <c>X-MCP-Internal-Call</c> header, which every tool's request
+    /// carries, to any path under <c>/mcp</c>, which covers an endpoint the SDK's <c>MapMcp</c> maps there and that does
+    /// not look for <see cref="IMcpToolRequestFeature"/>. With it, the endpoint <see cref="MapMcpEndpoint"/> maps also
+    /// refuses a request that carries the header, whoever sent it. A tool's request needs no middleware to be refused by
+    /// that endpoint: it carries <see cref="IMcpToolRequestFeature"/>.
     /// </summary>
     public static IApplicationBuilder UseMcpLoopPrevention(this IApplicationBuilder app)
     {
@@ -169,9 +152,9 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Maps the MCP endpoint at the specified path. It refuses a request a tool runs in process, which carries
-    /// <see cref="IMcpToolRequestFeature"/>, and with <see cref="UseMcpLoopPrevention"/> one a tool sends over HTTP
-    /// too. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
+    /// Maps the MCP endpoint at the specified path. It refuses a tool's request, which carries
+    /// <see cref="IMcpToolRequestFeature"/>, and with <see cref="UseMcpLoopPrevention"/> a request that carries the
+    /// <c>X-MCP-Internal-Call</c> header too. With <see cref="McpScopeOptions.ResourceMetadata"/> set, it signs the caller in through the MCP SDK's
     /// scheme, requires a signed-in caller who meets the app's default and fallback policies, answers a caller who is not
     /// signed in with a <c>401</c> challenge that points to the protected resource metadata, and answers a tool call that
     /// scope validation refuses with a scope challenge.

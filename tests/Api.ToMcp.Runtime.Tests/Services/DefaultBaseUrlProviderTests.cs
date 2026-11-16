@@ -1,7 +1,6 @@
 using Api.ToMcp.Runtime.Services;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Moq;
@@ -9,27 +8,20 @@ using Xunit;
 
 namespace Api.ToMcp.Runtime.Tests.Services;
 
+/// <summary>
+/// The address that names a tool's request outside an MCP request. It is never called, so it only has to be a URL the
+/// app serves as its own.
+/// </summary>
 public class DefaultBaseUrlProviderTests
 {
-    [Fact]
-    public void GetBaseUrl_UsesTheConfiguredHttpAddressAsGiven_WhenTheRequestCameInOverHttps()
-    {
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: "http://localhost:5080/", request: ("https", "api.example.com"));
-
-        Assert.Equal("http://localhost:5080", provider.GetBaseUrl());
-    }
-
     [Theory]
-    [InlineData("api.example.com")]
-    [InlineData("internal.example:8443")]
-    [InlineData("169.254.169.254")]
-    public void GetBaseUrl_KeepsTheHttpBinding_WhateverHostTheHttpsRequestNames(string requestHost)
+    [InlineData("http://localhost:5080/", "http://localhost:5080")]
+    [InlineData("https://api.example.com/v1", "https://api.example.com/v1")]
+    public void GetBaseUrl_UsesTheConfiguredAddressAsGiven_WhateverTheServerIsBoundTo(string configuredBaseUrl, string expected)
     {
-        // The Host header is the client's to set, so following it sent the tool's request, with the caller's
-        // Authorization, to any server the app can reach: https://github.com/Kebechet/Api.ToMcp/issues/48
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, request: ("https", requestHost));
+        var provider = CreateProvider(["https://+:8443"], configuredBaseUrl);
 
-        Assert.Equal("http://localhost:8080", provider.GetBaseUrl());
+        Assert.Equal(expected, provider.GetBaseUrl());
     }
 
     [Theory]
@@ -37,8 +29,8 @@ public class DefaultBaseUrlProviderTests
     [InlineData("http://pipe:/app", "http://+:8080", "http://localhost:8080")]
     public void GetBaseUrl_SkipsAUnixSocketAndANamedPipe(string nonTcpAddress, string tcpAddress, string expected)
     {
-        // An HTTP client takes "unix" or "pipe" for the host, so a call there fails.
-        var provider = CreateProvider([nonTcpAddress, tcpAddress], configuredBaseUrl: null, request: ("https", "api.example.com"));
+        // A URL would take "unix" or "pipe" for its host, and the socket's path for the start of its own.
+        var provider = CreateProvider([nonTcpAddress, tcpAddress], configuredBaseUrl: null);
 
         Assert.Equal(expected, provider.GetBaseUrl());
     }
@@ -49,7 +41,7 @@ public class DefaultBaseUrlProviderTests
     [InlineData("http://pipe:/app")]
     public void GetBaseUrl_SaysToSetTheBaseUrl_WhenTheServerIsBoundOnlyToAUnixSocketOrANamedPipe(string address)
     {
-        var provider = CreateProvider([address], configuredBaseUrl: null, request: ("https", "api.example.com"));
+        var provider = CreateProvider([address], configuredBaseUrl: null);
 
         var exception = Assert.Throws<InvalidOperationException>(() => provider.GetBaseUrl());
 
@@ -57,120 +49,53 @@ public class DefaultBaseUrlProviderTests
         Assert.Contains("McpTools:BaseUrl", exception.Message);
     }
 
-    [Theory]
-    [InlineData("http://10.0.0.5:8080", "http://127.0.0.1:8081", "http://127.0.0.1:8081")]
-    [InlineData("http://api.corp.example", "http://*:8080", "http://localhost:8080")]
-    [InlineData("http://api.corp.example", "http://localhost:8080", "http://localhost:8080")]
-    public void GetBaseUrl_PrefersAnHttpBindingOnLoopback_OverOneOffIt(string offLoopback, string onLoopback, string expected)
+    [Fact]
+    public void GetBaseUrl_SaysToSetTheBaseUrl_WhenTheServerIsBoundToNoAddress()
     {
-        // The app's forwarded headers trust loopback by default, where a call to a loopback address comes from.
-        var provider = CreateProvider([offLoopback, onLoopback], configuredBaseUrl: null, request: ("https", "api.example.com"));
-
-        Assert.Equal(expected, provider.GetBaseUrl());
-    }
-
-    [Theory]
-    [InlineData("http://10.0.0.5:8080")]
-    [InlineData("http://api.corp.example")]
-    public void GetBaseUrl_RefusesAnHttpsRequest_WhenTheOnlyBindingIsAnHttpOneOffLoopback(string address)
-    {
-        // The caller's token would go in clear text off the machine, and the app would take the call for HTTP.
-        var provider = CreateProvider([address], configuredBaseUrl: null, request: ("https", "api.example.com"));
+        // TestServer, which WebApplicationFactory runs, is bound to none.
+        var provider = CreateProvider([], configuredBaseUrl: null);
 
         var exception = Assert.Throws<InvalidOperationException>(() => provider.GetBaseUrl());
 
-        Assert.Contains(address, exception.Message);
         Assert.Contains("McpTools:BaseUrl", exception.Message);
     }
 
     [Fact]
-    public void GetBaseUrl_CallsAnHttpBindingOffLoopback_ForAnHttpRequest()
+    public void GetBaseUrl_PrefersAnHttpsBinding()
     {
-        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: null, request: ("http", "10.0.0.5:8080"));
-
-        Assert.Equal("http://10.0.0.5:8080", provider.GetBaseUrl());
-    }
-
-    [Fact]
-    public void GetBaseUrl_CallsAnHttpBindingOffLoopback_OutsideARequest()
-    {
-        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: null, request: null);
-
-        Assert.Equal("http://10.0.0.5:8080", provider.GetBaseUrl());
-    }
-
-    [Fact]
-    public void GetBaseUrl_UsesTheConfiguredHttpAddressOffLoopbackAsGiven_ForAnHttpsRequest()
-    {
-        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: "http://api.internal:8080", request: ("https", "api.example.com"));
-
-        Assert.Equal("http://api.internal:8080", provider.GetBaseUrl());
-    }
-
-    [Fact]
-    public void GetBaseUrl_CallsAnHttpBindingOffLoopback_ForAProviderThatCannotSeeTheRequest()
-    {
-        var addressesFeature = new ServerAddressesFeature();
-        addressesFeature.Addresses.Add("http://10.0.0.5:8080");
-        var features = new FeatureCollection();
-        features.Set<IServerAddressesFeature>(addressesFeature);
-        var server = new Mock<IServer>();
-        server.Setup(x => x.Features).Returns(features);
-
-        var provider = new DefaultBaseUrlProvider(server.Object, new ConfigurationBuilder().Build());
-
-        Assert.Equal("http://10.0.0.5:8080", provider.GetBaseUrl());
-    }
-
-    [Fact]
-    public void GetBaseUrl_KeepsTheHttpBinding_ForARequestThatCameInOverHttp()
-    {
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, request: ("http", "localhost:8080"));
-
-        Assert.Equal("http://localhost:8080", provider.GetBaseUrl());
-    }
-
-    [Fact]
-    public void GetBaseUrl_KeepsTheHttpBinding_OutsideARequest()
-    {
-        var provider = CreateProvider(["http://+:8080"], configuredBaseUrl: null, request: null);
-
-        Assert.Equal("http://localhost:8080", provider.GetBaseUrl());
-    }
-
-    [Fact]
-    public void GetBaseUrl_PrefersAnHttpsBinding_OverTheRequestsAddress()
-    {
-        var provider = CreateProvider(["http://+:8080", "https://+:8443"], configuredBaseUrl: null, request: ("https", "api.example.com"));
+        // UseHttpsRedirection would redirect a request named at the http:// one.
+        var provider = CreateProvider(["http://+:8080", "https://+:8443"], configuredBaseUrl: null);
 
         Assert.Equal("https://localhost:8443", provider.GetBaseUrl());
     }
 
+    [Theory]
+    [InlineData("http://+:8080", "http://localhost:8080")]
+    [InlineData("http://10.0.0.5:8080", "http://10.0.0.5:8080")]
+    [InlineData("http://api.corp.example", "http://api.corp.example")]
+    public void GetBaseUrl_TakesTheFirstHttpBinding_WithoutAnHttpsOne(string address, string expected)
+    {
+        var provider = CreateProvider([address, "http://127.0.0.1:8081"], configuredBaseUrl: null);
+
+        Assert.Equal(expected, provider.GetBaseUrl());
+    }
+
     [Fact]
-    public void GetBaseUrl_DecidesTheRefusalForEachRequest()
+    public void GetBaseUrl_ResolvesTheAddressOnce()
     {
-        var httpContextAccessor = new HttpContextAccessor();
-        var provider = CreateProvider(["http://10.0.0.5:8080"], configuredBaseUrl: null, httpContextAccessor);
+        var addressesFeature = new ServerAddressesFeature();
+        addressesFeature.Addresses.Add("http://+:8080");
+        var provider = CreateProvider(addressesFeature, configuredBaseUrl: null);
 
-        httpContextAccessor.HttpContext = CreateHttpContext("http", "10.0.0.5:8080");
-        var direct = provider.GetBaseUrl();
-        httpContextAccessor.HttpContext = CreateHttpContext("https", "api.example.com");
+        var first = provider.GetBaseUrl();
+        addressesFeature.Addresses.Clear();
+        addressesFeature.Addresses.Add("https://+:8443");
 
-        Assert.Equal("http://10.0.0.5:8080", direct);
-        Assert.Throws<InvalidOperationException>(() => provider.GetBaseUrl());
+        Assert.Equal("http://localhost:8080", first);
+        Assert.Equal("http://localhost:8080", provider.GetBaseUrl());
     }
 
-    private static DefaultBaseUrlProvider CreateProvider(string[] boundAddresses, string? configuredBaseUrl, (string Scheme, string Host)? request)
-    {
-        var httpContextAccessor = new HttpContextAccessor
-        {
-            HttpContext = request is { } value ? CreateHttpContext(value.Scheme, value.Host) : null
-        };
-
-        return CreateProvider(boundAddresses, configuredBaseUrl, httpContextAccessor);
-    }
-
-    private static DefaultBaseUrlProvider CreateProvider(string[] boundAddresses, string? configuredBaseUrl, IHttpContextAccessor httpContextAccessor)
+    private static DefaultBaseUrlProvider CreateProvider(string[] boundAddresses, string? configuredBaseUrl)
     {
         var addressesFeature = new ServerAddressesFeature();
         foreach (var address in boundAddresses)
@@ -178,6 +103,11 @@ public class DefaultBaseUrlProviderTests
             addressesFeature.Addresses.Add(address);
         }
 
+        return CreateProvider(addressesFeature, configuredBaseUrl);
+    }
+
+    private static DefaultBaseUrlProvider CreateProvider(ServerAddressesFeature addressesFeature, string? configuredBaseUrl)
+    {
         var features = new FeatureCollection();
         features.Set<IServerAddressesFeature>(addressesFeature);
         var server = new Mock<IServer>();
@@ -187,16 +117,7 @@ public class DefaultBaseUrlProviderTests
             .AddInMemoryCollection(new Dictionary<string, string?> { ["McpTools:BaseUrl"] = configuredBaseUrl })
             .Build();
 
-        return new DefaultBaseUrlProvider(server.Object, configuration, httpContextAccessor);
-    }
-
-    private static HttpContext CreateHttpContext(string scheme, string host)
-    {
-        var httpContext = new DefaultHttpContext();
-        httpContext.Request.Scheme = scheme;
-        httpContext.Request.Host = new HostString(host);
-
-        return httpContext;
+        return new DefaultBaseUrlProvider(server.Object, configuration);
     }
 
     [Theory]

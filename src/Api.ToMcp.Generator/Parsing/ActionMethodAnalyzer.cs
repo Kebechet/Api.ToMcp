@@ -506,7 +506,7 @@ namespace Api.ToMcp.Generator.Parsing
                 var headerName = modelName ?? param.Name;
                 if (source == ParameterSourceModel.Header && RequestHeaderRules.IsValidName(headerName) && RequestHeaderRules.IsNeverSetFromArguments(headerName))
                 {
-                    withheldHeaders.Add((param.Name, headerName, IsRequiredByMvc(param, bindingRequirement)));
+                    withheldHeaders.Add((param.Name, headerName, IsRequiredByMvc(param, bindingRequirement, isApiController)));
                     continue;
                 }
 
@@ -646,13 +646,16 @@ namespace Api.ToMcp.Generator.Parsing
         }
 
         /// <summary>
-        /// Whether MVC refuses a request without a value for the parameter: one with <c>[BindRequired]</c> or
-        /// <c>[Required]</c>, or of a reference type that is not nullable, for which it adds <c>[Required]</c> itself.
+        /// Whether MVC refuses a request without a value for the parameter, with <c>400</c>: an <c>[ApiController]</c> does
+        /// for one with <c>[BindRequired]</c> or <c>[Required]</c>, or of a reference type that is not nullable, for which
+        /// MVC adds <c>[Required]</c> itself. Without <c>[ApiController]</c> MVC runs the action with the parameter null and
+        /// the error in <c>ModelState</c>.
         /// </summary>
-        private static bool IsRequiredByMvc(IParameterSymbol parameter, bool? bindingRequirement)
+        private static bool IsRequiredByMvc(IParameterSymbol parameter, bool? bindingRequirement, bool isApiController)
         {
-            return bindingRequirement == true ||
-                (parameter.Type.IsReferenceType && parameter.Type.NullableAnnotation == NullableAnnotation.NotAnnotated && !parameter.HasExplicitDefaultValue);
+            return isApiController &&
+                (bindingRequirement == true ||
+                    (parameter.Type.IsReferenceType && parameter.Type.NullableAnnotation == NullableAnnotation.NotAnnotated && !parameter.HasExplicitDefaultValue));
         }
 
         /// <summary>
