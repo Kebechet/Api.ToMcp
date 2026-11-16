@@ -243,6 +243,39 @@ public class McpInvokerHttpClientTests
     }
 
     [Fact]
+    public async Task AHostAHandlerOfTheClientSets_IsTheHostTheAppSees()
+    {
+        // As the README's "Migrating from 2.x" has an app whose API answers only at its own host, with RequireHost, set it.
+        using var provider = BuildProvider(services => services.AddHttpClient(ClientName).AddHttpMessageHandler(() => new ApiHostHandler()));
+        BuildPipeline(provider, context => context.Response.WriteAsync($"{context.Request.Host} {context.Request.Path}"));
+
+        var result = await CallAsync(provider);
+
+        Assert.Equal("api.example.com:5000 /api/status", Text(result));
+    }
+
+    [Fact]
+    public async Task ADecoratorRegisteredOverTheInvokerAddMcpToolsRegisters_WrapsIt()
+    {
+        // The README's "Migrating from 2.x" registers it so; resolving IMcpHttpInvoker in its own factory would resolve
+        // the decorator itself, without end.
+        var decorated = new List<string>();
+        using var provider = BuildProvider(services =>
+        {
+            var invokerRegistration = services.Last(x => x.ServiceType == typeof(IMcpHttpInvoker));
+            services.AddTransient<IMcpHttpInvoker>(serviceProvider =>
+                new CountingInvoker((IMcpHttpRequestInvoker)invokerRegistration.ImplementationFactory!(serviceProvider), decorated));
+        });
+        BuildEchoPipeline(provider);
+
+        var result = await CallAsync(provider);
+
+        Assert.Equal(CallerToken, Echoed(result).GetProperty("authorization").GetString());
+        Assert.Equal(["/api/status"], decorated);
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
     public async Task ACall_FailsSayingWhy_WhenTheHostBuiltNoPipeline()
     {
         using var provider = BuildProvider(_ => { });
@@ -763,6 +796,55 @@ public class McpInvokerHttpClientTests
         public Action<HttpMessageHandlerBuilder> Configure(Action<HttpMessageHandlerBuilder> next)
         {
             return next;
+        }
+    }
+
+    /// <summary>
+    /// Names every request at the host the app's API answers at, as <c>RequireHost</c> requires.
+    /// </summary>
+    private sealed class ApiHostHandler : DelegatingHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            request.Headers.Host = "api.example.com:5000";
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A decorator that records the route of every call and hands it on.
+    /// </summary>
+    private sealed class CountingInvoker : IMcpHttpRequestInvoker
+    {
+        private readonly IMcpHttpRequestInvoker _inner;
+        private readonly List<string> _routes;
+
+        public CountingInvoker(IMcpHttpRequestInvoker inner, List<string> routes)
+        {
+            _inner = inner;
+            _routes = routes;
+        }
+
+        public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => SendAsync(new McpHttpRequest(HttpMethod.Get, route), ct);
+
+        public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(new McpHttpRequest(HttpMethod.Post, route) { JsonBody = jsonBody }, ct);
+
+        public Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(new McpHttpRequest(HttpMethod.Put, route) { JsonBody = jsonBody }, ct);
+
+        public Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(new McpHttpRequest(HttpMethod.Patch, route) { JsonBody = jsonBody }, ct);
+
+        public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default) => SendAsync(new McpHttpRequest(HttpMethod.Delete, route), ct);
+
+        public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => _inner.BeforeInvokeAsync(requiredScope, ct);
+
+        public Task<CallToolResult> SendAsync(McpHttpRequest request, CancellationToken ct = default)
+        {
+            lock (_routes)
+            {
+                _routes.Add(request.Route);
+            }
+
+            return _inner.SendAsync(request, ct);
         }
     }
 
