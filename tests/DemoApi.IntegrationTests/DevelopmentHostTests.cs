@@ -77,6 +77,24 @@ public sealed class DevelopmentHostTests
         Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
     }
 
+    [Fact]
+    public async Task AnAppThatGivesTheInvokersClientAHandler_StartsInDevelopment_AndTheHandlerSeesAToolCallServedInProcess()
+    {
+        var requests = new List<string>();
+        await using var app = await StartAsync(hasAuthentication: false, configureServices: services => services
+            .AddHttpClient(nameof(IMcpHttpInvoker))
+            .AddHttpMessageHandler(() => new RecordingHandler(requests))
+            .ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler()));
+        await using var client = await ConnectAsync(app.Urls.Single(), authorization: null);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.Equal(Environments.Development, app.Environment.EnvironmentName);
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Contains(LaptopId, Assert.Single(requests));
+    }
+
     private static async Task<WebApplication> StartAsync(bool hasAuthentication, Action<IServiceCollection> configureServices)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
@@ -104,5 +122,33 @@ public sealed class DevelopmentHostTests
         await app.StartAsync();
 
         return app;
+    }
+
+    private sealed class RecordingHandler : DelegatingHandler
+    {
+        private readonly List<string> _requests;
+
+        public RecordingHandler(List<string> requests)
+        {
+            _requests = requests;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (_requests)
+            {
+                _requests.Add(request.RequestUri!.ToString());
+            }
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class RefusingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException($"The tool sent {request.RequestUri} over HTTP.");
+        }
     }
 }
