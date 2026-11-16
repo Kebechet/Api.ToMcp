@@ -67,9 +67,7 @@ public class McpHttpInvokerInProcessTests
     {
         _accessor.HttpContext = CreateCaller();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var invoker = CreateInvoker(
-            BuildPipeline(app => app.Run(_ => release.Task)),
-            httpClient: new HttpClient(_httpHandler) { Timeout = TimeSpan.FromMilliseconds(200) });
+        var invoker = CreateInvoker(BuildPipeline(app => app.Run(_ => release.Task)), timeout: TimeSpan.FromMilliseconds(200));
 
         try
         {
@@ -225,14 +223,24 @@ public class McpHttpInvokerInProcessTests
         Assert.Equal([$"{ProviderBaseUrl}/api/products/7"], _httpHandler.Requests);
     }
 
+    /// <summary>
+    /// The invoker with a client built as <c>AddMcpTools</c> builds it: <see cref="InProcessApiHandler"/> right above the
+    /// primary handler, which records every request it gets.
+    /// </summary>
     private McpHttpInvoker CreateInvoker(
         InProcessApiPipeline pipeline,
         McpScopeOptions? scopeOptions = null,
-        HttpClient? httpClient = null,
+        TimeSpan? timeout = null,
         ISelfBaseUrlProvider? baseUrlProvider = null)
     {
+        var httpClient = new HttpClient(new InProcessApiHandler(pipeline) { InnerHandler = _httpHandler });
+        if (timeout is not null)
+        {
+            httpClient.Timeout = timeout.Value;
+        }
+
         return new McpHttpInvoker(
-            httpClient ?? new HttpClient(_httpHandler),
+            httpClient,
             baseUrlProvider ?? new FixedBaseUrlProvider(ProviderBaseUrl),
             _accessor,
             NullLogger<McpHttpInvoker>.Instance,

@@ -130,16 +130,14 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
             }
         }
 
-        var inProcessPipeline = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured
-            ? _inProcessPipeline
-            : null;
-        var url = inProcessPipeline is not null && caller is not null && caller.Request.Host.HasValue
+        var isInProcess = _scopeOptions.AreApiCallsInProcess && _inProcessPipeline is not null && _inProcessPipeline.IsCaptured;
+        var url = isInProcess && caller is not null && caller.Request.Host.HasValue
             ? BuildInProcessUrl(caller.Request, request.Route)
             : BuildUrl(request.Route);
 
         using var message = new HttpRequestMessage(request.Method, url);
         ConfigureRequest(message);
-        if (inProcessPipeline is null)
+        if (!isInProcess)
         {
             ForwardTheScheme(message, caller);
         }
@@ -154,8 +152,8 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
 
         _logger.LogDebug("MCP invoking {Method} {Url}", request.Method.Method, url);
 
-        using var response = inProcessPipeline is not null
-            ? await SendInProcessAsync(inProcessPipeline, message, caller, ct)
+        using var response = isInProcess
+            ? await SendInProcessAsync(message, caller, ct)
             : await SendOverHttpAsync(message, request, ct);
         return await HandleResponse(response, ct);
     }
@@ -286,28 +284,16 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     }
 
     /// <summary>
-    /// Serves the request in process under the <see cref="HttpClient.Timeout"/> of the invoker's client, and fails a
-    /// timed-out or canceled call with the exceptions <see cref="HttpClient"/> throws, so the call ends as it did over HTTP.
+    /// Sends the request through the invoker's client, marked to be served in process: it passes the client's handlers and
+    /// gets its default headers and <see cref="HttpClient.Timeout"/>, and <see cref="InProcessApiHandler"/> serves it in
+    /// place of the primary handler. The pipeline follows each redirect back into the app itself, so the response that
+    /// comes back is final.
     /// </summary>
-    private async Task<HttpResponseMessage> SendInProcessAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
+    private Task<HttpResponseMessage> SendInProcessAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(_httpClient.Timeout);
-        try
-        {
-            return await pipeline.SendAsync(request, caller, timeout.Token);
-        }
-        catch (OperationCanceledException exception) when (ct.IsCancellationRequested)
-        {
-            throw new TaskCanceledException(exception.Message, exception, ct);
-        }
-        catch (OperationCanceledException exception) when (timeout.IsCancellationRequested)
-        {
-            throw new TaskCanceledException(
-                $"The request was canceled due to the configured HttpClient.Timeout of {_httpClient.Timeout.TotalSeconds} seconds elapsing.",
-                new TimeoutException(exception.Message, exception),
-                exception.CancellationToken);
-        }
+        InProcessApiHandler.ServeInProcess(request, caller);
+
+        return _httpClient.SendAsync(request, ct);
     }
 
     public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default)

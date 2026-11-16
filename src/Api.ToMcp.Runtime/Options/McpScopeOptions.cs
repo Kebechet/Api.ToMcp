@@ -35,7 +35,9 @@ public class McpScopeOptions
     /// Whether a generated tool serves its API request inside this process, through the request pipeline the host built
     /// for the server, so it passes every middleware a request the server receives passes, with no socket and no address
     /// to call. When <see langword="false"/>, or when the host built no pipeline, the request goes over HTTP to the
-    /// address <see cref="ISelfBaseUrlProvider"/> gives. Defaults to <see langword="true"/>.
+    /// address <see cref="ISelfBaseUrlProvider"/> gives. Either way, it passes the message handlers of the invoker's named
+    /// <see cref="HttpClient"/>, <c>IMcpHttpInvoker</c>, and gets its default headers and timeout. Defaults to
+    /// <see langword="true"/>.
     /// </summary>
     public bool AreApiCallsInProcess { get; set; } = true;
 

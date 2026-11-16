@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
@@ -34,9 +35,10 @@ public static class McpExtensions
     internal const string DefaultMcpPattern = "mcp";
 
     /// <summary>
-    /// Registers MCP tool services, among them the invoker that serves a tool's API request in process, through the
-    /// request pipeline the host builds for the server, and every tool of the assembly: the generated ones and any
-    /// hand-written <see cref="McpServerToolTypeAttribute"/> class.
+    /// Registers MCP tool services, among them the invoker, which sends a tool's API request through the message handlers
+    /// of its named <see cref="HttpClient"/> and serves it in process, through the request pipeline the host builds for the
+    /// server, and every tool of the assembly: the generated ones and any hand-written
+    /// <see cref="McpServerToolTypeAttribute"/> class.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="toolAssembly">Assembly containing generated MCP tools. Pass typeof(Program).Assembly or Assembly.GetExecutingAssembly().</param>
@@ -52,7 +54,7 @@ public static class McpExtensions
         services.TryAddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
         services.TryAddSingleton<InProcessApiPipeline>();
         CaptureThePipelineTheHostBuilds(services);
-        services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) =>
+        var invokerClient = services.AddHttpClient<IMcpHttpInvoker, McpHttpInvoker>((httpClient, serviceProvider) =>
             {
                 var forwardedHeaders = serviceProvider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
                 var certificateForwarding = serviceProvider.GetRequiredService<IOptions<CertificateForwardingOptions>>().Value;
@@ -68,6 +70,7 @@ public static class McpExtensions
                     ToolRequestHeaders.GetProxyHeaderNames(forwardedHeaders, certificateForwarding));
             })
             .ConfigurePrimaryHttpMessageHandler(LeaveRedirectsToTheInvoker);
+        ServeInProcessBelowEveryHandler(services, invokerClient.Name);
         services.TryAddSingleton<XmlDocSummaryReader>();
         services.TryAddSingleton<XmlDocPropertyDescriber>();
         services.TryAddSingleton<McpOutputSchemaBuilder>();
@@ -130,6 +133,20 @@ public static class McpExtensions
         {
             clientHandler.AllowAutoRedirect = false;
         }
+    }
+
+    /// <summary>
+    /// Has <see cref="InProcessApiHandler"/> serve the requests the invoker marks for in process, below every other handler
+    /// of its client. The client factory runs its first filter last, after the client's own configuration and every other
+    /// filter, so <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one
+    /// that adds the factory's logging handlers. A filter registered later already runs before it.
+    /// </summary>
+    private static void ServeInProcessBelowEveryHandler(IServiceCollection services, string clientName)
+    {
+        var filter = ServiceDescriptor.Singleton<IHttpMessageHandlerBuilderFilter>(serviceProvider =>
+            new InProcessApiHandlerFilter(clientName, serviceProvider.GetRequiredService<InProcessApiPipeline>()));
+        var firstFilter = services.FirstOrDefault(x => x.ServiceType == typeof(IHttpMessageHandlerBuilderFilter) && !x.IsKeyedService);
+        services.Insert(firstFilter is null ? services.Count : services.IndexOf(firstFilter), filter);
     }
 
     /// <summary>
