@@ -180,8 +180,6 @@ public partial class McpToolGeneratorTests
     [Theory]
     [InlineData("HttpGet", "[FromHeader(Name = \"Authorization\")] string auth")]
     [InlineData("HttpGet", "[FromHeader] string authorization, [FromHeader(Name = \"X-MCP-Internal-Call\")] string internalCall, [FromHeader] string host")]
-    [InlineData("HttpGet", "[FromHeader(Name = \"traceparent\")] string trace")]
-    [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-Proto\")] string scheme")]
     [InlineData("HttpPost", "[FromHeader(Name = \"Content-Type\")] string contentType, [FromForm] string name")]
     [InlineData("HttpPut", "[FromHeader(Name = \"content-length\")] string length, [FromBody] ProductFilter filter")]
     [InlineData("HttpGet", "[FromHeader(Name = \"Cookie\")] string? cookie")]
@@ -202,6 +200,8 @@ public partial class McpToolGeneratorTests
     [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-For\"), Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int? hops", "hops", "X-Forwarded-For")]
     [InlineData("HttpGet", "[FromHeader(Name = \"Content-Type\")] string contentType", "contentType", "Content-Type")]
     [InlineData("HttpGet", "[FromHeader(Name = \"X-HTTP-Method-Override\"), System.ComponentModel.DataAnnotations.Required] string? method", "method", "X-HTTP-Method-Override")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"traceparent\")] string trace", "trace", "traceparent")]
+    [InlineData("HttpGet", "[FromHeader(Name = \"X-Forwarded-Proto\")] string scheme", "scheme", "X-Forwarded-Proto")]
     public void Generator_GivesNoTool_ToAnActionRequiringAHeaderAToolNeverSetsAndItsRequestDoesNotCarry(string httpAttribute, string parameter, string parameterName, string headerName)
     {
         var source = SimpleTypeSource($"[{httpAttribute}(\"x\")] public Task<string> Find({parameter}) => Task.FromResult(string.Empty);");
@@ -476,7 +476,8 @@ namespace TestApi
     }
 
     /// <summary>
-    /// An invoker whose client answers every request with 200 without serving it.
+    /// An invoker whose client answers every request with 200 without serving it, and which knows no header the app trusts
+    /// from its proxy, so only its own list refuses a header.
     /// </summary>
     private static McpHttpInvoker CreateInvokerThatSendsNothing()
     {
