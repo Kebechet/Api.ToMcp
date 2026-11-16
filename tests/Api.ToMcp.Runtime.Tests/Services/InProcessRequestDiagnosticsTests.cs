@@ -332,6 +332,78 @@ public class InProcessRequestDiagnosticsTests
     }
 
     [Fact]
+    public async Task SendAsync_EndsTheTelemetryOfACanceledCall_With499_WhenTheAppReturnsWithoutStartingItsResponse()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var isOnStartingRun = false;
+        int? statusAtOnCompleted = null;
+        using var telemetry = new Telemetry(app => app.Run(async context =>
+        {
+            context.Response.OnStarting(() =>
+            {
+                isOnStartingRun = true;
+                return Task.CompletedTask;
+            });
+            context.Response.OnCompleted(() =>
+            {
+                statusAtOnCompleted = context.Response.StatusCode;
+                return Task.CompletedTask;
+            });
+            started.SetResult();
+            await release.Task;
+            context.Response.StatusCode = StatusCodes.Status204NoContent;
+        }));
+        using var cancellation = new CancellationTokenSource();
+
+        var sending = telemetry.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), cancellationToken: cancellation.Token);
+        await started.Task;
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending);
+        release.SetResult();
+        await telemetry.RequestEnded.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var duration = Assert.Single(telemetry.Measurements, x => x.Instrument.Name == RequestDuration);
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, duration.Tags["http.response.status_code"]);
+        Assert.False(duration.Tags.ContainsKey("error.type"));
+        Assert.Contains(telemetry.Logs, x => x.EventId == 2 && x.Message.Contains(" - 499 - - "));
+        Assert.True(isOnStartingRun);
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, statusAtOnCompleted);
+    }
+
+    [Fact]
+    public async Task SendAsync_EndsTheTelemetryOfARequestTheAppAborted_With499_WhenTheAppReturnsWithoutStartingItsResponse()
+    {
+        var isOnStartingRun = false;
+        int? statusAtOnCompleted = null;
+        using var telemetry = new Telemetry(app => app.Run(context =>
+        {
+            context.Response.OnStarting(() =>
+            {
+                isOnStartingRun = true;
+                return Task.CompletedTask;
+            });
+            context.Response.OnCompleted(() =>
+            {
+                statusAtOnCompleted = context.Response.StatusCode;
+                return Task.CompletedTask;
+            });
+            context.Abort();
+            context.Response.StatusCode = StatusCodes.Status204NoContent;
+            return Task.CompletedTask;
+        }));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => telemetry.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl)));
+
+        var duration = Assert.Single(telemetry.Measurements, x => x.Instrument.Name == RequestDuration);
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, duration.Tags["http.response.status_code"]);
+        Assert.False(duration.Tags.ContainsKey("error.type"));
+        Assert.Contains(telemetry.Logs, x => x.EventId == 2 && x.Message.Contains(" - 499 - - "));
+        Assert.True(isOnStartingRun);
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, statusAtOnCompleted);
+    }
+
+    [Fact]
     public async Task SendAsync_KeepsTheStatusOfACanceledCall_WhoseResponseStarted()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

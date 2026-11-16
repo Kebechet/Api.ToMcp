@@ -239,11 +239,21 @@ internal sealed class InProcessApiPipeline
             var diagnostics = _diagnostics.BeginRequest(context);
             Exception? unhandledException = null;
             Exception? reportedException = null;
+            var hasAppStartedTheResponse = false;
             try
             {
                 try
                 {
-                    await application(context);
+                    try
+                    {
+                        await application(context);
+                    }
+                    finally
+                    {
+                        // Read before StartAsync below starts it: Kestrel gives an aborted request 499 unless the app
+                        // itself started the response.
+                        hasAppStartedTheResponse = exchange.Response.Feature.HasStarted;
+                    }
 
                     // A response without a body has not started yet. Like a server, run its OnStarting callbacks only
                     // when the app succeeded; one that throws fails the request as the app would.
@@ -258,7 +268,7 @@ internal sealed class InProcessApiPipeline
                     unhandledException = exception;
                 }
 
-                reportedException = AnswerTheEnd(exchange, context, unhandledException);
+                reportedException = AnswerTheEnd(exchange, context, unhandledException, hasAppStartedTheResponse);
                 await exchange.Response.Feature.CompleteAsync(_logger);
             }
             finally
@@ -273,14 +283,15 @@ internal sealed class InProcessApiPipeline
 
     /// <summary>
     /// Answers the end of the request as Kestrel does, and returns the exception it reports to hosting for the request's
-    /// telemetry, if any. An aborted request whose response has not started gets 499, as the request of a client that went
-    /// away, and its cancellation is no error. Any other exception the app let escape is logged, and answered with 500 or
-    /// the status of a <see cref="BadHttpRequestException"/> when the request was not aborted.
+    /// telemetry, if any. An aborted request whose app had not started the response when it returned or threw gets 499,
+    /// as the request of a client that went away, though its <c>OnStarting</c> callbacks ran since, and its cancellation
+    /// is no error. Any other exception the app let escape is logged, and answered with 500 or the status of a
+    /// <see cref="BadHttpRequestException"/> when the request was not aborted.
     /// </summary>
-    private Exception? AnswerTheEnd(InProcessExchange exchange, HttpContext context, Exception? unhandledException)
+    private Exception? AnswerTheEnd(InProcessExchange exchange, HttpContext context, Exception? unhandledException, bool hasAppStartedTheResponse)
     {
         var isAborted = exchange.Lifetime.IsRequestAborted;
-        if (isAborted)
+        if (isAborted && !hasAppStartedTheResponse)
         {
             exchange.Response.AnswerAbort();
         }
@@ -471,15 +482,12 @@ internal sealed class InProcessApiPipeline
         }
 
         /// <summary>
-        /// Gives an aborted request whose response has not started the status 499, as Kestrel gives the request of a client
-        /// that went away, for its logs and metrics; no response reaches the caller.
+        /// Gives an aborted request whose app had not started the response the status 499, as Kestrel gives the request of
+        /// a client that went away, for its logs and metrics; no response reaches the caller.
         /// </summary>
         public void AnswerAbort()
         {
-            if (!Feature.HasStarted)
-            {
-                Feature.StatusCode = StatusCodes.Status499ClientClosedRequest;
-            }
+            Feature.StatusCode = StatusCodes.Status499ClientClosedRequest;
         }
     }
 
