@@ -245,6 +245,24 @@ public class InProcessRequestDiagnosticsTests
     }
 
     [Fact]
+    public void MetricsTagsFeature_DeclaresMetricsDisabled_PublicAndVirtual_SoAspNetCore9AndLaterLoadTheNet8Build()
+    {
+        // ASP.NET Core 9 added MetricsDisabled to IHttpMetricsTagsFeature without a body, and this net8.0 build loads on
+        // it only because the runtime binds that member to a public virtual property of the same name and type. Run on
+        // ASP.NET Core 8, as on CI, the type loads either way, so its declaration is read instead.
+        var property = typeof(InProcessRequestDiagnostics.MetricsTagsFeature).GetProperty(nameof(InProcessRequestDiagnostics.MetricsTagsFeature.MetricsDisabled));
+
+        Assert.NotNull(property);
+        Assert.Equal(typeof(bool), property.PropertyType);
+        Assert.All([property.GetMethod, property.SetMethod], x =>
+        {
+            Assert.NotNull(x);
+            Assert.True(x.IsPublic);
+            Assert.True(x.IsVirtual);
+        });
+    }
+
+    [Fact]
     public async Task SendAsync_SetsNoMetricsTagsFeature_AndMeasuresNothing_WhenNoListenerMeasures()
     {
         IHttpMetricsTagsFeature? featureInside = null;
