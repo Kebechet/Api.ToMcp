@@ -119,8 +119,9 @@ public static class McpExtensions
     }
 
     /// <summary>
-    /// Has <see cref="InProcessApiHandler"/> serve every request of the invoker's client, below every other handler of the
-    /// client, and <see cref="RefusingPrimaryHandler"/> take the place of its primary handler. The client factory runs its
+    /// Has <see cref="InProcessApiHandler"/> serve the invoker's requests in process, below every other handler of its
+    /// client, and refuse any other request of the client, and <see cref="RefusingPrimaryHandler"/> take the place of the
+    /// client's primary handler. The client factory runs its
     /// first filter last, after the client's own configuration and every other filter, so
     /// <see cref="InProcessApiHandlerFilter"/> goes in ahead of the filters registered so far, such as the one that adds the
     /// factory's logging handlers. A filter registered later already runs before it. App code that removes filters after

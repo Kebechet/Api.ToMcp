@@ -221,12 +221,12 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     }
 
     /// <summary>
-    /// Sends the request through the invoker's client, for the tool call that came in <paramref name="caller"/>: it passes
-    /// the client's handlers and gets its default headers and <see cref="HttpClient.Timeout"/>, and
-    /// <see cref="InProcessApiHandler"/> serves it in process in place of the primary handler. The pipeline follows each
-    /// redirect back into the app itself, so the response that comes back is final. When the client lacks that handler, or
-    /// comes from a client factory the app registered, the request could reach a primary handler of the app's that sends it
-    /// over the network, so it is served without the client instead.
+    /// Sends the request through the invoker's client, marked to be served in process for the tool call that came in
+    /// <paramref name="caller"/>: it passes the client's handlers and gets its default headers and
+    /// <see cref="HttpClient.Timeout"/>, and <see cref="InProcessApiHandler"/> serves it in process in place of the primary
+    /// handler. The pipeline follows each redirect back into the app itself, so the response that comes back is final.
+    /// When the client lacks that handler, or comes from a client factory the app registered, the request could reach a
+    /// primary handler of the app's that sends it over the network, so it is served without the client instead.
     /// </summary>
     private Task<HttpResponseMessage> SendInProcessAsync(HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
     {
@@ -236,7 +236,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
             return SendWithoutTheClientAsync(request, caller, ct);
         }
 
-        InProcessApiHandler.SetCaller(request, caller);
+        InProcessApiHandler.ServeInProcess(request, caller);
 
         return _httpClient.SendAsync(request, ct);
     }

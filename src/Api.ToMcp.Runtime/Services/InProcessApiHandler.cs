@@ -3,15 +3,17 @@ using Microsoft.AspNetCore.Http;
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
-/// The innermost handler of the invoker's <see cref="HttpClient"/>, right above its primary handler. It serves every
-/// request through <see cref="InProcessApiPipeline"/>, after every other handler of the client has run, for the MCP request
-/// the invoker gave it with <see cref="SetCaller"/>, and never passes a request on to the primary handler.
+/// The innermost handler of the invoker's <see cref="HttpClient"/>, right above its primary handler. It serves a request
+/// the invoker marked with <see cref="ServeInProcess"/> through <see cref="InProcessApiPipeline"/>, after every other
+/// handler of the client has run, and never passes a request on to the primary handler. It refuses any other request:
+/// code other than the invoker that sends a request through this client, such as an invoker of the app's own registered
+/// as a typed client under the client's name, means it for another server, and this app would run it instead.
 /// </summary>
 internal sealed class InProcessApiHandler : DelegatingHandler
 {
-    private const string CallerOptionName = "Api.ToMcp.Caller";
+    private const string InProcessCallOptionName = "Api.ToMcp.InProcessCall";
 
-    private static readonly HttpRequestOptionsKey<HttpContext> CallerKey = new(CallerOptionName);
+    private static readonly HttpRequestOptionsKey<InProcessCall> InProcessCallKey = new(InProcessCallOptionName);
 
     private readonly InProcessApiPipeline _pipeline;
 
@@ -21,21 +23,32 @@ internal sealed class InProcessApiHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Gives the request the MCP request the tool call came in, whose connection and path base it carries. A tool call
-    /// outside an MCP request has none.
+    /// Marks the request to be served in process, for the tool call that came in <paramref name="caller"/>.
     /// </summary>
-    public static void SetCaller(HttpRequestMessage request, HttpContext? caller)
+    public static void ServeInProcess(HttpRequestMessage request, HttpContext? caller)
     {
-        if (caller is not null)
-        {
-            request.Options.Set(CallerKey, caller);
-        }
+        request.Options.Set(InProcessCallKey, new InProcessCall(caller));
     }
 
+    /// <exception cref="InvalidOperationException">The invoker did not mark the request.</exception>
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        request.Options.TryGetValue(CallerKey, out var caller);
+        if (!request.Options.TryGetValue(InProcessCallKey, out var inProcessCall))
+        {
+            throw new InvalidOperationException(
+                $"The request {request.Method} {request.RequestUri} was sent through the HttpClient named {nameof(IMcpHttpInvoker)} by code other than the invoker " +
+                "AddMcpTools registers. That client serves only the invoker's requests, in process, so the request is refused rather than run by this app. " +
+                $"A client of your own takes that name when it is registered for {nameof(IMcpHttpInvoker)} as a typed client, as " +
+                $"services.AddHttpClient<{nameof(IMcpHttpInvoker)}, MyInvoker>() does: give it a name of its own, as in " +
+                $"services.AddHttpClient<{nameof(IMcpHttpInvoker)}, MyInvoker>(\"MyInvoker\").");
+        }
 
-        return _pipeline.SendAsync(request, caller, cancellationToken);
+        return _pipeline.SendAsync(request, inProcessCall.Caller, cancellationToken);
     }
+
+    /// <summary>
+    /// The mark. It wraps the MCP request, as <see cref="HttpRequestOptions"/> reads a null value as none, and a tool call
+    /// outside an MCP request has none.
+    /// </summary>
+    private sealed record InProcessCall(HttpContext? Caller);
 }

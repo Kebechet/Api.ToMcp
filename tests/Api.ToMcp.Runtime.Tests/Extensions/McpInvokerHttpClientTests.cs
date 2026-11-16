@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text.Json;
+using Api.ToMcp.Abstractions.Scopes;
 using Api.ToMcp.Runtime.Middleware;
 using Api.ToMcp.Runtime.Services;
 using Api.ToMcp.Runtime.Tests.Tools;
@@ -181,16 +182,64 @@ public class McpInvokerHttpClientTests
     }
 
     [Fact]
-    public async Task ARequestOtherCodeSendsThroughTheInvokersClient_IsServedInProcessToo()
+    public async Task ARequestOtherCodeSendsThroughTheInvokersClient_IsRefused_NeitherServedNorSent()
     {
+        var served = 0;
         using var provider = BuildProvider(_ => { });
-        BuildPipeline(provider, context => context.Response.WriteAsync($"{context.Request.Host} {context.Request.Path}"));
+        BuildPipeline(provider, context =>
+        {
+            Interlocked.Increment(ref served);
+            return Task.CompletedTask;
+        });
         using var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(ClientName);
 
-        var body = await client.GetStringAsync("https://elsewhere.example/api/status");
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetStringAsync("https://elsewhere.example/api/status"));
 
-        Assert.Equal("elsewhere.example /api/status", body);
+        Assert.Equal(
+            "The request GET https://elsewhere.example/api/status was sent through the HttpClient named IMcpHttpInvoker by code other than the invoker " +
+            "AddMcpTools registers. That client serves only the invoker's requests, in process, so the request is refused rather than run by this app. " +
+            "A client of your own takes that name when it is registered for IMcpHttpInvoker as a typed client, as " +
+            "services.AddHttpClient<IMcpHttpInvoker, MyInvoker>() does: give it a name of its own, as in " +
+            "services.AddHttpClient<IMcpHttpInvoker, MyInvoker>(\"MyInvoker\").",
+            exception.Message);
+        Assert.Equal(0, served);
         Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public async Task AnInvokerOfTheAppsOwn_RegisteredAsATypedClientForIMcpHttpInvoker_FailsInsteadOfRunningItsRequestInThisApp()
+    {
+        // Its client takes the name IMcpHttpInvoker. In 2.x its request went to its base address; served in process, the
+        // DELETE would run against this app's own data, as the app has the route the tool was generated from.
+        var served = 0;
+        using var provider = BuildProvider(services => services.AddHttpClient<IMcpHttpInvoker, ForwardingInvoker>(
+            client => client.BaseAddress = new Uri("https://orders.internal.example/")));
+        BuildPipeline(provider, context =>
+        {
+            Interlocked.Increment(ref served);
+            return Task.CompletedTask;
+        });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CallAsync(provider, invoker => invoker.DeleteAsync("api/orders/7")));
+
+        Assert.StartsWith("The request DELETE https://orders.internal.example/api/orders/7 was sent through the HttpClient named IMcpHttpInvoker", exception.Message);
+        Assert.Equal(0, served);
+        Assert.Empty(_primaryRequests);
+    }
+
+    [Fact]
+    public async Task AnInvokerOfTheAppsOwn_WithAClientOfItsOwnName_SendsItsRequestThroughThatClient()
+    {
+        using var provider = BuildProvider(services => services.AddHttpClient<IMcpHttpInvoker, ForwardingInvoker>(
+                nameof(ForwardingInvoker),
+                client => client.BaseAddress = new Uri("https://orders.internal.example/"))
+            .ConfigurePrimaryHttpMessageHandler(() => new RecordingPrimaryHandler(_primaryRequests)));
+        BuildPipeline(provider, _ => Task.CompletedTask);
+
+        var result = await CallAsync(provider, invoker => invoker.DeleteAsync("api/orders/7"));
+
+        Assert.Equal("over http", Text(result));
+        Assert.Equal(["https://orders.internal.example/api/orders/7 "], _primaryRequests);
     }
 
     [Fact]
@@ -714,6 +763,38 @@ public class McpInvokerHttpClientTests
         public Action<HttpMessageHandlerBuilder> Configure(Action<HttpMessageHandlerBuilder> next)
         {
             return next;
+        }
+    }
+
+    /// <summary>
+    /// An invoker of the app's own that sends every call to another server, at its client's base address.
+    /// </summary>
+    private sealed class ForwardingInvoker : IMcpHttpInvoker
+    {
+        private readonly HttpClient _httpClient;
+
+        public ForwardingInvoker(HttpClient httpClient)
+        {
+            _httpClient = httpClient;
+        }
+
+        public Task<CallToolResult> GetAsync(string route, CancellationToken ct = default) => SendAsync(HttpMethod.Get, route, ct);
+
+        public Task<CallToolResult> PostAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(HttpMethod.Post, route, ct);
+
+        public Task<CallToolResult> PutAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(HttpMethod.Put, route, ct);
+
+        public Task<CallToolResult> PatchAsync(string route, string? jsonBody, CancellationToken ct = default) => SendAsync(HttpMethod.Patch, route, ct);
+
+        public Task<CallToolResult> DeleteAsync(string route, CancellationToken ct = default) => SendAsync(HttpMethod.Delete, route, ct);
+
+        public Task BeforeInvokeAsync(McpScope requiredScope, CancellationToken ct = default) => Task.CompletedTask;
+
+        private async Task<CallToolResult> SendAsync(HttpMethod method, string route, CancellationToken ct)
+        {
+            using var request = new HttpRequestMessage(method, route);
+            using var response = await _httpClient.SendAsync(request, ct);
+            return new CallToolResult { Content = { new TextContentBlock { Text = await response.Content.ReadAsStringAsync(ct) } } };
         }
     }
 
