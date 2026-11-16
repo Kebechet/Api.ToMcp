@@ -26,6 +26,8 @@ public class InProcessApiPipelineServerLimitsTests
     private const string Origin = "https://api.example.com";
     private const string ItemsUrl = Origin + "/api/items";
     private const string Seen = "seen";
+    private const string IisPairingTokenHeader = "MS-ASPNETCORE-TOKEN";
+    private const string IisPairingToken = "t0k3n";
 
     [Theory]
     [InlineData(0, HttpStatusCode.OK, Seen)]
@@ -116,6 +118,22 @@ public class InProcessApiPipelineServerLimitsTests
         Assert.Equal(LogLevel.Debug, log.Level);
         Assert.StartsWith("Refused the tool's API request GET https://api.example.com/api/items?q=", log.Message);
         Assert.EndsWith(" in process with 414, as the server refuses a request over its limits: Request line too long.", log.Message);
+    }
+
+    [Theory]
+    [InlineData(51, HttpStatusCode.OK, IisPairingToken)]
+    [InlineData(50, HttpStatusCode.RequestHeaderFieldsTooLarge, "")]
+    public async Task SendAsync_CarriesIisPairingTokenOfTheMcpRequest_WhichCountsTowardKestrelsHeaders(int limit, HttpStatusCode expectedStatus, string expectedBody)
+    {
+        // "Host: api.example.com\r\n" is 23 bytes, and "MS-ASPNETCORE-TOKEN: t0k3n\r\n" 28.
+        var pipeline = Build(app => app.Run(context => context.Response.WriteAsync(context.Request.Headers[IisPairingTokenHeader].ToString())), kestrel => kestrel.Limits.MaxRequestHeadersTotalSize = limit);
+        var caller = new DefaultHttpContext();
+        caller.Request.Headers[IisPairingTokenHeader] = IisPairingToken;
+
+        using var response = await pipeline.SendAsync(new HttpRequestMessage(HttpMethod.Get, ItemsUrl), caller, CancellationToken.None);
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        Assert.Equal(expectedBody, await response.Content.ReadAsStringAsync());
     }
 
     [Theory]
