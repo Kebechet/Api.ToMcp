@@ -942,7 +942,7 @@ public class InProcessApiPipelineTests
 
     private static InProcessApiPipeline CreatePipeline(IServiceProvider services)
     {
-        return new InProcessApiPipeline(new DefaultHttpContextFactory(services), services.GetRequiredService<ILogger<InProcessApiPipeline>>());
+        return new InProcessApiPipeline(new DefaultHttpContextFactory(services), services.GetRequiredService<ILogger<InProcessApiPipeline>>(), InProcessRequestDiagnostics.Create(services));
     }
 
     private static X509Certificate2 CreateCertificate()

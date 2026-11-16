@@ -705,7 +705,7 @@ The request is addressed as the MCP request was:
 | Method, path, query string and body | The tool's: a JSON body, or the `[FromForm]` arguments as a form; see [Where each argument is sent](#where-each-argument-is-sent) |
 | Headers | `Authorization`, copied from the MCP request, `X-MCP-Internal-Call: true`, and the `[FromHeader]` arguments, then the `DefaultRequestHeaders` of the invoker's `HttpClient` and what its message handlers set; see [What the tool's request carries](#what-the-tools-request-carries) |
 
-It gets its own `HttpContext`, `RequestServices` scope and `TraceIdentifier`, and starts in an execution context of its own, as a request the server receives does, under the tool call's `Activity`. What it does not get is what the server and ASP.NET Core's hosting do around the pipeline: hosting does not log it, count it in its metrics or give it a span of its own, and no Kestrel connection middleware or server-wide limit, TLS handshake or IIS module applies to it.
+It gets its own `HttpContext`, `RequestServices` scope and `TraceIdentifier`, and starts in an execution context of its own, as a request the server receives does. It also gets what ASP.NET Core's hosting gives such a request, through hosting's own instruments: the log entries `Request starting` and `Request finished`, a server span of its own, a child of the tool call's `Activity`, and its place in the metrics `http.server.request.duration` and `http.server.active_requests`. Each marks it with `api_to_mcp.tool_request`, so dashboards and log searches count it with no change and can still tell it apart; see [Correlating Tool Calls with API Logs](#correlating-tool-calls-with-api-logs). What it does not get is what the server does around the pipeline: no Kestrel connection middleware or server-wide limit, TLS handshake or IIS module applies to it, and hosting's `EventSource` counters, such as `total-requests` in `dotnet-counters`, do not count it.
 
 What Kestrel decides about a request it serves holds for the tool's request too:
 
@@ -872,7 +872,7 @@ The invoker methods return a `CallToolResult`. When the invoked API returns a no
 
 ## Correlating Tool Calls with API Logs
 
-A tool call reaches your API as two requests: the MCP client's `POST /mcp`, and the request the tool runs for your controller, such as `GET /api/products/{id}`, [in process](#how-tools-call-your-api). Each has its own `HttpContext.TraceIdentifier`, logged as `RequestId`, but the tool's request runs under the tool call's `Activity`, so both belong to one W3C trace, with nothing to switch on, and no correlation ID has to be built by hand.
+A tool call reaches your API as two requests: the MCP client's `POST /mcp`, and the request the tool runs for your controller, such as `GET /api/products/{id}`, [in process](#how-tools-call-your-api). Each has its own `HttpContext.TraceIdentifier`, logged as `RequestId`, and its own server span, but the tool's request's span is a child of the tool call's `Activity`, so both belong to one W3C trace, with nothing to switch on, and no correlation ID has to be built by hand.
 
 ### What the tool's request carries
 
@@ -895,7 +895,7 @@ Loop prevention keeps a tool from starting an MCP request inside a tool call. Th
 
 ### Logs
 
-The default host already puts `TraceId`, `SpanId` and `ParentId` on the scope of every log entry, and ASP.NET Core adds `RequestPath` and `RequestId`; Api.ToMcp adds the same two to the entries of the tool's request, with your API route as its `RequestPath` and a `RequestId` of its own. Two defaults get in the way: the console logger leaves scopes out, and the templates' `"Microsoft.AspNetCore": "Warning"` drops ASP.NET Core's request log of the MCP request. In `appsettings.json`:
+The default host already puts `TraceId`, `SpanId` and `ParentId` on the scope of every log entry, and ASP.NET Core adds `RequestPath` and `RequestId`. The entries of the tool's request get the same, as those of a request the server receives: your API route as its `RequestPath`, a `RequestId` and a `SpanId` of their own, and the tool call's span as their `ParentId`. Their scope also holds `api_to_mcp.tool_request: true`. ASP.NET Core's request log, `Request starting` and `Request finished` (event ids 1 and 2 of the category `Microsoft.AspNetCore.Hosting.Diagnostics`), logs the tool's request too, in that scope. Two defaults get in the way: the console logger leaves scopes out, and the templates' `"Microsoft.AspNetCore": "Warning"` drops that request log. In `appsettings.json`:
 
 ```json
 {
@@ -913,37 +913,43 @@ The default host already puts `TraceId`, `SpanId` and `ParentId` on the scope of
 
 Keep `FormatterName`: without it, `FormatterOptions:IncludeScopes` has no effect. `builder.Logging.AddSimpleConsole(o => o.IncludeScopes = true)` does what the `Console` part does, in code, and `"FormatterName": "json"` writes `TraceId`, `SpanId` and `RequestId` as fields of the entries in each log entry's `Scopes` array instead.
 
-A failed call of the demo's `Products_GetById`, abridged: the `ConnectionId` scope and some entries are left out, among them the four the invoker's `HttpClient` logs under `System.Net.Http.HttpClient.IMcpHttpInvoker`, from `Start processing HTTP request GET ...` to `End processing HTTP request after ...`, and the `HTTP GET ...` scope it puts on the entries logged while the request runs, `InProcessApiPipeline`'s among them.
+A failed call of the demo's `Products_GetById`, abridged: the `ConnectionId` scope and some entries are left out, among them the four the invoker's `HttpClient` logs under `System.Net.Http.HttpClient.IMcpHttpInvoker`, from `Start processing HTTP request GET ...` to `End processing HTTP request after ...`, and the `HTTP GET ...` scope it puts on the entries logged while the request runs, `InProcessApiPipeline`'s among them. The two entries in the middle are ASP.NET Core's request log of the tool's request, with a `SpanId` of its own, the MCP request's as its `ParentId`, and the marker in its scope.
 
 ```
 info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
-      => SpanId:c1ff6ac77511d1fd, TraceId:4532a53ed8f5c583dd1106d04033aa27, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPK6DO7TVT9:00000001
+      => SpanId:4b28ad1f505a8341, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNQ3OTICATR7:00000001
       Request starting HTTP/1.1 POST http://localhost:5344/mcp - application/json 141
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      => SpanId:bed12b1a93c68243, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:4b28ad1f505a8341 => RequestPath:/api/products/d0000000-0000-0000-0000-000000000000 RequestId:0HNQ3OTIDVIKG api_to_mcp.tool_request:true
+      Request starting HTTP/1.1 GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000 - - -
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      => SpanId:bed12b1a93c68243, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:4b28ad1f505a8341 => RequestPath:/api/products/d0000000-0000-0000-0000-000000000000 RequestId:0HNQ3OTIDVIKG api_to_mcp.tool_request:true
+      Request finished HTTP/1.1 GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000 - 404 - application/problem+json;+charset=utf-8 25.6663ms
 info: Api.ToMcp.Runtime.Services.InProcessApiPipeline[0]
-      => SpanId:c1ff6ac77511d1fd, TraceId:4532a53ed8f5c583dd1106d04033aa27, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPK6DO7TVT9:00000001
-      Served the tool's API request GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000 in process with 404 in 35.7136 ms.
+      => SpanId:4b28ad1f505a8341, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNQ3OTICATR7:00000001
+      Served the tool's API request GET http://localhost:5344/api/products/d0000000-0000-0000-0000-000000000000 in process with 404 in 31.5829 ms.
 warn: Api.ToMcp.Runtime.Services.McpHttpInvoker[0]
-      => SpanId:c1ff6ac77511d1fd, TraceId:4532a53ed8f5c583dd1106d04033aa27, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPK6DO7TVT9:00000001
-      MCP HTTP call failed with status 404: {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404,"traceId":"00-4532a53ed8f5c583dd1106d04033aa27-c1ff6ac77511d1fd-00"}
+      => SpanId:4b28ad1f505a8341, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNQ3OTICATR7:00000001
+      MCP HTTP call failed with status 404: {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404,"traceId":"00-7b1d0571716e37fffd8e3d8d8c322bc2-bed12b1a93c68243-00"}
 info: ModelContextProtocol.Server.McpServer[2065726448]
-      => SpanId:c1ff6ac77511d1fd, TraceId:4532a53ed8f5c583dd1106d04033aa27, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPK6DO7TVT9:00000001
+      => SpanId:4b28ad1f505a8341, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNQ3OTICATR7:00000001
       "Products_GetById" completed. IsError = True.
 info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
-      => SpanId:c1ff6ac77511d1fd, TraceId:4532a53ed8f5c583dd1106d04033aa27, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNPK6DO7TVT9:00000001
-      Request finished HTTP/1.1 POST http://localhost:5344/mcp - 200 - text/event-stream 161.2748ms
+      => SpanId:4b28ad1f505a8341, TraceId:7b1d0571716e37fffd8e3d8d8c322bc2, ParentId:0000000000000000 => RequestPath:/mcp RequestId:0HNQ3OTICATR7:00000001
+      Request finished HTTP/1.1 POST http://localhost:5344/mcp - 200 - text/event-stream 69.6422ms
 ```
 
-The demo's controller logs nothing of its own. An entry your controller logs during the tool's request carries the same `TraceId` and `SpanId`, under its own scope: `RequestPath:/api/products/d0000000-0000-0000-0000-000000000000` and a `RequestId` other than the MCP request's.
+The demo's controller logs nothing of its own. An entry your controller logs during the tool's request carries the scope and the `SpanId` of that request's `Request starting`.
 
 To find the tool's request of a tool call:
 
 1. Find the call by its tool name. The MCP SDK logs `"<tool name>" completed. IsError = <True|False>.` (category `ModelContextProtocol.Server.McpServer`, with `ToolName` and `IsError` as fields), and Api.ToMcp logs the method, URL, status and duration of the tool's request (category `Api.ToMcp.Runtime.Services.InProcessApiPipeline`). Both log at `Information`, which the templates keep, in the scope of the `POST /mcp` request.
 2. Take the `TraceId` of that entry.
-3. Search for it. The entries whose `RequestPath` is your API route, under a `RequestId` other than the MCP request's, are the tool's request, your controller's own log entries included.
+3. Search for it. The entries whose scope holds `api_to_mcp.tool_request`, with your API route as their `RequestPath`, are the tool's request: ASP.NET Core's request log of it and your controller's own entries.
 
 Code that wants the trace ID itself, to put it in its own messages or responses, reads `Activity.Current?.TraceId` from `System.Diagnostics`; it is the same in the MCP request and the tool's.
 
-Match on `TraceId`, not on `SpanId` or `ParentId`. In process, the tool's request logs the `SpanId` of the tool call: the MCP request's, as above, or its `tools/call` span's when the MCP SDK's `ActivitySource` is listened to (see [OpenTelemetry](#opentelemetry)). Over HTTP, .NET's `HttpClient` starts an `Activity` of its own for the outgoing request, even without a tracing listener, so the request's `ParentId` is that activity, not the `SpanId` of the MCP request.
+Match on `TraceId`, not on `SpanId` or `ParentId`. In process, the tool's request logs a `SpanId` of its own, and as its `ParentId` the `SpanId` of the tool call: the MCP request's, as above, or its `tools/call` span's when the MCP SDK's `ActivitySource` is listened to (see [OpenTelemetry](#opentelemetry)). Over HTTP, .NET's `HttpClient` starts an `Activity` of its own for the outgoing request, even without a tracing listener, so the request's `ParentId` is that activity, not the `SpanId` of the MCP request.
 
 `POST /mcp` finishes with `200` even when the tool failed, because the failure is `isError: true` inside the JSON-RPC result. Look for `IsError = True` and the invoker's `MCP HTTP call failed with status ...` warning instead. When the API answers with a ProblemDetails body, as `[ApiController]` does for `NotFound()` or `Problem()`, its `traceId` is `00-<trace ID>-<span ID>-<flags>`, and it reaches the MCP client in the error text: a user who reports a failed call can hand you the trace ID.
 
@@ -957,6 +963,9 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddSource("Experimental.ModelContextProtocol") // optional: a span per MCP request, named after the tool
+        .AddOtlpExporter())
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
         .AddOtlpExporter());
 ```
 
@@ -965,10 +974,15 @@ A call of `Products_GetById` is then one trace:
 ```
 POST mcp/                              server   the MCP request
 └─ tools/call Products_GetById         server   only with AddSource("Experimental.ModelContextProtocol")
-   └─ (spans your API starts)                   the tool's request, which has no span of its own
+   └─ GET api/Products/{id:guid}       server   the tool's request, with api_to_mcp.tool_request = true
+      └─ (spans your API starts)
 ```
 
-The tool's request runs inside the tool call's span, so a span your controller, or a library it calls, starts, such as a database query or an outgoing `HttpClient` request, is a child of `tools/call`, or of `POST mcp/` without the MCP SDK's source. Over HTTP (with `AreApiCallsInProcess` off), the tree has two more spans between them: `GET`, a client span of the invoker's `HttpClient`, and under it `GET api/Products/{id:guid}`, a server span of the request to the controller.
+The tool's request gets the server span a request the server receives gets: hosting's `Microsoft.AspNetCore.Hosting.HttpRequestIn`, from the `ActivitySource` and the `DiagnosticListener` hosting uses, so `AddAspNetCoreInstrumentation()` records it, names it after its route, and sets its tags and status as for any request, its `Filter` and `EnrichWithHttpRequest` included. Its parent is the tool call's span: `tools/call`, or `POST mcp/` without the MCP SDK's source. It carries the tag `api_to_mcp.tool_request = true`, which a sampler can read, as the span is created with it. Code in the request reaches the span as in any request, with `HttpContext.Features.Get<IHttpActivityFeature>()`, and a span your controller, or a library it calls, starts, such as a database query or an outgoing `HttpClient` request, is a child of it. Over HTTP (with `AreApiCallsInProcess` off), the tree has one more span: `GET`, a client span of the invoker's `HttpClient`, between `tools/call` and the request's span, which then carries no `api_to_mcp.tool_request`.
+
+The tool's request is measured as a request the server receives, with hosting's own instruments of the meter `Microsoft.AspNetCore.Hosting`, which `AddAspNetCoreInstrumentation()` in `WithMetrics` listens to: `http.server.request.duration`, with its route, status and `error.type`, and `http.server.active_requests`. Its duration carries `api_to_mcp.tool_request = true` beside the tags your middleware adds through `IHttpMetricsTagsFeature`, so a dashboard can leave the tools' requests out or show them alone. `http.server.active_requests` carries only the method and the scheme, as for every request. On .NET 9 and later, `DisableHttpMetrics()`, `[DisableHttpMetrics]` and `IHttpMetricsTagsFeature.MetricsDisabled` leave its duration out, as they do any request's. Hosting's `EventSource` counters (`requests-per-second`, `total-requests`, `current-requests` and `failed-requests` of the `Microsoft.AspNetCore.Hosting` event source) do not count it, as ASP.NET Core keeps that source internal.
+
+A call the client cancels aborts its request, which is logged, measured and ends its span when your action ends, with the status `499` when its response had not started, as Kestrel answers the request of a client that went away. An exception your action lets escape gives its request `500`, or the status of a `BadHttpRequestException`, and its type as `error.type`, as on Kestrel.
 
 `Experimental.ModelContextProtocol` is the MCP SDK's `ActivitySource`, and its name says the SDK may still change it. With that `AddSource`, when the request's `params._meta` carries a `traceparent`, the `tools/call` span continues that trace context instead, and is only linked to the `POST mcp/` span. A client that sends it in the same trace as its `traceparent` header still gets every span in one trace. A client that sends only `_meta.traceparent` gets the tool call and the tool's request in its own trace and `POST mcp/` in another, joined by that link; the tool call's log entries follow the `tools/call` span, so their `TraceId` still matches the tool's request's.
 

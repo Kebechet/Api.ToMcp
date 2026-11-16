@@ -61,14 +61,15 @@ internal sealed class InProcessResponseFeature : HttpResponseFeature
     }
 
     /// <summary>
-    /// Replaces what the app set with a bare response of the status, as a server answers an exception thrown before the
-    /// response started.
+    /// Replaces what the app set with a bare response of the status, which says it has no body, as Kestrel answers an
+    /// exception thrown before the response started.
     /// </summary>
     public void AnswerUnhandledException(int statusCode)
     {
         StatusCode = statusCode;
         ReasonPhrase = null;
         _headers.Clear();
+        _headers.ContentLength = 0;
         MarkStarted();
     }
 

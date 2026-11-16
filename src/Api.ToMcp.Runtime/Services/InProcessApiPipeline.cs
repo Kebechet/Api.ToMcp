@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Diagnostics;
 using System.Net;
 using Microsoft.AspNetCore.Http;
@@ -15,9 +14,10 @@ namespace Api.ToMcp.Runtime.Services;
 /// request would, and <see cref="IMcpToolRequestFeature"/>, by which the app tells it from that client's own requests.
 /// </summary>
 /// <remarks>
-/// The hosting layer around the pipeline is not part of it: the request is not logged or counted as one the server
-/// received, and it runs under the tool call's <see cref="Activity"/> instead of one of its own. Nor is anything the
-/// server does before the pipeline: Kestrel's connection middleware and server-wide limits, TLS, or an IIS module.
+/// The request gets the logs, the span and the metrics hosting gives a request the server receives, through
+/// <see cref="InProcessRequestDiagnostics"/>, and its span is a child of the tool call's <see cref="Activity"/>. Nothing the
+/// server does before the pipeline applies to it: Kestrel's connection middleware and server-wide limits, TLS, or an IIS
+/// module.
 /// </remarks>
 internal sealed class InProcessApiPipeline
 {
@@ -28,12 +28,14 @@ internal sealed class InProcessApiPipeline
 
     private readonly IHttpContextFactory _httpContextFactory;
     private readonly ILogger<InProcessApiPipeline> _logger;
+    private readonly InProcessRequestDiagnostics _diagnostics;
     private RequestDelegate? _application;
 
-    public InProcessApiPipeline(IHttpContextFactory httpContextFactory, ILogger<InProcessApiPipeline> logger)
+    public InProcessApiPipeline(IHttpContextFactory httpContextFactory, ILogger<InProcessApiPipeline> logger, InProcessRequestDiagnostics diagnostics)
     {
         _httpContextFactory = httpContextFactory;
         _logger = logger;
+        _diagnostics = diagnostics;
     }
 
     /// <summary>
@@ -234,35 +236,44 @@ internal sealed class InProcessApiPipeline
             Activity.Current = callerActivity;
 
             var context = _httpContextFactory.Create(exchange.Features);
+            var diagnostics = _diagnostics.BeginRequest(context);
             Exception? unhandledException = null;
+            Exception? reportedException = null;
+            var hasAppStartedTheResponse = false;
             try
             {
-                using (_logger.BeginScope(new RequestLogScope(context)))
+                try
                 {
                     try
                     {
                         await application(context);
-
-                        // A response without a body has not started yet. Like a server, run its OnStarting callbacks only
-                        // when the app succeeded; one that throws fails the request as the app would.
-                        await exchange.Response.Feature.StartAsync();
-
-                        // Response.BodyWriter holds what the app wrote until a flush, and a server flushes it once the
-                        // app ends.
-                        await exchange.ResponseBody.CompleteAsync();
                     }
-                    catch (Exception exception)
+                    finally
                     {
-                        unhandledException = exception;
-                        LogUnhandledException(exception, context);
-                        exchange.Response.AnswerUnhandledException(exception);
+                        // Read before StartAsync below starts it: Kestrel gives an aborted request 499 unless the app
+                        // itself started the response.
+                        hasAppStartedTheResponse = exchange.Response.Feature.HasStarted;
                     }
 
-                    await exchange.Response.Feature.CompleteAsync(_logger);
+                    // A response without a body has not started yet. Like a server, run its OnStarting callbacks only
+                    // when the app succeeded; one that throws fails the request as the app would.
+                    await exchange.Response.Feature.StartAsync();
+
+                    // Response.BodyWriter holds what the app wrote until a flush, and a server flushes it once the
+                    // app ends.
+                    await exchange.ResponseBody.CompleteAsync();
                 }
+                catch (Exception exception)
+                {
+                    unhandledException = exception;
+                }
+
+                reportedException = AnswerTheEnd(exchange, context, unhandledException, hasAppStartedTheResponse);
+                await exchange.Response.Feature.CompleteAsync(_logger);
             }
             finally
             {
+                _diagnostics.EndRequest(context, diagnostics, reportedException);
                 _httpContextFactory.Dispose(context);
             }
 
@@ -270,19 +281,43 @@ internal sealed class InProcessApiPipeline
         }
     }
 
-    private void LogUnhandledException(Exception exception, HttpContext context)
+    /// <summary>
+    /// Answers the end of the request as Kestrel does, and returns the exception it reports to hosting for the request's
+    /// telemetry, if any. An aborted request whose app had not started the response when it returned or threw gets 499,
+    /// as the request of a client that went away, though its <c>OnStarting</c> callbacks ran since, and its cancellation
+    /// is no error. Any other exception the app let escape is logged, and answered with 500 or the status of a
+    /// <see cref="BadHttpRequestException"/> when the request was not aborted.
+    /// </summary>
+    private Exception? AnswerTheEnd(InProcessExchange exchange, HttpContext context, Exception? unhandledException, bool hasAppStartedTheResponse)
     {
-        if (exception is OperationCanceledException && context.RequestAborted.IsCancellationRequested)
+        var isAborted = exchange.Lifetime.IsRequestAborted;
+        if (isAborted && !hasAppStartedTheResponse)
+        {
+            exchange.Response.AnswerAbort();
+        }
+
+        if (unhandledException is null)
+        {
+            return null;
+        }
+
+        if (isAborted && unhandledException is OperationCanceledException or IOException)
         {
             _logger.LogDebug("The tool's in-process API request {Method} {Path} was canceled.", context.Request.Method, context.Request.Path);
-            return;
+            return null;
         }
 
         _logger.LogError(
-            exception,
+            unhandledException,
             "An unhandled exception was thrown by the app while serving the tool's API request {Method} {Path} in process.",
             context.Request.Method,
             context.Request.Path);
+        if (!isAborted)
+        {
+            exchange.Response.AnswerUnhandledException(unhandledException);
+        }
+
+        return unhandledException;
     }
 
     /// <summary>
@@ -445,6 +480,15 @@ internal sealed class InProcessApiPipeline
             Body.SetLength(0);
             IsAnsweredWithUnhandledException = true;
         }
+
+        /// <summary>
+        /// Gives an aborted request whose app had not started the response the status 499, as Kestrel gives the request of
+        /// a client that went away, for its logs and metrics; no response reaches the caller.
+        /// </summary>
+        public void AnswerAbort()
+        {
+            Feature.StatusCode = StatusCodes.Status499ClientClosedRequest;
+        }
     }
 
     private sealed class RequestBodyDetectionFeature : IHttpRequestBodyDetectionFeature
@@ -480,6 +524,11 @@ internal sealed class InProcessApiPipeline
 
         public bool IsAborted { get; private set; }
 
+        /// <summary>
+        /// Whether the request was aborted, by the app or because the tool call was canceled.
+        /// </summary>
+        public bool IsRequestAborted => _aborted.IsCancellationRequested;
+
         public void Abort()
         {
             IsAborted = true;
@@ -489,52 +538,6 @@ internal sealed class InProcessApiPipeline
         public void Dispose()
         {
             _aborted.Dispose();
-        }
-    }
-
-    /// <summary>
-    /// The scope ASP.NET Core's hosting puts every log entry of a request it serves under, with the same keys, so the
-    /// entries of the tool's request can be told apart from those of the MCP request as before.
-    /// </summary>
-    private sealed class RequestLogScope : IReadOnlyList<KeyValuePair<string, object>>
-    {
-        private const string RequestIdKey = "RequestId";
-        private const string RequestPathKey = "RequestPath";
-
-        private readonly string _requestId;
-        private readonly string _requestPath;
-
-        public RequestLogScope(HttpContext context)
-        {
-            _requestId = context.TraceIdentifier;
-            _requestPath = context.Request.Path.ToString();
-        }
-
-        public int Count => 2;
-
-        public KeyValuePair<string, object> this[int index] => index switch
-        {
-            0 => new KeyValuePair<string, object>(RequestIdKey, _requestId),
-            1 => new KeyValuePair<string, object>(RequestPathKey, _requestPath),
-            _ => throw new ArgumentOutOfRangeException(nameof(index))
-        };
-
-        public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
-        {
-            for (var i = 0; i < Count; i++)
-            {
-                yield return this[i];
-            }
-        }
-
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            return GetEnumerator();
-        }
-
-        public override string ToString()
-        {
-            return $"{RequestPathKey}:{_requestPath} {RequestIdKey}:{_requestId}";
         }
     }
 }
