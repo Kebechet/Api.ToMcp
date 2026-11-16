@@ -90,7 +90,7 @@ public sealed class McpToolRequestFeatureTests
         await using var app = await StartAppAsync(rateLimiting: RateLimiting.PerAddress);
         await using var client = await ConnectAsync(app);
 
-        var result = await CallToolAsync(client, ToolRequestProbeTools.FirstName, ProbeRoute);
+        var result = await CallToolOnceTheMcpRequestIsLetThroughAsync(client, ToolRequestProbeTools.FirstName, ProbeRoute);
 
         Assert.StartsWith("HTTP 429: Too Many Requests", result);
     }
@@ -101,8 +101,8 @@ public sealed class McpToolRequestFeatureTests
         await using var app = await StartAppAsync(rateLimiting: RateLimiting.PerAddressWithToolRequestsApart);
         await using var client = await ConnectAsync(app);
 
-        var first = await CallToolAsync(client, ToolRequestProbeTools.FirstName, ProbeRoute);
-        var second = await CallToolAsync(client, ToolRequestProbeTools.SecondName, ProbeRoute);
+        var first = await CallToolOnceTheMcpRequestIsLetThroughAsync(client, ToolRequestProbeTools.FirstName, ProbeRoute);
+        var second = await CallToolOnceTheMcpRequestIsLetThroughAsync(client, ToolRequestProbeTools.SecondName, ProbeRoute);
 
         Assert.Equal($$"""{"isToolRequest":true,"toolName":"{{ToolRequestProbeTools.FirstName}}"}""", first);
         Assert.Equal($$"""{"isToolRequest":true,"toolName":"{{ToolRequestProbeTools.SecondName}}"}""", second);
@@ -117,13 +117,13 @@ public sealed class McpToolRequestFeatureTests
         await using var client = await ConnectAsync(app);
         using (var drop = new CancellationTokenSource())
         {
-            var droppedCall = CallToolAsync(client, ToolRequestProbeTools.FirstName, HeldRoute, drop.Token);
+            var droppedCall = CallToolOnceTheMcpRequestIsLetThroughAsync(client, ToolRequestProbeTools.FirstName, HeldRoute, drop.Token);
             await _isHeldRequestIn.Task.WaitAsync(TimeSpan.FromSeconds(10));
             drop.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => droppedCall);
         }
 
-        var result = await CallToolOnceTheClientsPermitIsFreeAsync(client, ToolRequestProbeTools.SecondName, ProbeRoute);
+        var result = await CallToolOnceTheMcpRequestIsLetThroughAsync(client, ToolRequestProbeTools.SecondName, ProbeRoute);
         _isHeldRequestReleased.SetResult();
 
         Assert.StartsWith("HTTP 429: Too Many Requests", result);
@@ -209,21 +209,22 @@ public sealed class McpToolRequestFeatureTests
     }
 
     /// <summary>
-    /// Calls the tool once the limiter lets the client's MCP request through. The server ends the MCP request of a dropped
-    /// call a moment after the client drops it, and until then the client's next MCP request has no permit.
+    /// Calls the tool once the limiter lets the client's MCP request through. The server ends an MCP request a moment
+    /// after the client has its response, or has dropped it, and until then the client's next MCP request has no permit.
+    /// A tool's request the limiter refuses still comes back as the tool's result.
     /// </summary>
-    private static async Task<string> CallToolOnceTheClientsPermitIsFreeAsync(McpClient client, string toolName, string route)
+    private static async Task<string> CallToolOnceTheMcpRequestIsLetThroughAsync(McpClient client, string toolName, string route, CancellationToken cancellationToken = default)
     {
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (true)
         {
             try
             {
-                return await CallToolAsync(client, toolName, route);
+                return await CallToolAsync(client, toolName, route, cancellationToken);
             }
             catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.TooManyRequests && DateTime.UtcNow < deadline)
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(20));
+                await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
             }
         }
     }
