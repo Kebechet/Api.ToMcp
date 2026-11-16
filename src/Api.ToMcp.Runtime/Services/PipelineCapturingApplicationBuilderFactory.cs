@@ -6,9 +6,9 @@ using Microsoft.AspNetCore.Http.Features;
 namespace Api.ToMcp.Runtime.Services;
 
 /// <summary>
-/// Hands <see cref="InProcessApiPipeline"/> the request pipeline the host builds for the server. The host creates the
-/// app's builder here, lets every startup filter and the app add their middleware to it, and starts the server with what
-/// it builds, so the pipeline captured from it is the one every served request passes.
+/// Hands <see cref="InProcessApiPipeline"/> the request pipeline the host builds for the server, and the limits of that
+/// server. The host creates the app's builder here, lets every startup filter and the app add their middleware to it, and
+/// starts the server with what it builds, so the pipeline captured from it is the one every served request passes.
 /// </summary>
 /// <remarks>
 /// The pipeline is taken here rather than from the server, which would hand over the hosting layer around it as well,
@@ -39,7 +39,7 @@ internal sealed class PipelineCapturingApplicationBuilderFactory : IApplicationB
                 context.Features.Set(new PipelineEntryFeature(context));
                 return next(context);
             };
-            _pipeline.Capture(entry);
+            _pipeline.Capture(entry, ServerRequestLimits.Of(builder.ApplicationServices));
             return entry;
         });
 
