@@ -22,6 +22,12 @@ public class McpHttpInvokerInProcessTests
 {
     private const string ProviderBaseUrl = "http://localhost:5000";
 
+    /// <summary>
+    /// How long a test waits for the app to start serving a request, so a request that never reaches the app fails the
+    /// test instead of hanging it.
+    /// </summary>
+    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(10);
+
     private readonly HttpContextAccessor _accessor = new();
     private readonly RecordingHandler _httpHandler = new();
 
@@ -67,9 +73,7 @@ public class McpHttpInvokerInProcessTests
     {
         _accessor.HttpContext = CreateCaller();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var invoker = CreateInvoker(
-            BuildPipeline(app => app.Run(_ => release.Task)),
-            httpClient: new HttpClient(_httpHandler) { Timeout = TimeSpan.FromMilliseconds(200) });
+        var invoker = CreateInvoker(BuildPipeline(app => app.Run(_ => release.Task)), timeout: TimeSpan.FromMilliseconds(200));
 
         try
         {
@@ -99,7 +103,7 @@ public class McpHttpInvokerInProcessTests
         try
         {
             var calling = invoker.GetAsync("/api/products/7", cancellation.Token);
-            await started.Task;
+            await started.Task.WaitAsync(StartTimeout);
             cancellation.Cancel();
 
             var exception = await Assert.ThrowsAsync<TaskCanceledException>(() => calling.WaitAsync(TimeSpan.FromSeconds(10)));
@@ -186,6 +190,20 @@ public class McpHttpInvokerInProcessTests
     }
 
     [Fact]
+    public async Task GetAsync_ServesTheRequestInProcess_WithoutTheClient_WhenTheClientLacksTheInProcessHandler()
+    {
+        _accessor.HttpContext = CreateCaller();
+        var invoker = CreateInvoker(BuildEchoPipeline(), hasInProcessHandler: false);
+
+        var result = await invoker.GetAsync("/api/products/7");
+
+        var seen = Echoed(result);
+        Assert.Equal("api.example.com", seen.GetProperty("host").GetString());
+        Assert.Equal("Bearer caller-token", seen.GetProperty("authorization").GetString());
+        Assert.Empty(_httpHandler.Requests);
+    }
+
+    [Fact]
     public async Task GetAsync_ReportsAnErrorStatus_AsAnErrorResult_InProcess()
     {
         _accessor.HttpContext = CreateCaller();
@@ -225,19 +243,38 @@ public class McpHttpInvokerInProcessTests
         Assert.Equal([$"{ProviderBaseUrl}/api/products/7"], _httpHandler.Requests);
     }
 
+    /// <summary>
+    /// The invoker with a client built as <c>AddMcpTools</c> builds it: <see cref="InProcessApiHandler"/> right above the
+    /// primary handler, which records every request it gets.
+    /// </summary>
+    /// <remarks>
+    /// Without <paramref name="hasInProcessHandler"/>, the client has the primary handler alone, as when the app took away
+    /// the filter that adds <see cref="InProcessApiHandler"/>.
+    /// </remarks>
     private McpHttpInvoker CreateInvoker(
         InProcessApiPipeline pipeline,
         McpScopeOptions? scopeOptions = null,
-        HttpClient? httpClient = null,
-        ISelfBaseUrlProvider? baseUrlProvider = null)
+        TimeSpan? timeout = null,
+        ISelfBaseUrlProvider? baseUrlProvider = null,
+        bool hasInProcessHandler = true)
     {
+        HttpMessageHandler chain = hasInProcessHandler
+            ? new InProcessApiHandler(pipeline) { InnerHandler = _httpHandler }
+            : _httpHandler;
+        var httpClient = new HttpClient(chain);
+        if (timeout is not null)
+        {
+            httpClient.Timeout = timeout.Value;
+        }
+
         return new McpHttpInvoker(
-            httpClient ?? new HttpClient(_httpHandler),
+            httpClient,
             baseUrlProvider ?? new FixedBaseUrlProvider(ProviderBaseUrl),
             _accessor,
             NullLogger<McpHttpInvoker>.Instance,
             Microsoft.Extensions.Options.Options.Create(scopeOptions ?? new McpScopeOptions()),
-            pipeline);
+            pipeline,
+            new InProcessApiHandlerCheck(() => true, () => chain));
     }
 
     private DefaultBaseUrlProvider CreateDefaultBaseUrlProvider(string boundAddress)

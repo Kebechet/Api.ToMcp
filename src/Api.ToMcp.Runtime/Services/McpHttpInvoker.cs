@@ -28,6 +28,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     private readonly ILogger<McpHttpInvoker> _logger;
     private readonly McpScopeOptions _scopeOptions;
     private readonly InProcessApiPipeline? _inProcessPipeline;
+    private readonly InProcessApiHandlerCheck? _inProcessHandlerCheck;
     private readonly string _forwardedProtoHeaderName;
     private readonly HashSet<string> _proxyHeaderNames;
 
@@ -45,6 +46,12 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     {
     }
 
+    /// <summary>
+    /// The invoker <c>AddMcpTools</c> registers, which serves a request in process through
+    /// <paramref name="inProcessPipeline"/>: through <paramref name="httpClient"/> when
+    /// <paramref name="inProcessHandlerCheck"/> finds the handler that serves it there, and straight through the pipeline
+    /// otherwise, so the request never reaches the client's primary handler.
+    /// </summary>
     internal McpHttpInvoker(
         HttpClient httpClient,
         ISelfBaseUrlProvider baseUrlProvider,
@@ -52,6 +59,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         ILogger<McpHttpInvoker> logger,
         IOptions<McpScopeOptions> scopeOptions,
         InProcessApiPipeline? inProcessPipeline,
+        InProcessApiHandlerCheck? inProcessHandlerCheck = null,
         string? forwardedProtoHeaderName = null,
         IEnumerable<string>? proxyHeaderNames = null)
     {
@@ -61,6 +69,7 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
         _logger = logger;
         _scopeOptions = scopeOptions.Value;
         _inProcessPipeline = inProcessPipeline;
+        _inProcessHandlerCheck = inProcessHandlerCheck;
         _forwardedProtoHeaderName = forwardedProtoHeaderName ?? ForwardedHeadersDefaults.XForwardedProtoHeaderName;
         _proxyHeaderNames = new HashSet<string>(proxyHeaderNames ?? [], StringComparer.OrdinalIgnoreCase);
     }
@@ -286,10 +295,31 @@ public sealed class McpHttpInvoker : IMcpHttpRequestInvoker
     }
 
     /// <summary>
-    /// Serves the request in process under the <see cref="HttpClient.Timeout"/> of the invoker's client, and fails a
-    /// timed-out or canceled call with the exceptions <see cref="HttpClient"/> throws, so the call ends as it did over HTTP.
+    /// Sends the request through the invoker's client, marked to be served in process: it passes the client's handlers and
+    /// gets its default headers and <see cref="HttpClient.Timeout"/>, and <see cref="InProcessApiHandler"/> serves it in
+    /// place of the primary handler. The pipeline follows each redirect back into the app itself, so the response that
+    /// comes back is final. When the client lacks that handler, or comes from a client factory the app registered, the
+    /// marked request could reach the primary handler and leave the process, so it is served without the client instead.
     /// </summary>
-    private async Task<HttpResponseMessage> SendInProcessAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
+    private Task<HttpResponseMessage> SendInProcessAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
+    {
+        var isServedByTheClient = _inProcessHandlerCheck is not null && _inProcessHandlerCheck.IsInTheClientsChain;
+        if (!isServedByTheClient)
+        {
+            return SendWithoutTheClientAsync(pipeline, request, caller, ct);
+        }
+
+        InProcessApiHandler.ServeInProcess(request, caller);
+
+        return _httpClient.SendAsync(request, ct);
+    }
+
+    /// <summary>
+    /// Serves the request in process without the invoker's client, so without its handlers and default headers, but under
+    /// its <see cref="HttpClient.Timeout"/>, and fails a timed-out or canceled call with the exceptions
+    /// <see cref="HttpClient"/> throws, so the call ends as it does through the client.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithoutTheClientAsync(InProcessApiPipeline pipeline, HttpRequestMessage request, HttpContext? caller, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_httpClient.Timeout);

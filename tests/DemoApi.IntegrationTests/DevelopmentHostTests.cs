@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -77,6 +79,57 @@ public sealed class DevelopmentHostTests
         Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
     }
 
+    [Fact]
+    public async Task AnAppThatGivesTheInvokersClientAHandler_StartsInDevelopment_AndTheHandlerSeesAToolCallServedInProcess()
+    {
+        var requests = new List<string>();
+        await using var app = await StartAsync(hasAuthentication: false, configureServices: services => services
+            .AddHttpClient(nameof(IMcpHttpInvoker))
+            .AddHttpMessageHandler(() => new RecordingHandler(requests))
+            .ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler()));
+        await using var client = await ConnectAsync(app.Urls.Single(), authorization: null);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.Equal(Environments.Development, app.Environment.EnvironmentName);
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Contains(LaptopId, Assert.Single(requests));
+    }
+
+    [Fact]
+    public async Task AnAppThatRemovesEveryHandlerBuilderFilter_StartsInDevelopment_AndServesAToolCallInProcess_NotThroughThePrimaryHandler()
+    {
+        var requests = new List<string>();
+        await using var app = await StartAsync(hasAuthentication: false, configureServices: services =>
+        {
+            services.AddHttpClient(nameof(IMcpHttpInvoker))
+                .AddHttpMessageHandler(() => new RecordingHandler(requests))
+                .ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler());
+            services.RemoveAll<IHttpMessageHandlerBuilderFilter>();
+        });
+        await using var client = await ConnectAsync(app.Urls.Single(), authorization: null);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+        Assert.Empty(requests);
+    }
+
+    [Fact]
+    public async Task AnAppThatStubsItsHttpClientFactory_StartsInDevelopment_AndServesAToolCallInProcess_NotThroughTheStub()
+    {
+        await using var app = await StartAsync(hasAuthentication: false, configureServices: services =>
+            services.AddSingleton<IHttpClientFactory>(new RefusingClientFactory()));
+        await using var client = await ConnectAsync(app.Urls.Single(), authorization: null);
+
+        var result = await client.CallToolAsync("Products_GetById", new Dictionary<string, object?> { ["id"] = LaptopId });
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Contains("Laptop", ((TextContentBlock)result.Content[0]).Text);
+    }
+
     private static async Task<WebApplication> StartAsync(bool hasAuthentication, Action<IServiceCollection> configureServices)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
@@ -104,5 +157,44 @@ public sealed class DevelopmentHostTests
         await app.StartAsync();
 
         return app;
+    }
+
+    private sealed class RecordingHandler : DelegatingHandler
+    {
+        private readonly List<string> _requests;
+
+        public RecordingHandler(List<string> requests)
+        {
+            _requests = requests;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (_requests)
+            {
+                _requests.Add(request.RequestUri!.ToString());
+            }
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A client factory a test registers to stub the app's outgoing calls, whose clients refuse every request.
+    /// </summary>
+    private sealed class RefusingClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name)
+        {
+            return new HttpClient(new RefusingHandler());
+        }
+    }
+
+    private sealed class RefusingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException($"The tool sent {request.RequestUri} over HTTP.");
+        }
     }
 }
